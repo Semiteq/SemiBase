@@ -2,7 +2,6 @@
 
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8)
 [![Coverage Status](https://coveralls.io/repos/github/Semiteq/SemiBase/badge.svg?branch=master)](https://coveralls.io/github/Semiteq/SemiBase?branch=master)
-[![Go Report Card](https://goreportcard.com/badge/github.com/Semiteq/SemiBase)](https://goreportcard.com/report/github.com/Semiteq/SemiBase)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-336791)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
