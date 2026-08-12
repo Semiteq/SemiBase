@@ -1,0 +1,15 @@
+{
+  "file_scan_exclusions": [
+    "**/.git",
+    "**/.idea",
+    "**/.vscode",
+    "**/.history",
+    "**/.DS_Store",
+    "**/.claude"
+  ],
+  "languages": {
+    "Go": {
+      "format_on_save": "on"
+    }
+  }
+}

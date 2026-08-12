@@ -1,0 +1,33 @@
+[
+  {
+    "label": "Build",
+    "command": "go build -o semibase.exe ./cmd/semibase",
+    "cwd": "$ZED_WORKTREE_ROOT"
+  },
+  {
+    "label": "Test All",
+    "command": "go test ./...",
+    "cwd": "$ZED_WORKTREE_ROOT"
+  },
+  {
+    "label": "Test with Race",
+    "command": "go test -race -count=1 ./...",
+    "cwd": "$ZED_WORKTREE_ROOT"
+  },
+  {
+    "label": "Test Current Package",
+    "command": "go test -v .",
+    "cwd": "$ZED_DIRNAME"
+  },
+  {
+    "label": "Vet",
+    "command": "go vet ./...",
+    "cwd": "$ZED_WORKTREE_ROOT"
+  },
+  {
+    "label": "Run Help",
+    "command": "go run ./cmd/semibase --help",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true
+  }
+]
