@@ -203,20 +203,20 @@ it from now on.
 - Modify: `internal/provision/config.go`
 - Modify: `internal/provision/provision_test.go`
 
-- [ ] add `Options.Validate()` checking `Database` against the identifier pattern
+- [x] add `Options.Validate()` checking `Database` against the identifier pattern
       (`^[a-z_][a-z0-9_]*$`, moved from `cmd/semibase/main.go:41`); call it first in `Config`
       (`config.go:64`), `Create`, and `verify`
-- [ ] quote the two DDL interpolations of `o.Database` with `pgx.Identifier{...}.Sanitize()`
+- [x] quote the two DDL interpolations of `o.Database` with `pgx.Identifier{...}.Sanitize()`
       (`provision.go:114`, `:218`); leave the connection URL untouched
-- [ ] `connect` executes `SET standard_conforming_strings = on` after connecting
+- [x] `connect` executes `SET standard_conforming_strings = on` after connecting
       (`provision.go:63-75`), making `escapeLiteral`'s quote-doubling sufficient in every
       server mode; add a comment stating that invariant on `escapeLiteral`
-- [ ] write table tests for `Validate()`: accepts valid names; rejects uppercase, hyphen,
+- [x] write table tests for `Validate()`: accepts valid names; rejects uppercase, hyphen,
       leading digit, quote, semicolon, empty
-- [ ] extend `TestEscapeLiteral` with backslash cases (`\`, `\'`) documenting the
+- [x] extend `TestEscapeLiteral` with backslash cases (`\`, `\'`) documenting the
       conforming-strings dependency
-- [ ] write a test asserting the sanitized identifier form for a hostile database name
-- [ ] run tests — must pass before Task 2
+- [x] write a test asserting the sanitized identifier form for a hostile database name
+- [x] run tests — must pass before Task 2
 
 ### Task 2: Rework the CLI surface once — no secrets in defaults, testable errors, single dispatch
 
@@ -224,29 +224,29 @@ it from now on.
 - Modify: `cmd/semibase/main.go`
 - Create: `cmd/semibase/main_test.go`
 
-- [ ] extract `newFlagSet(command string, options *provision.Options) *flag.FlagSet` using
+- [x] extract `newFlagSet(command string, options *provision.Options) *flag.FlagSet` using
       `flag.ContinueOnError` with output to `os.Stderr`; `parseOptions` wraps it
       (`main.go:74-101`)
-- [ ] `errors.Is(err, flag.ErrHelp)` → exit 0 with no extra output (usage already printed);
+- [x] `errors.Is(err, flag.ErrHelp)` → exit 0 with no extra output (usage already printed);
       any other parse error → exit 2; `main` alone calls `os.Exit`
-- [ ] password flags default to `""`; resolve each empty field from its `SEMIBASE_*` env var
+- [x] password flags default to `""`; resolve each empty field from its `SEMIBASE_*` env var
       after `Parse`; flag descriptions keep naming the env var (`main.go:83-89`)
-- [ ] replace the two switches (`main.go:52,139`) with pre-dispatch words
+- [x] replace the two switches (`main.go:52,139`) with pre-dispatch words
       (`help`, `-h`, `--help` → usage, exit 0; `version`, `--version` → stub printing
       `revision`, wired fully in Task 7) plus one
       `map[string]func(context.Context, provision.Options) error` for the four commands;
       unknown command → usage to stderr, exit 2 — never `All`
-- [ ] bare invocation prints usage to stderr with exit 2, consistent with the unknown-command
+- [x] bare invocation prints usage to stderr with exit 2, consistent with the unknown-command
       path (`main.go:47-48` vs `:57`)
-- [ ] delete `databaseNamePattern` from the CLI; `parseOptions` calls `options.Validate()`
+- [x] delete `databaseNamePattern` from the CLI; `parseOptions` calls `options.Validate()`
       after `Parse` for the friendly early message (pattern now lives only in `provision`)
-- [ ] write a test that sets a poisoned password env var, renders `newFlagSet` usage via
+- [x] write a test that sets a poisoned password env var, renders `newFlagSet` usage via
       `PrintDefaults` into a buffer, and asserts the password value does not appear
-- [ ] write table tests for `parseOptions`: flag beats env, env fills empty flag, invalid
+- [x] write table tests for `parseOptions`: flag beats env, env fills empty flag, invalid
       database name rejected via `Validate`, unknown flag returns an error, `--help` returns
       `flag.ErrHelp`
-- [ ] write a test asserting an unmapped command name yields the error path, not `All`
-- [ ] run tests — must pass before Task 3
+- [x] write a test asserting an unmapped command name yields the error path, not `All`
+- [x] run tests — must pass before Task 3
 
 ### Task 3: Report real .env errors
 
@@ -254,15 +254,15 @@ it from now on.
 - Modify: `cmd/semibase/main.go`
 - Modify: `cmd/semibase/env_test.go`
 
-- [ ] `loadDotEnv` distinguishes `fs.ErrNotExist` (silent, normal) from any other open error,
+- [x] `loadDotEnv` distinguishes `fs.ErrNotExist` (silent, normal) from any other open error,
       and checks `scanner.Err()`, reporting both to stderr with the file name
       (`main.go:107-113`)
-- [ ] give the loader a path-or-chdir seam: tests use `t.Chdir(t.TempDir())`
-- [ ] write a test: a directory named `.env` surfaces the `scanner.Err()` warning path on
+- [x] give the loader a path-or-chdir seam: tests use `t.Chdir(t.TempDir())`
+- [x] write a test: a directory named `.env` surfaces the `scanner.Err()` warning path on
       Windows (`os.Open` on a directory succeeds; the read fails); an absent file stays
       silent. The non-`ErrNotExist` open branch has no cheap Windows test — covered by
       inspection
-- [ ] run tests — must pass before Task 4
+- [x] run tests — must pass before Task 4
 
 ### Task 4: Cancellable, bounded context
 
@@ -270,16 +270,16 @@ it from now on.
 - Modify: `cmd/semibase/main.go`
 - Modify: `cmd/semibase/main_test.go`
 
-- [ ] root context: `signal.NotifyContext(context.Background(), os.Interrupt)` in `main`
+- [x] root context: `signal.NotifyContext(context.Background(), os.Interrupt)` in `main`
       (`main.go:138`)
-- [ ] `phaseTimeout = 5 * time.Minute` package constant; the dispatch site wraps each command
+- [x] `phaseTimeout = 5 * time.Minute` package constant; the dispatch site wraps each command
       context in `context.WithTimeout`, covering the unbounded superuser scan at
       `provision.go:303`
-- [ ] write a dispatch-level test with a stub command func asserting the context it receives
+- [x] write a dispatch-level test with a stub command func asserting the context it receives
       carries a deadline
-- [ ] write a cancelled-context test: valid `Database` (so `Validate` passes), pre-cancelled
+- [x] write a cancelled-context test: valid `Database` (so `Validate` passes), pre-cancelled
       context, assert `errors.Is(err, context.Canceled)` and prompt return
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5
 
 ### Task 5: Gate colors on console capability
 
@@ -287,29 +287,32 @@ it from now on.
 - Modify: `internal/provision/console.go`
 - Create: `internal/provision/console_test.go`
 
-- [ ] `EnableColors` records success in a package-level `colorsEnabled`; the `step/ok/warn/note`
+- [x] `EnableColors` records success in a package-level `colorsEnabled`; the `step/ok/warn/note`
       helpers emit empty strings for every color when it is false (`console.go:30-42`)
-- [ ] honor `NO_COLOR`: when set (any value), colors stay off even if the console probe
+- [x] honor `NO_COLOR`: when set (any value), colors stay off even if the console probe
       succeeds
-- [ ] helpers write through a package-level `io.Writer` defaulting to `os.Stdout`
-- [ ] write tests (no `t.Parallel()` — package state): colors disabled → captured output has
+- [x] helpers write through a package-level `io.Writer` defaulting to `os.Stdout`
+- [x] write tests (no `t.Parallel()` — package state): colors disabled → captured output has
       no `\x1b`; colors force-enabled by setting the package flag directly → it does;
       `NO_COLOR` wins
-- [ ] run tests — must pass before Task 6
+- [x] run tests — must pass before Task 6
 
 ### Task 6: Service restart through the service manager
 
 **Files:**
 - Modify: `internal/provision/config.go`
 
-- [ ] replace the `net stop`/`net start` shell-out (`config.go:96-104`) with
+- [x] replace the `net stop`/`net start` shell-out (`config.go:96-104`) with
       `x/sys/windows/svc/mgr`: connect, open the service, `Control(svc.Stop)`, poll `Query()`
       until `svc.Stopped` bounded by the phase context, `Start()`
-- [ ] errors are single-line and wrapped (`stopping service %s: %w`); no process output is
+- [x] errors are single-line and wrapped (`stopping service %s: %w`); no process output is
       embedded — the CP866 problem is removed, not decoded
-- [ ] no unit-test path: the service manager requires a real elevated session; covered by the
+- [x] no unit-test path: the service manager requires a real elevated session; covered by the
       live restart in Post-Completion and by inspection. `go vet` and lint still gate the code
-- [ ] run tests — must pass before Task 7
+- [x] ➕ review fix: `Start()` now polls until `Running` (StartService returns at
+      START_PENDING) and fails when the service falls back to `Stopped`; an already-stopped
+      service skips the stop, keeping the restart idempotent
+- [x] run tests — must pass before Task 7
 
 ### Task 7: Version embedding
 
@@ -317,60 +320,73 @@ it from now on.
 - Modify: `cmd/semibase/main.go`
 - Modify: `cmd/semibase/main_test.go`
 
-- [ ] `var revision = "unknown"` in `main`; resolve through `debug.ReadBuildInfo`
+- [x] `var revision = "unknown"` in `main`; resolve through `debug.ReadBuildInfo`
       (`vcs.revision` + dirty suffix) when the ldflags value is unset
-- [ ] wire the Task 2 `version`/`--version` stub to print it; no startup banner on other
+- [x] wire the Task 2 `version`/`--version` stub to print it; no startup banner on other
       commands
-- [ ] write tests: the resolver returns the ldflags value verbatim when set, and a non-empty
+- [x] write tests: the resolver returns the ldflags value verbatim when set, and a non-empty
       string from the fallback path when not
-- [ ] run tests — must pass before Task 8
+- [x] run tests — must pass before Task 8
 
 ### Task 8: Linter installed, pinned, configured
 
 **Files:**
 - Create: `.golangci.yml`
 
-- [ ] install golangci-lint (winget or `go install`, pick what pins cleanly) and record the
-      chosen version — it is not present on this machine
-- [ ] write `.golangci.yml` with the explicit enable list from Technical Details and `_test.go`
+- [x] install golangci-lint (winget or `go install`, pick what pins cleanly) and record the
+      chosen version — it is not present on this machine. Installed via
+      `winget install GolangCI.golangci-lint --version 2.12.2` → golangci-lint 2.12.2
+- [x] write `.golangci.yml` with the explicit enable list from Technical Details and `_test.go`
       gosec relaxation; adjust linter names against the installed version if any fail to load
-- [ ] run `golangci-lint run`; fix every finding or add `//nolint:gosec // <reason>` at the
-      three known Sprintf-DDL sites (`config.go:78`, `provision.go:114,218`)
-- [ ] no unit tests in this task: the deliverable is a clean lint run, asserted again in
+      (all eight names load in 2.12.2 unchanged)
+- [x] run `golangci-lint run`; fix every finding or add `//nolint:gosec // <reason>` at the
+      three known Sprintf-DDL sites (`config.go:78`, `provision.go:114,218`). gosec G201 did
+      not fire on the Sprintf-DDL sites; the real findings were G104 (unhandled `os.Setenv`
+      in `applyEnv` — now handled; ignored `conn.Close` on the connect error path — explicit
+      `_ =`), G103/G115 in `totalPhysicalMemoryMB` (nolint with reason: Win32 calling
+      convention, MB fits int), and revive `redefines-builtin-id` in `console_test.go`
+      (parameter renamed `print` → `emit`)
+- [x] no unit tests in this task: the deliverable is a clean lint run, asserted again in
       Task 10
-- [ ] run `go test ./...` — must still pass before Task 9
+- [x] run `go test ./...` — must still pass before Task 9
 
 ### Task 9: CI workflow
 
 **Files:**
 - Create: `.github/workflows/ci.yml`
 
-- [ ] workflow on push and pull_request: `windows-latest` (the `x/sys/windows` imports do not
+- [x] workflow on push and pull_request: `windows-latest` (the `x/sys/windows` imports do not
       build on Linux), setup-go from `go.mod`, `go build ./...`, `go test -race ./...`,
-      golangci-lint action pinned to Task 8's version
-- [ ] confirm every referenced action version exists; parse the YAML locally (PowerShell
-      `ConvertFrom-Yaml` or equivalent) before committing
-- [ ] no unit tests in this task: the workflow proves itself on first push (Post-Completion)
+      golangci-lint action pinned to Task 8's version (`v2.12.2`)
+- [x] confirm every referenced action version exists; parse the YAML locally (PowerShell
+      `ConvertFrom-Yaml` or equivalent) before committing — verified via `gh api`
+      (`actions/checkout@v7`, `actions/setup-go@v7`, `golangci/golangci-lint-action@v9`,
+      golangci-lint release `v2.12.2`); `ConvertFrom-Yaml` is absent on this machine, parsed
+      with a scratch Go program on `gopkg.in/yaml.v3` instead
+- [x] no unit tests in this task: the workflow proves itself on first push (Post-Completion)
 
 ### Task 10: Verify acceptance criteria
 
-- [ ] every check in Acceptance Evidence runs and produces the stated result, including the
+- [x] every check in Acceptance Evidence runs and produces the stated result, including the
       poisoned-env grep, the `create`-redirect grep, and the `--help` exit-0 check
-- [ ] `go test ./...`, `go vet ./...`, `golangci-lint run` — all exit 0
-- [ ] `gofmt -l .` reports nothing
-- [ ] build `semibase.exe`; `--help` prints no password; `version` prints a revision
+      (poisoned-env grep: no match; redirect grep: 0 escape bytes; `create --help` exits 0;
+      unmapped-command error path asserted by the Task 2 unit test)
+- [x] `go test ./...`, `go vet ./...`, `golangci-lint run` — all exit 0
+- [x] `gofmt -l .` reports nothing
+- [x] build `semibase.exe`; `--help` prints no password; `version` prints a revision
+      (prints the vcs revision `876654d2…` via the `debug.ReadBuildInfo` fallback)
 
 ### Task 11: Update documentation
 
-- [ ] `CLAUDE.md`: `version` command in Run, lint install + `golangci-lint run` in Format/Test,
+- [x] `CLAUDE.md`: `version` command in Run, lint install + `golangci-lint run` in Format/Test,
       release build line
       `go build -ldflags "-X main.revision=<rev>" -o semibase.exe ./cmd/semibase`, CI note
-- [ ] `docs/deployment.md` (stays Russian, no architecture links): add a `version` row to the
+- [x] `docs/deployment.md` (stays Russian, no architecture links): add a `version` row to the
       «Команды» table (lines 25-33); mention `semibase version` in support context
-- [ ] `docs/architecture/provisioning.md`: validation lives in the provision package; quoting
+- [x] `docs/architecture/provisioning.md`: validation lives in the provision package; quoting
       via `pgx.Identifier` + `standard_conforming_strings`; context timeout; service-manager
       restart
-- [ ] move this plan to `docs/plans/completed/`
+- [ ] move this plan to `docs/plans/completed/` (deferred to delivery)
 
 ## Post-Completion
 
@@ -392,3 +408,7 @@ it from now on.
   workflow's acceptance. Nothing is pushed as part of this plan.
 - Release ldflags wiring belongs to whatever release process the repository adopts later; until
   then `debug.ReadBuildInfo` covers locally built binaries.
+
+**Executed by exec:**
+
+- branch: audit-remediation

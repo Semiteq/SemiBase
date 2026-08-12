@@ -4,12 +4,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"regexp"
+	"os/signal"
+	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/Semiteq/SemiBase/internal/provision"
 )
@@ -24,6 +28,7 @@ Commands:
   create   create the archive database, the roles, the access chain, and semiplot_tags
   verify   post-writer checks: archive tables exist, the reader reads and cannot write
   all      config + create + verify
+  version  print the build revision
 
 Every step checks before it creates; re-running any command is safe. Passwords of
 existing roles change only when the corresponding flag or variable is set.
@@ -38,81 +43,204 @@ directory (flag wins over environment, environment wins over .env):
 Run 'semibase <command> --help' for the command's flags.
 `
 
-var databaseNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+// revision identifies the build; a release sets it with
+// -ldflags "-X main.revision=...". Empty means "not embedded".
+var revision string
 
-func main() {
-	provision.EnableColors()
-	loadDotEnv()
-	if len(os.Args) < 2 {
-		fmt.Print(usage)
-		os.Exit(2)
-	}
-	command := os.Args[1]
-	switch command {
-	case "config", "create", "verify", "all":
-	case "-h", "--help", "help":
-		fmt.Print(usage)
-		return
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", command, usage)
-		os.Exit(2)
-	}
+// phaseTimeout bounds every command. Provisioning is DDL on empty objects, so
+// a generous fixed bound is enough.
+const phaseTimeout = 5 * time.Minute
 
-	options, err := parseOptions(command, os.Args[2:])
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
+// output receives the success reporting (help text, version, the final Done
+// line) and errorOutput the usage and flag-parse reporting. Variables so tests
+// capture the output instead of writing to the test log.
+var (
+	output      io.Writer = os.Stdout
+	errorOutput io.Writer = os.Stderr
+)
 
-	if err := run(command, options); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
-	fmt.Printf("\nDone: %s completed against %s:%d/%s.\n", command, options.Host, options.Port, options.Database)
+// commands is the single source for command validation and dispatch. A name
+// missing here is an error, never a fallback to All. Production code never
+// writes this map; only tests insert stub entries, which is why those tests
+// cannot run in parallel.
+var commands = map[string]func(context.Context, provision.Options) error{
+	"config": func(ctx context.Context, options provision.Options) error { return options.Config(ctx) },
+	"create": func(ctx context.Context, options provision.Options) error { return options.Create(ctx) },
+	"verify": func(ctx context.Context, options provision.Options) error { return options.Verify(ctx) },
+	"all":    func(ctx context.Context, options provision.Options) error { return options.All(ctx) },
 }
 
-func parseOptions(command string, arguments []string) (provision.Options, error) {
-	flags := flag.NewFlagSet(command, flag.ExitOnError)
-	options := provision.Options{}
+func main() {
+	// .env first: EnableColors honors a NO_COLOR entry that exists only there.
+	loadDotEnv()
+	provision.EnableColors()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	exitCode := run(ctx, os.Args[1:])
+	stop()
+	os.Exit(exitCode)
+}
 
+// run owns the whole command lifecycle and returns the exit code; main alone
+// turns it into os.Exit. Ctrl+C cancels ctx, which cancels the in-flight
+// query through pgx instead of hard-killing the process mid-DDL.
+func run(ctx context.Context, arguments []string) int {
+	if len(arguments) == 0 {
+		fmt.Fprint(errorOutput, usage)
+		return 2
+	}
+	command := arguments[0]
+	switch command {
+	case "help", "-h", "--help":
+		fmt.Fprint(output, usage)
+		return 0
+	case "version", "--version":
+		fmt.Fprintln(output, resolveRevision(revision))
+		return 0
+	}
+
+	execute, known := commands[command]
+	if !known {
+		fmt.Fprintf(errorOutput, "unknown command %q\n\n%s", command, usage)
+		return 2
+	}
+
+	options, err := parseOptions(command, arguments[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	if err != nil {
+		// parse and validation failures are already reported at the flag set's output
+		return 2
+	}
+
+	commandContext, cancel := context.WithTimeout(ctx, phaseTimeout)
+	defer cancel()
+	if err := execute(commandContext, options); err != nil {
+		fmt.Fprintln(errorOutput, "error:", err)
+		return 1
+	}
+	fmt.Fprintf(output, "\nDone: %s completed against %s:%d/%s.\n",
+		command, options.Host, options.Port, options.Database)
+	return 0
+}
+
+// resolveRevision returns the embedded ldflags revision verbatim when a
+// release set it; otherwise it falls back to the VCS revision the Go
+// toolchain recorded at build time. Test binaries and non-VCS builds resolve
+// to "unknown".
+func resolveRevision(embedded string) string {
+	if embedded != "" {
+		return embedded
+	}
+	buildInfo, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	return revisionFromSettings(buildInfo.Settings)
+}
+
+// revisionFromSettings extracts the recorded VCS revision, with a "-dirty"
+// suffix for a modified working tree; no recorded revision yields "unknown".
+func revisionFromSettings(settings []debug.BuildSetting) string {
+	vcsRevision := ""
+	dirty := false
+	for _, setting := range settings {
+		switch setting.Key {
+		case "vcs.revision":
+			vcsRevision = setting.Value
+		case "vcs.modified":
+			dirty = setting.Value == "true"
+		}
+	}
+	if vcsRevision == "" {
+		return "unknown"
+	}
+	if dirty {
+		return vcsRevision + "-dirty"
+	}
+	return vcsRevision
+}
+
+// newFlagSet registers the shared command flags on a ContinueOnError set.
+// Password flags default to empty so the usage output can only ever show the
+// environment variable names, never their values.
+func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	flags.SetOutput(errorOutput)
 	flags.StringVar(&options.Host, "host", "localhost", "server host")
 	flags.IntVar(&options.Port, "port", 5432, "server port")
 	flags.StringVar(&options.Database, "database", "scada_archive", "archive database name")
 	flags.StringVar(&options.SuperUser, "superuser", "postgres", "superuser role name")
-	flags.StringVar(&options.SuperPassword, "super-password",
-		os.Getenv("SEMIBASE_SUPER_PASSWORD"), "superuser password (env SEMIBASE_SUPER_PASSWORD)")
-	flags.StringVar(&options.WriterPassword, "writer-password",
-		os.Getenv("SEMIBASE_WRITER_PASSWORD"), "scada_writer password (env SEMIBASE_WRITER_PASSWORD)")
-	flags.StringVar(&options.ReaderPassword, "reader-password",
-		os.Getenv("SEMIBASE_READER_PASSWORD"), "semiplot_reader password (env SEMIBASE_READER_PASSWORD)")
-	flags.StringVar(&options.AdminPassword, "admin-password",
-		os.Getenv("SEMIBASE_ADMIN_PASSWORD"), "semiplot_admin password (env SEMIBASE_ADMIN_PASSWORD)")
+	flags.StringVar(&options.SuperPassword, "super-password", "",
+		"superuser password (env SEMIBASE_SUPER_PASSWORD)")
+	flags.StringVar(&options.WriterPassword, "writer-password", "",
+		"scada_writer password (env SEMIBASE_WRITER_PASSWORD)")
+	flags.StringVar(&options.ReaderPassword, "reader-password", "",
+		"semiplot_reader password (env SEMIBASE_READER_PASSWORD)")
+	flags.StringVar(&options.AdminPassword, "admin-password", "",
+		"semiplot_admin password (env SEMIBASE_ADMIN_PASSWORD)")
 	flags.IntVar(&options.ExpectedMajor, "expected-major", 0,
 		"required server major version; 0 accepts any major >= 14")
 	flags.StringVar(&options.ServiceName, "service", "",
 		"Windows service to restart after config, e.g. postgresql-x64-17")
+	return flags
+}
 
+func parseOptions(command string, arguments []string) (provision.Options, error) {
+	options := provision.Options{}
+	flags := newFlagSet(command, &options)
 	if err := flags.Parse(arguments); err != nil {
 		return provision.Options{}, err
 	}
-	if !databaseNamePattern.MatchString(options.Database) {
-		return provision.Options{}, fmt.Errorf("database name %q must match %s", options.Database, databaseNamePattern)
+	resolvePasswordsFromEnvironment(&options)
+	if err := options.Validate(); err != nil {
+		fmt.Fprintln(flags.Output(), err)
+		return provision.Options{}, err
 	}
 	return options, nil
 }
 
+// resolvePasswordsFromEnvironment fills every password the flags left empty
+// from its SEMIBASE_* variable: flag wins over environment, environment wins
+// over .env (already merged into the process environment by loadDotEnv).
+func resolvePasswordsFromEnvironment(options *provision.Options) {
+	if options.SuperPassword == "" {
+		options.SuperPassword = os.Getenv("SEMIBASE_SUPER_PASSWORD")
+	}
+	if options.WriterPassword == "" {
+		options.WriterPassword = os.Getenv("SEMIBASE_WRITER_PASSWORD")
+	}
+	if options.ReaderPassword == "" {
+		options.ReaderPassword = os.Getenv("SEMIBASE_READER_PASSWORD")
+	}
+	if options.AdminPassword == "" {
+		options.AdminPassword = os.Getenv("SEMIBASE_ADMIN_PASSWORD")
+	}
+}
+
+const dotEnvName = ".env"
+
 // loadDotEnv applies variables from a .env file in the working directory.
 // Variables already present in the process environment win; flags win over both.
+// A missing file is normal and silent; any other failure is reported so an
+// unreadable file does not degrade into a misleading missing-password error.
 func loadDotEnv() {
-	file, err := os.Open(".env")
+	file, err := os.Open(dotEnvName)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(errorOutput, "warning: cannot open %s: %v\n", dotEnvName, err)
+		}
 		return
 	}
 	defer file.Close()
-	applyEnv(file)
+	if err := applyEnv(file); err != nil {
+		fmt.Fprintf(errorOutput, "warning: cannot apply %s: %v\n", dotEnvName, err)
+	}
 }
 
-func applyEnv(reader io.Reader) {
+// applyEnv parses name=value lines from reader into the process environment
+// and returns the scanner's read error or a failed variable assignment.
+func applyEnv(reader io.Reader) error {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -124,26 +252,25 @@ func applyEnv(reader io.Reader) {
 			continue
 		}
 		name = strings.TrimSpace(name)
-		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		value = trimMatchingQuotes(strings.TrimSpace(value))
 		if name == "" {
 			continue
 		}
 		if _, exists := os.LookupEnv(name); !exists {
-			os.Setenv(name, value)
+			if err := os.Setenv(name, value); err != nil {
+				return fmt.Errorf("setting %s: %w", name, err)
+			}
 		}
 	}
+	return scanner.Err()
 }
 
-func run(command string, options provision.Options) error {
-	ctx := context.Background()
-	switch command {
-	case "config":
-		return options.Config(ctx)
-	case "create":
-		return options.Create(ctx)
-	case "verify":
-		return options.Verify(ctx)
-	default:
-		return options.All(ctx)
+// trimMatchingQuotes unwraps one pair of surrounding quotes ("..." or '...').
+// Only a matching pair is removed, so a password that legitimately starts or
+// ends with a quote character passes through intact.
+func trimMatchingQuotes(value string) string {
+	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+		return value[1 : len(value)-1]
 	}
+	return value
 }

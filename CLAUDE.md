@@ -12,17 +12,27 @@ All commands run from the repository root.
 
 ```powershell
 go build -o semibase.exe ./cmd/semibase
+go build -ldflags "-X main.revision=<rev>" -o semibase.exe ./cmd/semibase   # release: embed the revision
 ```
+
+Without ldflags, `version` falls back to the VCS revision recorded by the Go toolchain.
 
 ## Test
 
 ```powershell
 go test ./...
 go vet ./...
+golangci-lint run
 ```
 
-Unit tests live beside the source (`internal/provision/*_test.go`), table-driven. There are no
-database-touching tests; the `verify` command is the integration check, run against a live server.
+golangci-lint is pinned to 2.12.2 (`winget install GolangCI.golangci-lint --version 2.12.2`);
+config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build`, `go test -race`,
+and the same lint on `windows-latest` for every push and pull request — the `x/sys/windows`
+imports do not build on a Linux runner.
+
+Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
+table-driven. There are no database-touching tests; the `verify` command is the integration
+check, run against a live server.
 
 ## Format
 
@@ -33,9 +43,10 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 ## Run
 
 ```powershell
-.\semibase.exe --help                     # commands: config | create | verify | all
+.\semibase.exe --help                     # commands: config | create | verify | all | version
 .\semibase.exe create --port 15432 --database semiplot_dev --expected-major 14
 .\semibase.exe verify --reader-password <pw>   # post-writer proof of the reader access chain
+.\semibase.exe version                    # print the build revision
 ```
 
 Passwords come from flags, env, or a `.env` file in the working directory (flag > env > `.env`;
