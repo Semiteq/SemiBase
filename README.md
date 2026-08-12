@@ -1,7 +1,9 @@
 # SemiBase
 
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%20floor%2014-336791)
+[![Coverage Status](https://coveralls.io/repos/github/Semiteq/SemiBase/badge.svg?branch=master)](https://coveralls.io/github/Semiteq/SemiBase?branch=master)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Semiteq/SemiBase)](https://goreportcard.com/report/github.com/Semiteq/SemiBase)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-336791)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 <div align="center">
@@ -13,50 +15,21 @@ SemiBase — разворачиваемый PostgreSQL-сервис для ус�
 
 [Документация](./docs/readme.md)
 
-## Структура репозитория
-
-### Утилита развёртывания
-
-- Каталоги: `cmd/`, `internal/`
-- Исходный код `semibase.exe` — утилиты развёртывания экземпляра: конфигурация сервера,
-  архивная база, роли, права доступа. Команды и порядок применения описаны в
-  [документации по развёртыванию](./docs/deployment.md).
-
-### SQL
-
-- Каталог: `sql/`
-- Объекты, добавляемые в архивную базу помимо создаваемых SCADA. Встраиваются в утилиту
-  при сборке.
-
-### Документация
-
-- Каталог: `docs/`
-- Документация проекта: [развёртывание](./docs/deployment.md), см. [каталог](./docs/readme.md).
-
 ## Требования
 
 | Компонент  | Требование                                       |
 | ---------- | ------------------------------------------------ |
-| СУБД       | PostgreSQL 17; минимально поддерживаемая — 14    |
-| Писатель   | Simple-Scada 2 с системой архивации v2           |
+| DB         | PostgreSQL 14+                                   |
+| Writer     | Simple-Scada 2 с системой архивации v2           |
 
 Утилита развёртывания — один исполняемый файл, среда исполнения не требуется.
 
 ## Быстрое развёртывание
 
 ```powershell
-# установка СУБД
+# установка pgsql
 winget install --id PostgresPro.Standard.17 --exact
 
 # конфигурация сервера, архивная база, роли, права
 .\semibase.exe all
 ```
-
-Пароли ролей передаются флагами или переменными окружения. После первого запуска проекта
-Simple-Scada против базы цепочка доступа проверяется командой `semibase verify`. Порядок
-ввода в эксплуатацию, флаги и переменные — в
-[документации по развёртыванию](./docs/deployment.md); справка: `semibase --help`.
-
-## Лицензия
-
-[MIT](./LICENSE)
