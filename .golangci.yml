@@ -1,0 +1,18 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errorlint
+    - gocritic
+    - gosec
+    - govet
+    - modernize
+    - revive
+    - staticcheck
+    - testifylint
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec

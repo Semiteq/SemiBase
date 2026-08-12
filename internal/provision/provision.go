@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -43,6 +44,18 @@ type Options struct {
 	ServiceName    string
 }
 
+// databaseNamePattern is the identifier gate in front of every DDL statement
+// that interpolates the database name.
+var databaseNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+
+// Validate checks the invariants the phases rely on before any SQL runs.
+func (o Options) Validate() error {
+	if !databaseNamePattern.MatchString(o.Database) {
+		return fmt.Errorf("database name %q must match %s", o.Database, databaseNamePattern)
+	}
+	return nil
+}
+
 // All runs config, create, and verify in order. A writer that has not run yet
 // is reported as a state, not a failure.
 func (o Options) All(ctx context.Context) error {
@@ -71,16 +84,48 @@ func (o Options) connect(ctx context.Context, database, user, password string) (
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %s:%d/%s as %s: %w", o.Host, o.Port, database, user, err)
 	}
+	// escapeLiteral relies on this session setting: with conforming strings on,
+	// a backslash is an ordinary character inside '...' literals, so doubling
+	// single quotes is a complete escape. USERSET, so no privilege is needed.
+	if _, err := conn.Exec(ctx, "SET standard_conforming_strings = on"); err != nil {
+		_ = conn.Close(ctx)
+		return nil, fmt.Errorf("setting standard_conforming_strings: %w", err)
+	}
 	return conn, nil
 }
 
+// escapeLiteral doubles single quotes. This is sufficient in every server mode
+// only because connect forces standard_conforming_strings = on for the session;
+// under that setting backslashes carry no escape meaning inside '...' literals.
 func escapeLiteral(value string) string {
 	return strings.ReplaceAll(value, "'", "''")
+}
+
+// The statement builders below are the only places a database name or a
+// password reaches DDL text; tests pin their output for hostile input.
+
+func grantConnectStatement(database, role string) string {
+	return fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s", pgx.Identifier{database}.Sanitize(), role)
+}
+
+func createDatabaseStatement(database string) string {
+	return "CREATE DATABASE " + pgx.Identifier{database}.Sanitize()
+}
+
+func createRoleStatement(name, password string) string {
+	return fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s'", name, escapeLiteral(password))
+}
+
+func alterRolePasswordStatement(name, password string) string {
+	return fmt.Sprintf("ALTER ROLE %s PASSWORD '%s'", name, escapeLiteral(password))
 }
 
 // Create provisions the archive database, the three roles, the grants, the
 // default privileges, and semiplot_tags. Every step checks before it creates.
 func (o Options) Create(ctx context.Context) error {
+	if err := o.Validate(); err != nil {
+		return err
+	}
 	step("Phase create: database %s, roles, access chain", o.Database)
 
 	super, err := o.connect(ctx, "postgres", o.SuperUser, o.SuperPassword)
@@ -111,7 +156,7 @@ func (o Options) Create(ctx context.Context) error {
 		return err
 	}
 	for _, role := range roles {
-		grant := fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s", o.Database, role.name)
+		grant := grantConnectStatement(o.Database, role.name)
 		if _, err := super.Exec(ctx, grant); err != nil {
 			return fmt.Errorf("%s: %w", grant, err)
 		}
@@ -188,14 +233,12 @@ func ensureRole(ctx context.Context, conn *pgx.Conn, name, password string) erro
 	case !exists && password == "":
 		return fmt.Errorf("role %s does not exist and no password was given to create it", name)
 	case !exists:
-		if _, err := conn.Exec(ctx,
-			fmt.Sprintf("CREATE ROLE %s LOGIN PASSWORD '%s'", name, escapeLiteral(password))); err != nil {
+		if _, err := conn.Exec(ctx, createRoleStatement(name, password)); err != nil {
 			return fmt.Errorf("creating role %s: %w", name, err)
 		}
 		ok("role %s created", name)
 	case password != "":
-		if _, err := conn.Exec(ctx,
-			fmt.Sprintf("ALTER ROLE %s PASSWORD '%s'", name, escapeLiteral(password))); err != nil {
+		if _, err := conn.Exec(ctx, alterRolePasswordStatement(name, password)); err != nil {
 			return fmt.Errorf("updating role %s password: %w", name, err)
 		}
 		ok("role %s exists, password updated", name)
@@ -215,7 +258,7 @@ func (o Options) ensureDatabase(ctx context.Context, conn *pgx.Conn) error {
 		ok("database %s exists", o.Database)
 		return nil
 	}
-	if _, err := conn.Exec(ctx, "CREATE DATABASE "+o.Database); err != nil {
+	if _, err := conn.Exec(ctx, createDatabaseStatement(o.Database)); err != nil {
 		return fmt.Errorf("creating database %s: %w", o.Database, err)
 	}
 	ok("database %s created", o.Database)
@@ -223,6 +266,9 @@ func (o Options) ensureDatabase(ctx context.Context, conn *pgx.Conn) error {
 }
 
 func (o Options) verify(ctx context.Context, asPartOfAll bool) error {
+	if err := o.Validate(); err != nil {
+		return err
+	}
 	step("Phase verify: post-writer checks")
 
 	archive, err := o.connect(ctx, o.Database, o.SuperUser, o.SuperPassword)

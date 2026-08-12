@@ -1,0 +1,31 @@
+name: CI
+
+# push is limited to master so a same-repo pull request runs once (the
+# pull_request event), not twice.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build:
+    # windows-latest: internal/provision imports golang.org/x/sys/windows,
+    # which does not build on a Linux runner.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2

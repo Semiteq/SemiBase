@@ -12,6 +12,8 @@ func TestApplyEnv(t *testing.T) {
 		"",
 		"SEMIBASE_TEST_PLAIN=secret",
 		"SEMIBASE_TEST_QUOTED=\"qu oted\"",
+		"SEMIBASE_TEST_TRAILING_QUOTE=abc'",
+		"SEMIBASE_TEST_LEADING_QUOTE=\"abc",
 		"SEMIBASE_TEST_SPACED = padded ",
 		"SEMIBASE_TEST_PRESET=from-file",
 		"not-a-pair",
@@ -19,12 +21,17 @@ func TestApplyEnv(t *testing.T) {
 	}, "\n"))
 
 	t.Setenv("SEMIBASE_TEST_PRESET", "from-process")
-	for _, name := range []string{"SEMIBASE_TEST_PLAIN", "SEMIBASE_TEST_QUOTED", "SEMIBASE_TEST_SPACED"} {
-		t.Setenv(name, "")
-		os.Unsetenv(name)
-	}
+	unsetEnvForTest(t,
+		"SEMIBASE_TEST_PLAIN",
+		"SEMIBASE_TEST_QUOTED",
+		"SEMIBASE_TEST_TRAILING_QUOTE",
+		"SEMIBASE_TEST_LEADING_QUOTE",
+		"SEMIBASE_TEST_SPACED",
+	)
 
-	applyEnv(content)
+	if err := applyEnv(content); err != nil {
+		t.Fatalf("applyEnv returned %v, want nil", err)
+	}
 
 	tests := []struct {
 		name string
@@ -32,6 +39,10 @@ func TestApplyEnv(t *testing.T) {
 	}{
 		{"SEMIBASE_TEST_PLAIN", "secret"},
 		{"SEMIBASE_TEST_QUOTED", "qu oted"},
+		// Only a matching surrounding pair unwraps; a lone quote is part of
+		// the value — passwords may legitimately start or end with one.
+		{"SEMIBASE_TEST_TRAILING_QUOTE", "abc'"},
+		{"SEMIBASE_TEST_LEADING_QUOTE", "\"abc"},
 		{"SEMIBASE_TEST_SPACED", "padded"},
 		{"SEMIBASE_TEST_PRESET", "from-process"},
 	}
@@ -41,5 +52,33 @@ func TestApplyEnv(t *testing.T) {
 				t.Errorf("%s = %q, want %q", tt.name, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadDotEnvAbsentFileIsSilent(t *testing.T) {
+	t.Chdir(t.TempDir())
+	buffer := captureErrorOutput(t)
+
+	loadDotEnv()
+
+	if got := buffer.String(); got != "" {
+		t.Errorf("loadDotEnv wrote %q for an absent file, want no output", got)
+	}
+}
+
+func TestLoadDotEnvDirectoryReportsReadError(t *testing.T) {
+	t.Chdir(t.TempDir())
+	// On Windows os.Open succeeds on a directory; the read fails, exercising
+	// the scanner.Err() warning path.
+	if err := os.Mkdir(dotEnvName, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	buffer := captureErrorOutput(t)
+
+	loadDotEnv()
+
+	got := buffer.String()
+	if !strings.Contains(got, "warning:") || !strings.Contains(got, dotEnvName) {
+		t.Errorf("loadDotEnv output = %q, want a warning naming %s", got, dotEnvName)
 	}
 }

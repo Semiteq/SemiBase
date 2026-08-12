@@ -14,17 +14,45 @@ line, deliberately outside the tool — OS package management is not database pr
 
 | Command | What it does | When |
 | --- | --- | --- |
-| `config` | Applies the `ALTER SYSTEM` deltas from `configuration.md`; restarts the Windows service when `--service` names one | Production and dedicated benches. Never against a shared dev server — it retunes the whole instance |
+| `config` | Applies the `ALTER SYSTEM` deltas from `configuration.md`; when `--service` names one, restarts the Windows service through the service manager (`x/sys/windows/svc/mgr`: stop, wait for `Stopped`, start, wait for `Running`) | Production and dedicated benches. Never against a shared dev server — it retunes the whole instance |
 | `create` | Creates the archive database, the three roles, the grants, the default privileges, and `semiplot_tags` | Before the SCADA's first start |
 | `verify` | Proves the reader access chain against the tables the writer created | After the SCADA's first start |
 | `all` | `config` + `create` + `verify`; `verify` reports "writer has not run" as a distinct state, not a failure | Fresh instance |
+
+`version` (or `--version`) prints the build revision: the ldflags value
+(`-X main.revision=...`) when a release sets it, otherwise the VCS revision from
+`debug.ReadBuildInfo` with a `-dirty` suffix for a modified tree.
 
 Every step checks before it creates, so re-running any command is safe. Role passwords are set
 only when the corresponding flag or environment variable is present (`SEMIBASE_SUPER_PASSWORD`,
 `SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_READER_PASSWORD`, `SEMIBASE_ADMIN_PASSWORD`); a `.env`
 file in the working directory is read as the lowest-precedence source (flag > environment >
 `.env`; `.env.example` is the template, `.env` is gitignored). A run without passwords leaves
-existing credentials untouched.
+existing credentials untouched. Flag usage output shows only the environment variable names,
+never their values.
+
+## Invariants the provision package owns
+
+The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
+
+- **Database-name validation.** `Options.Validate()` checks `Database` against
+  `^[a-z_][a-z0-9_]*$` and runs first in every phase (`Config`, `Create`, `verify`). The
+  pattern lives only in `internal/provision`; the CLI calls the same method for the friendly
+  early error.
+- **Identifier quoting.** Every interpolation of the database name into DDL goes through
+  `pgx.Identifier{...}.Sanitize()`. The connection URL is not sanitized — `url.URL` escapes
+  the path itself, and quoted identifiers do not belong in it.
+- **Literal escaping.** `connect` issues `SET standard_conforming_strings = on` for the
+  session, which makes the quote-doubling `escapeLiteral` sufficient in every server mode,
+  including backslash-containing passwords.
+- **Cancellable execution.** Every phase honors its context: cancellation stops the
+  in-flight query through pgx instead of killing the process mid-DDL. The context itself —
+  `signal.NotifyContext(..., os.Interrupt)` plus the five-minute per-command timeout
+  (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`.
+- **Service restart.** `restartService` talks to the Windows service manager directly
+  (skip the stop when already stopped, otherwise stop and poll until `Stopped`; start and
+  poll until `Running`, failing if the service falls back to `Stopped`; both waits bounded
+  by the command context) — typed errors, no shell-out, no console-encoding decoding.
 
 ## The reader-access chain
 
