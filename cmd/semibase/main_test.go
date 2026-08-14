@@ -19,7 +19,6 @@ var passwordEnvironmentNames = []string{
 	"SEMIBASE_SUPER_PASSWORD",
 	"SEMIBASE_WRITER_PASSWORD",
 	"SEMIBASE_READER_PASSWORD",
-	"SEMIBASE_ADMIN_PASSWORD",
 }
 
 // captureOutput redirects the package success stream into a buffer for the
@@ -33,8 +32,7 @@ func captureOutput(t *testing.T) *bytes.Buffer {
 	return buffer
 }
 
-// captureErrorOutput redirects the package error stream into a buffer for the
-// duration of the test. Tests mutating it must not run in parallel.
+// Same contract as captureOutput, for the error stream.
 func captureErrorOutput(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	buffer := &bytes.Buffer{}
@@ -65,7 +63,6 @@ func TestFlagUsageHidesPasswordValues(t *testing.T) {
 		"SEMIBASE_SUPER_PASSWORD":  "hunter2-super",
 		"SEMIBASE_WRITER_PASSWORD": "hunter2-writer",
 		"SEMIBASE_READER_PASSWORD": "hunter2-reader",
-		"SEMIBASE_ADMIN_PASSWORD":  "hunter2-admin",
 	}
 	for name, value := range secrets {
 		t.Setenv(name, value)

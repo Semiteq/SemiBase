@@ -24,7 +24,8 @@ Usage:
   semibase <command> [flags]
 
 Commands:
-  config   apply the server configuration deltas (ALTER SYSTEM); service restart required
+  config   apply the server configuration deltas (ALTER SYSTEM + reload);
+           shared_buffers takes effect at the next service restart
   create   create the archive database, the roles, the access chain, and semiplot_tags
   verify   post-writer checks: archive tables exist, the reader reads and cannot write
   all      config + create + verify
@@ -38,7 +39,6 @@ directory (flag wins over environment, environment wins over .env):
   --super-password    SEMIBASE_SUPER_PASSWORD    superuser
   --writer-password   SEMIBASE_WRITER_PASSWORD   scada_writer
   --reader-password   SEMIBASE_READER_PASSWORD   semiplot_reader
-  --admin-password    SEMIBASE_ADMIN_PASSWORD    semiplot_admin
 
 Run 'semibase <command> --help' for the command's flags.
 `
@@ -61,8 +61,7 @@ var (
 
 // commands is the single source for command validation and dispatch. A name
 // missing here is an error, never a fallback to All. Production code never
-// writes this map; only tests insert stub entries, which is why those tests
-// cannot run in parallel.
+// writes this map; only tests insert stub entries.
 var commands = map[string]func(context.Context, provision.Options) error{
 	"config": func(ctx context.Context, options provision.Options) error { return options.Config(ctx) },
 	"create": func(ctx context.Context, options provision.Options) error { return options.Create(ctx) },
@@ -71,9 +70,7 @@ var commands = map[string]func(context.Context, provision.Options) error{
 }
 
 func main() {
-	// .env first: EnableColors honors a NO_COLOR entry that exists only there.
 	loadDotEnv()
-	provision.EnableColors()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	exitCode := run(ctx, os.Args[1:])
 	stop()
@@ -139,8 +136,6 @@ func resolveRevision(embedded string) string {
 	return revisionFromSettings(buildInfo.Settings)
 }
 
-// revisionFromSettings extracts the recorded VCS revision, with a "-dirty"
-// suffix for a modified working tree; no recorded revision yields "unknown".
 func revisionFromSettings(settings []debug.BuildSetting) string {
 	vcsRevision := ""
 	dirty := false
@@ -177,12 +172,8 @@ func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 		"scada_writer password (env SEMIBASE_WRITER_PASSWORD)")
 	flags.StringVar(&options.ReaderPassword, "reader-password", "",
 		"semiplot_reader password (env SEMIBASE_READER_PASSWORD)")
-	flags.StringVar(&options.AdminPassword, "admin-password", "",
-		"semiplot_admin password (env SEMIBASE_ADMIN_PASSWORD)")
 	flags.IntVar(&options.ExpectedMajor, "expected-major", 0,
 		"required server major version; 0 accepts any major >= 14")
-	flags.StringVar(&options.ServiceName, "service", "",
-		"Windows service to restart after config, e.g. postgresql-x64-17")
 	return flags
 }
 
@@ -201,8 +192,7 @@ func parseOptions(command string, arguments []string) (provision.Options, error)
 }
 
 // resolvePasswordsFromEnvironment fills every password the flags left empty
-// from its SEMIBASE_* variable: flag wins over environment, environment wins
-// over .env (already merged into the process environment by loadDotEnv).
+// from its SEMIBASE_* variable.
 func resolvePasswordsFromEnvironment(options *provision.Options) {
 	if options.SuperPassword == "" {
 		options.SuperPassword = os.Getenv("SEMIBASE_SUPER_PASSWORD")
@@ -212,9 +202,6 @@ func resolvePasswordsFromEnvironment(options *provision.Options) {
 	}
 	if options.ReaderPassword == "" {
 		options.ReaderPassword = os.Getenv("SEMIBASE_READER_PASSWORD")
-	}
-	if options.AdminPassword == "" {
-		options.AdminPassword = os.Getenv("SEMIBASE_ADMIN_PASSWORD")
 	}
 }
 
@@ -238,8 +225,6 @@ func loadDotEnv() {
 	}
 }
 
-// applyEnv parses name=value lines from reader into the process environment
-// and returns the scanner's read error or a failed variable assignment.
 func applyEnv(reader io.Reader) error {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
@@ -265,9 +250,8 @@ func applyEnv(reader io.Reader) error {
 	return scanner.Err()
 }
 
-// trimMatchingQuotes unwraps one pair of surrounding quotes ("..." or '...').
-// Only a matching pair is removed, so a password that legitimately starts or
-// ends with a quote character passes through intact.
+// Only a matching pair of surrounding quotes ("..." or '...') is removed, so
+// a password that legitimately starts or ends with a quote passes intact.
 func trimMatchingQuotes(value string) string {
 	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
 		return value[1 : len(value)-1]

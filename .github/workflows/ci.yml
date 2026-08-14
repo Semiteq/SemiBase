@@ -9,8 +9,6 @@ on:
 
 jobs:
   build:
-    # windows-latest: internal/provision imports golang.org/x/sys/windows,
-    # which does not build on a Linux runner.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -29,3 +27,44 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
+
+  linux:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: ci-super
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      # The bench path: the same binary provisions the service container the
+      # way it provisions production. Run twice to prove idempotency. "all"
+      # ends with verify, which reports "writer has not run" as a state, not
+      # a failure - the expected order before any SCADA has started.
+      - name: Provision the service container
+        env:
+          SEMIBASE_SUPER_PASSWORD: ci-super
+          SEMIBASE_WRITER_PASSWORD: ci-writer
+          SEMIBASE_READER_PASSWORD: ci-reader
+        run: |
+          go build -o semibase ./cmd/semibase
+          ./semibase all --database semiplot_dev --expected-major 17
+          ./semibase all --database semiplot_dev --expected-major 17

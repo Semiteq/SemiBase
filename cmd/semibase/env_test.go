@@ -39,8 +39,6 @@ func TestApplyEnv(t *testing.T) {
 	}{
 		{"SEMIBASE_TEST_PLAIN", "secret"},
 		{"SEMIBASE_TEST_QUOTED", "qu oted"},
-		// Only a matching surrounding pair unwraps; a lone quote is part of
-		// the value — passwords may legitimately start or end with one.
 		{"SEMIBASE_TEST_TRAILING_QUOTE", "abc'"},
 		{"SEMIBASE_TEST_LEADING_QUOTE", "\"abc"},
 		{"SEMIBASE_TEST_SPACED", "padded"},

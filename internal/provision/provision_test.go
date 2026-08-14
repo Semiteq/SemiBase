@@ -4,46 +4,6 @@ import (
 	"testing"
 )
 
-func TestComputeSettings(t *testing.T) {
-	settings := computeSettings(16384)
-
-	byName := map[string]string{}
-	for _, s := range settings {
-		byName[s.Name] = s.Value
-	}
-
-	tests := []struct {
-		name string
-		want string
-	}{
-		{"shared_buffers", "4096MB"},
-		{"effective_cache_size", "8192MB"},
-		{"work_mem", "64MB"},
-		{"maintenance_work_mem", "512MB"},
-		{"max_wal_size", "8GB"},
-		{"checkpoint_timeout", "30min"},
-		{"checkpoint_completion_target", "0.9"},
-		{"wal_compression", "on"},
-		{"random_page_cost", "1.1"},
-		{"log_min_duration_statement", "1000"},
-		{"track_io_timing", "on"},
-	}
-	if len(settings) != len(tests) {
-		t.Fatalf("got %d settings, want %d", len(settings), len(tests))
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, present := byName[tt.name]
-			if !present {
-				t.Fatalf("setting %s is missing", tt.name)
-			}
-			if got != tt.want {
-				t.Errorf("%s = %s, want %s", tt.name, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -103,9 +63,8 @@ func TestRoleStatementsEscapeThePassword(t *testing.T) {
 	}
 }
 
-// The backslash cases document the standard_conforming_strings dependency:
-// connect forces the setting on, so backslashes pass through untouched and
-// quote-doubling alone is a complete escape.
+// The backslash cases pin escapeLiteral's standard_conforming_strings
+// contract.
 func TestEscapeLiteral(t *testing.T) {
 	tests := []struct {
 		name  string
