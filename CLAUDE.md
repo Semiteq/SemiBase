@@ -19,6 +19,38 @@ go build -ldflags "-X main.revision=<rev>" -o semibase.exe ./cmd/semibase   # re
 
 Without ldflags, `version` falls back to the VCS revision recorded by the Go toolchain.
 
+## Release
+
+`.github/workflows/release.yml` fires on a `v*` tag push. One `ubuntu-latest` job
+cross-compiles `windows/amd64` and `linux/amd64` with `CGO_ENABLED=0` — the module is pure
+`pgx`, so native runners are CI's job, not the release's — and attaches
+`semibase_<version>_<goos>_amd64[.exe]` plus a sha256 `checksums.txt` to the GitHub release.
+`-X main.revision=<tag>` is embedded, so `semibase version` prints the tag.
+
+The annotated tag carries the release text: its subject line becomes the release name,
+everything after the first blank line becomes the body, verbatim. Blank lines survive, so
+write the body in sections.
+
+```bash
+git tag -a v0.2.0 -F - <<'EOF'
+v0.2.0 — short title
+
+**New Features**
+
+* what the user can now do, lowercase [#12](https://github.com/Semiteq/SemiBase/pull/12)
+
+**Fixes**
+
+* what stopped going wrong [#13](https://github.com/Semiteq/SemiBase/pull/13)
+EOF
+git push origin v0.2.0
+```
+
+Bold section labels, not `###` headings: git's default tag cleanup deletes every line
+starting with `#`, which would silently strip the structure out of the annotation.
+A lightweight tag still releases — the name falls back to `SemiBase <tag>`, the body to
+`Release <tag>`.
+
 ## Test
 
 ```powershell
