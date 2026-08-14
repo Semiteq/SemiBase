@@ -18,8 +18,8 @@ SemiBase — разворачиваемый PostgreSQL-сервис для ус�
 
 | Компонент  | Требование                                       |
 | ---------- | ------------------------------------------------ |
-| DB         | PostgreSQL 14+                                   |
-| Writer     | Simple-Scada 2 с системой архивации v2           |
+| DB         | PostgreSQL 17; минимально поддерживаемая — 14    |
+| Writer     | Simple-Scada 2 с архивацией в PostgreSQL         |
 
 Утилита развёртывания — один исполняемый файл, среда исполнения не требуется.
 
@@ -27,7 +27,7 @@ SemiBase — разворачиваемый PostgreSQL-сервис для ус�
 
 ```powershell
 # установка pgsql
-winget install --id PostgresPro.Standard.17 --exact
+winget install --id PostgreSQL.PostgreSQL.17 --exact
 
 # конфигурация сервера, архивная база, роли, права
 .\semibase.exe all

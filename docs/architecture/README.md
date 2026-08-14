@@ -16,10 +16,11 @@ Declarative architecture docs (English, present tense). These describe the syste
 | Area | Decision |
 | --- | --- |
 | Installation | PostgreSQL via `winget`, major version pinned, automatic upgrade disabled; engine install stays outside the tool |
-| Major version | 17 for new installs; floor 14 (SemiPlot needs `date_bin`); vendor floor is 12 |
+| Major version | 17 for new installs, pinned latest; floor 14 (SemiPlot needs `date_bin`; Simple-Scada 2 docs require 14+) |
 | Provisioning tool | Go single binary `semibase.exe` (`pgx/v5`, embedded SQL); no runtime or `psql` on the target machine |
-| Instance configuration | Applied as `ALTER SYSTEM` deltas by `semibase config`, never by editing `postgresql.conf` |
-| Roles | `scada_writer` (SCADA), `semiplot_reader` (viewers, `SELECT` only), `semiplot_admin` (commissioning, owns `semiplot_*`) |
+| Instance configuration | Fixed `ALTER SYSTEM` deltas applied by `semibase config` via `pg_reload_conf()`, never by editing `postgresql.conf`; `shared_buffers` takes effect at the next service restart, reported through `pg_settings.pending_restart` |
+| Hardware floor | Installation machines guarantee 8 GB RAM and 50 GB database disk; memory settings are fixed constants sized to that floor, identical on every machine |
+| Roles | `scada_writer` (SCADA), `semiplot_reader` (viewers, `SELECT` only); `semiplot_*` objects owned by `postgres` — a dedicated owner role appears when a tag-editing mechanism exists |
 | Reader access | `ALTER DEFAULT PRIVILEGES FOR ROLE scada_writer` set **before** the writer first runs |
 | Objects we add | `semiplot_tags` only — no triggers, functions, scheduled jobs, or extensions |
 | Archive schema | Owned by Simple-Scada 2; documented in the SemiPlot repository, never created or altered here |

@@ -15,9 +15,11 @@ its own retention setting.
 
 | Consumer | Role | Access |
 | --- | --- | --- |
-| Simple-Scada 2 (archive system v2) | `scada_writer` | Creates and writes `trends`/`messages` and their partitions; executes retention |
+| Simple-Scada 2 (archives into PostgreSQL) | `scada_writer` | Creates and writes `trends`/`messages` and their partitions; executes retention |
 | SemiPlot (trend viewer) | `semiplot_reader` | `SELECT` on `trends`, `messages`, `semiplot_tags` — nothing else |
-| Commissioning engineer | `semiplot_admin` | Owns the `semiplot_*` objects; not used at runtime |
+
+The `semiplot_*` objects are owned by `postgres`; commissioning fills `semiplot_tags` as the
+superuser. A dedicated owner role appears when a tag-editing mechanism exists to hold it.
 
 The reader credential grants process-history reads and nothing more, which is what makes a
 plaintext password in a client configuration file an acceptable risk.
@@ -39,9 +41,10 @@ silently stop.
 
 The order matters, because the archive tables do not exist until the SCADA has run once.
 
-1. Install the engine: `winget install --id PostgresPro.Standard.17 --exact`.
-2. `semibase config` — apply the configuration deltas, restart the service.
-3. `semibase create` — archive database, all three roles, default privileges, `semiplot_tags`.
+1. Install the engine: `winget install --id PostgreSQL.PostgreSQL.17 --exact`.
+2. `semibase config` — apply the configuration deltas; `shared_buffers` takes effect at the
+   next service restart or reboot, and `verify` warns while it waits.
+3. `semibase create` — archive database, both roles, default privileges, `semiplot_tags`.
 4. Point the Simple-Scada project at the database and start it once. It creates `trends`,
    `messages` and the first daily partitions.
 5. `semibase verify` — prove the reader access chain against the tables the writer created.

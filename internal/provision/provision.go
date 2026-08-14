@@ -17,12 +17,12 @@ import (
 	semibase "github.com/Semiteq/SemiBase"
 )
 
-// Roles of the archive database. The SCADA writes, the viewers read,
-// commissioning owns the semiplot_* objects.
+// Roles of the archive database. The SCADA writes, the viewers read.
+// semiplot_tags stays owned by the superuser; a dedicated owner role returns
+// when a tag-editing mechanism exists to hold it.
 const (
 	WriterRole = "scada_writer"
 	ReaderRole = "semiplot_reader"
-	AdminRole  = "semiplot_admin"
 )
 
 // versionFloor is PostgreSQL 14, the oldest release with date_bin, which the
@@ -39,9 +39,7 @@ type Options struct {
 	SuperPassword  string
 	WriterPassword string
 	ReaderPassword string
-	AdminPassword  string
 	ExpectedMajor  int
-	ServiceName    string
 }
 
 // databaseNamePattern is the identifier gate in front of every DDL statement
@@ -84,9 +82,8 @@ func (o Options) connect(ctx context.Context, database, user, password string) (
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %s:%d/%s as %s: %w", o.Host, o.Port, database, user, err)
 	}
-	// escapeLiteral relies on this session setting: with conforming strings on,
-	// a backslash is an ordinary character inside '...' literals, so doubling
-	// single quotes is a complete escape. USERSET, so no privilege is needed.
+	// escapeLiteral's quote-doubling is complete only with this on (see its
+	// doc). USERSET, so no privilege is needed.
 	if _, err := conn.Exec(ctx, "SET standard_conforming_strings = on"); err != nil {
 		_ = conn.Close(ctx)
 		return nil, fmt.Errorf("setting standard_conforming_strings: %w", err)
@@ -102,7 +99,8 @@ func escapeLiteral(value string) string {
 }
 
 // The statement builders below are the only places a database name or a
-// password reaches DDL text; tests pin their output for hostile input.
+// password reaches DDL text. Role names are package constants, never user
+// input, so only the database name and the password need escaping.
 
 func grantConnectStatement(database, role string) string {
 	return fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s", pgx.Identifier{database}.Sanitize(), role)
@@ -120,7 +118,7 @@ func alterRolePasswordStatement(name, password string) string {
 	return fmt.Sprintf("ALTER ROLE %s PASSWORD '%s'", name, escapeLiteral(password))
 }
 
-// Create provisions the archive database, the three roles, the grants, the
+// Create provisions the archive database, the roles, the grants, the
 // default privileges, and semiplot_tags. Every step checks before it creates.
 func (o Options) Create(ctx context.Context) error {
 	if err := o.Validate(); err != nil {
@@ -144,7 +142,6 @@ func (o Options) Create(ctx context.Context) error {
 	}{
 		{WriterRole, o.WriterPassword},
 		{ReaderRole, o.ReaderPassword},
-		{AdminRole, o.AdminPassword},
 	}
 	for _, role := range roles {
 		if err := ensureRole(ctx, super, role.name, role.password); err != nil {
@@ -197,13 +194,10 @@ func (o Options) Create(ctx context.Context) error {
 	if _, err := archive.Exec(ctx, semibase.SemiplotTagsSQL); err != nil {
 		return fmt.Errorf("applying semiplot_tags.sql: %w", err)
 	}
-	if _, err := archive.Exec(ctx, "ALTER TABLE semiplot_tags OWNER TO "+AdminRole); err != nil {
-		return fmt.Errorf("setting semiplot_tags owner: %w", err)
-	}
 	if _, err := archive.Exec(ctx, "GRANT SELECT ON semiplot_tags TO "+ReaderRole); err != nil {
 		return fmt.Errorf("granting SELECT on semiplot_tags: %w", err)
 	}
-	ok("semiplot_tags in place, owned by %s, readable by %s", AdminRole, ReaderRole)
+	ok("semiplot_tags in place, readable by %s", ReaderRole)
 	return nil
 }
 
@@ -276,6 +270,15 @@ func (o Options) verify(ctx context.Context, asPartOfAll bool) error {
 		return err
 	}
 	defer archive.Close(ctx)
+
+	pending, err := pendingRestartSettings(ctx, archive)
+	if err != nil {
+		return err
+	}
+	if len(pending) > 0 {
+		warn("settings waiting for a service restart: %s - restart the PostgreSQL service or reboot the machine.",
+			strings.Join(pending, ", "))
+	}
 
 	var trendsExists bool
 	if err := archive.QueryRow(ctx, "SELECT to_regclass('public.trends') IS NOT NULL").Scan(&trendsExists); err != nil {

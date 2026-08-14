@@ -2,10 +2,7 @@ module github.com/Semiteq/SemiBase
 
 go 1.26
 
-require (
-	github.com/jackc/pgx/v5 v5.10.0
-	golang.org/x/sys v0.47.0
-)
+require github.com/jackc/pgx/v5 v5.10.0
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect

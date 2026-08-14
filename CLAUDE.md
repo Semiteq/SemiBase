@@ -4,8 +4,10 @@ SemiBase is the deployable PostgreSQL service for the semiconductor-tools instal
 provisions and configures the instance that hosts the Simple-Scada 2 archive: the SCADA writes
 `trends`/`messages` into it, SemiPlot and future tools read from it. The deliverable is one
 CLI binary, `semibase.exe`, plus the instance's architecture docs.
-Platform: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver `pgx/v5`,
-`sql/semiplot_tags.sql` embedded via `go:embed`. Entry point: `cmd/semibase`.
+Deployment target: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver
+`pgx/v5`, `sql/semiplot_tags.sql` embedded via `go:embed`. Entry point: `cmd/semibase`.
+The module is pure `pgx` and compiles for any GOOS; Linux builds serve the containerised
+test bench of consumers (SemiPlot runs `create` against an ephemeral `postgres:17` container).
 All commands run from the repository root.
 
 ## Build
@@ -27,8 +29,9 @@ golangci-lint run
 
 golangci-lint is pinned to 2.12.2 (`winget install GolangCI.golangci-lint --version 2.12.2`);
 config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build`, `go test -race`,
-and the same lint on `windows-latest` for every push and pull request — the `x/sys/windows`
-imports do not build on a Linux runner.
+and the same lint on `windows-latest` and `ubuntu-latest` for every push and pull request;
+the Linux job also provisions a `postgres:17-alpine` service container by running `all`
+twice — the bench path and the idempotency check in one step.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests; the `verify` command is the integration
@@ -44,14 +47,14 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 
 ```powershell
 .\semibase.exe --help                     # commands: config | create | verify | all | version
-.\semibase.exe create --port 15432 --database semiplot_dev --expected-major 14
+.\semibase.exe create --port 15432 --database semiplot_dev --expected-major 17
 .\semibase.exe verify --reader-password <pw>   # post-writer proof of the reader access chain
 .\semibase.exe version                    # print the build revision
 ```
 
 Passwords come from flags, env, or a `.env` file in the working directory (flag > env > `.env`;
 template `.env.example`): `SEMIBASE_SUPER_PASSWORD`, `SEMIBASE_WRITER_PASSWORD`,
-`SEMIBASE_READER_PASSWORD`, `SEMIBASE_ADMIN_PASSWORD`.
+`SEMIBASE_READER_PASSWORD`.
 `verify` failing with "writer has not run" before the SCADA's first start is the expected
 order, not a bug.
 

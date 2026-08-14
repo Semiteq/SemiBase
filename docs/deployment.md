@@ -17,7 +17,7 @@ SemiBase разворачивается одной утилитой — `semibas
 | Компонент | Требование                                     |
 | --------- | ---------------------------------------------- |
 | СУБД      | PostgreSQL 17; минимально поддерживаемая — 14  |
-| Писатель  | Simple-Scada 2 с системой архивации v2         |
+| Писатель  | Simple-Scada 2 с архивацией в PostgreSQL       |
 
 Утилита — один исполняемый файл, среда исполнения не требуется. Сборка из исходников:
 `go build -o semibase.exe ./cmd/semibase`.
@@ -26,7 +26,7 @@ SemiBase разворачивается одной утилитой — `semibas
 
 | Команда   | Действие                                                                             |
 | --------- | ------------------------------------------------------------------------------------ |
-| `config`  | Настройки сервера через `ALTER SYSTEM`; после команды требуется перезапуск службы    |
+| `config`  | Настройки сервера через `ALTER SYSTEM` с немедленным применением; `shared_buffers` вступает в силу после перезапуска службы |
 | `create`  | Архивная база, роли, права доступа, таблица `semiplot_tags`                          |
 | `verify`  | Проверка после первого запуска SCADA: таблицы существуют, читатель читает и не пишет |
 | `all`     | `config` + `create` + `verify`                                                       |
@@ -34,9 +34,6 @@ SemiBase разворачивается одной утилитой — `semibas
 
 При обращении за поддержкой приложите вывод `semibase version` — он однозначно называет
 сборку утилиты на машине.
-
-Цветной вывод отключается автоматически при перенаправлении в файл; переменная окружения
-`NO_COLOR` отключает его принудительно.
 
 ## Пароли
 
@@ -49,7 +46,6 @@ SemiBase разворачивается одной утилитой — `semibas
 | `postgres`        | `--super-password`  | `SEMIBASE_SUPER_PASSWORD`   |
 | `scada_writer`    | `--writer-password` | `SEMIBASE_WRITER_PASSWORD`  |
 | `semiplot_reader` | `--reader-password` | `SEMIBASE_READER_PASSWORD`  |
-| `semiplot_admin`  | `--admin-password`  | `SEMIBASE_ADMIN_PASSWORD`   |
 
 ## Роли
 
@@ -57,7 +53,9 @@ SemiBase разворачивается одной утилитой — `semibas
 | ----------------- | -------------------------- | ------------------------------------------------------- |
 | `scada_writer`    | Simple-Scada 2             | Создаёт и пишет архивные таблицы, выполняет ретеншн     |
 | `semiplot_reader` | SemiPlot и другие читатели | Только чтение `trends`, `messages`, `semiplot_tags`     |
-| `semiplot_admin`  | Пусконаладка               | Владелец объектов `semiplot_*`; в рантайме не участвует |
+
+Объекты `semiplot_*` принадлежат `postgres`; заполнение `semiplot_tags` на пусконаладке
+выполняется от суперпользователя.
 
 ## Порядок ввода в эксплуатацию
 
@@ -67,7 +65,7 @@ SemiBase разворачивается одной утилитой — `semibas
 1. Установить СУБД:
 
 ```powershell
-winget install --id PostgresPro.Standard.17 --exact
+winget install --id PostgreSQL.PostgreSQL.17 --exact
 ```
 
 2. Задать пароли ролей: скопировать `.env.example` в `.env` рядом с утилитой и заполнить.
@@ -75,9 +73,13 @@ winget install --id PostgresPro.Standard.17 --exact
 3. Настроить сервер и создать базу, роли и права:
 
 ```powershell
-.\semibase.exe config --service <имя службы>
+.\semibase.exe config
 .\semibase.exe create
 ```
+
+Все настройки, кроме `shared_buffers`, применяются сразу; `shared_buffers` — после
+перезапуска службы PostgreSQL или перезагрузки машины. Перезагрузка обязательна до сдачи;
+`verify` предупреждает, пока она не сделана.
 
 4. Запустить проект Simple-Scada против базы один раз — он создаёт `trends`, `messages`
    и первые дневные партиции.
@@ -103,6 +105,5 @@ winget install --id PostgresPro.Standard.17 --exact
 | `--port`           | `5432`          | Порт сервера                                    |
 | `--database`       | `scada_archive` | Имя архивной базы                               |
 | `--expected-major` | не проверяется  | Требуемая мажорная версия сервера               |
-| `--service`        | —               | Служба Windows для перезапуска после `config`   |
 
 Полный перечень — `semibase <команда> --help`.

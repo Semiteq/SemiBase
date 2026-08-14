@@ -1,16 +1,28 @@
 # Instance configuration
 
-Only settings changed from the PostgreSQL default are listed. The workload is a sustained
-append-only insert stream from one writer plus a small number of read-heavy analytical queries.
-The `config` command of `semibase.exe` applies these through `ALTER SYSTEM`, so they live in
-`postgresql.auto.conf` and survive a reinstall of `postgresql.conf`.
+Every setting the `config` command writes is listed. Most differ from the PostgreSQL default;
+two (`effective_cache_size`, `checkpoint_completion_target`) equal it and are pinned
+deliberately, so the values in force are visible here rather than implied. The workload is a
+sustained append-only insert stream from one writer plus a small number of read-heavy
+analytical queries.
+
+Every installation machine guarantees at least 8 GB of RAM and 50 GB of disk for the database,
+so the memory figures are fixed constants sized to that floor: every machine runs the identical
+configuration, and no setting depends on inspecting the host.
+
+The `config` command of `semibase.exe` writes these through `ALTER SYSTEM`, so they live in
+`postgresql.auto.conf` and survive a reinstall of `postgresql.conf`, and applies them with
+`pg_reload_conf()`. Every setting below except `shared_buffers` is reload-context or weaker and
+takes effect immediately; `shared_buffers` takes effect at the next service restart or reboot.
+`config` prints the server's own pending-restart list (`pg_settings.pending_restart`), and
+`verify` warns while any setting still waits, so a missed restart surfaces during commissioning.
 
 ## Server settings
 
 | Setting | Default | Ours | Why |
 | --- | --- | --- | --- |
-| `shared_buffers` | 128 MB | 25% of RAM | The archive working set is far larger than the default cache; the standard starting point for a dedicated server. |
-| `effective_cache_size` | 4 GB | 50% of RAM | Planner hint only. Too low a value pushes the planner away from the index scans the readers depend on. |
+| `shared_buffers` | 128 MB | 2 GB | The archive working set is far larger than the default cache. A quarter of the 8 GB hardware floor; the one setting that needs a service restart. |
+| `effective_cache_size` | 4 GB | 4 GB | Planner hint only; set explicitly at half the hardware floor so it never falls below the value the readers' index scans depend on. |
 | `work_mem` | 4 MB | 64 MB | The readers' pixel-bucket query groups and sorts; at the default it spills to disk on wide windows. |
 | `maintenance_work_mem` | 64 MB | 512 MB | Index builds and vacuum on daily partitions. |
 | `max_wal_size` | 1 GB | 8 GB | Under a sustained insert stream the default forces frequent checkpoints, each a write burst that stalls queries. |
