@@ -1,6 +1,3 @@
-// Package provision creates and verifies the SemiBase PostgreSQL instance:
-// server configuration, the archive database, the roles, the reader access
-// chain, and semiplot_tags.
 package provision
 
 import (
@@ -17,20 +14,13 @@ import (
 	semibase "github.com/Semiteq/SemiBase"
 )
 
-// Roles of the archive database. The SCADA writes, the viewers read.
-// semiplot_tags stays owned by the superuser; a dedicated owner role returns
-// when a tag-editing mechanism exists to hold it.
 const (
 	WriterRole = "scada_writer"
 	ReaderRole = "semiplot_reader"
 )
 
-// versionFloor is PostgreSQL 14, the oldest release with date_bin, which the
-// readers' bucketing query uses.
 const versionFloor = 140000
 
-// Options carries everything the phases need. Zero passwords mean "leave the
-// existing credential untouched".
 type Options struct {
 	Host           string
 	Port           int
@@ -42,11 +32,8 @@ type Options struct {
 	ExpectedMajor  int
 }
 
-// databaseNamePattern is the identifier gate in front of every DDL statement
-// that interpolates the database name.
 var databaseNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
-// Validate checks the invariants the phases rely on before any SQL runs.
 func (o Options) Validate() error {
 	if !databaseNamePattern.MatchString(o.Database) {
 		return fmt.Errorf("database name %q must match %s", o.Database, databaseNamePattern)
@@ -54,8 +41,6 @@ func (o Options) Validate() error {
 	return nil
 }
 
-// All runs config, create, and verify in order. A writer that has not run yet
-// is reported as a state, not a failure.
 func (o Options) All(ctx context.Context) error {
 	if err := o.Config(ctx); err != nil {
 		return err
@@ -66,7 +51,6 @@ func (o Options) All(ctx context.Context) error {
 	return o.verify(ctx, true)
 }
 
-// Verify runs the post-writer checks and fails when the writer has not run.
 func (o Options) Verify(ctx context.Context) error {
 	return o.verify(ctx, false)
 }
@@ -82,8 +66,7 @@ func (o Options) connect(ctx context.Context, database, user, password string) (
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %s:%d/%s as %s: %w", o.Host, o.Port, database, user, err)
 	}
-	// escapeLiteral's quote-doubling is complete only with this on (see its
-	// doc). USERSET, so no privilege is needed.
+	// escapeLiteral relies on this; USERSET, so no privilege is needed
 	if _, err := conn.Exec(ctx, "SET standard_conforming_strings = on"); err != nil {
 		_ = conn.Close(ctx)
 		return nil, fmt.Errorf("setting standard_conforming_strings: %w", err)
@@ -91,17 +74,14 @@ func (o Options) connect(ctx context.Context, database, user, password string) (
 	return conn, nil
 }
 
-// escapeLiteral doubles single quotes. This is sufficient in every server mode
-// only because connect forces standard_conforming_strings = on for the session;
-// under that setting backslashes carry no escape meaning inside '...' literals.
+// quote doubling alone is safe only because connect sets standard_conforming_strings = on,
+// which strips backslashes of any escape meaning inside '...' literals
 func escapeLiteral(value string) string {
 	return strings.ReplaceAll(value, "'", "''")
 }
 
-// The statement builders below are the only places a database name or a
-// password reaches DDL text. Role names are package constants, never user
-// input, so only the database name and the password need escaping.
-
+// only the database name and the password reach DDL text here; role names are
+// package constants, never user input
 func grantConnectStatement(database, role string) string {
 	return fmt.Sprintf("GRANT CONNECT ON DATABASE %s TO %s", pgx.Identifier{database}.Sanitize(), role)
 }
@@ -118,8 +98,6 @@ func alterRolePasswordStatement(name, password string) string {
 	return fmt.Sprintf("ALTER ROLE %s PASSWORD '%s'", name, escapeLiteral(password))
 }
 
-// Create provisions the archive database, the roles, the grants, the
-// default privileges, and semiplot_tags. Every step checks before it creates.
 func (o Options) Create(ctx context.Context) error {
 	if err := o.Validate(); err != nil {
 		return err
@@ -176,13 +154,13 @@ func (o Options) Create(ctx context.Context) error {
 	}
 	defer archive.Close(ctx)
 
-	// PostgreSQL 15+ no longer grants CREATE on schema public to everyone; on 14 this is redundant.
+	// PostgreSQL 15+ no longer grants CREATE on schema public to everyone; on 14 this is redundant
 	if _, err := archive.Exec(ctx, "GRANT CREATE ON SCHEMA public TO "+WriterRole); err != nil {
 		return fmt.Errorf("granting CREATE on schema public: %w", err)
 	}
 
-	// The reader access chain: trends/messages do not exist until the SCADA runs, so SELECT on
-	// them can only be granted ahead of time, through default privileges of their future owner.
+	// trends/messages do not exist until the SCADA runs, so SELECT on them can only be
+	// granted ahead of time, through default privileges of their future owner
 	defaultPrivileges := fmt.Sprintf(
 		"ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA public GRANT SELECT ON TABLES TO %s",
 		WriterRole, ReaderRole)

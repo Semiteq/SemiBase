@@ -21,8 +21,7 @@ var passwordEnvironmentNames = []string{
 	"SEMIBASE_READER_PASSWORD",
 }
 
-// captureOutput redirects the package success stream into a buffer for the
-// duration of the test. Tests mutating it must not run in parallel.
+// callers must not use t.Parallel: the streams are package-level
 func captureOutput(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	buffer := &bytes.Buffer{}
@@ -32,7 +31,6 @@ func captureOutput(t *testing.T) *bytes.Buffer {
 	return buffer
 }
 
-// Same contract as captureOutput, for the error stream.
 func captureErrorOutput(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	buffer := &bytes.Buffer{}
@@ -42,9 +40,8 @@ func captureErrorOutput(t *testing.T) *bytes.Buffer {
 	return buffer
 }
 
-// unsetEnvForTest removes the variables for the duration of the test:
-// t.Setenv registers restoration of the original value, and the Unsetenv
-// right after actually clears the variable from the process environment.
+// t.Setenv registers restoration of the original value, the Unsetenv right after
+// clears the variable from the process environment
 func unsetEnvForTest(t *testing.T, names ...string) {
 	t.Helper()
 	for _, name := range names {
@@ -263,7 +260,7 @@ func TestRunGivesCommandsADeadline(t *testing.T) {
 	captureOutput(t)
 	clearPasswordEnvironment(t)
 
-	// Mutates the shared commands map, so this test must not use t.Parallel.
+	// mutates the shared commands map, so no t.Parallel here
 	var deadline time.Time
 	var hasDeadline bool
 	commands["stub-deadline"] = func(ctx context.Context, _ provision.Options) error {
@@ -278,8 +275,8 @@ func TestRunGivesCommandsADeadline(t *testing.T) {
 	if !hasDeadline {
 		t.Fatal("command context carries no deadline")
 	}
-	// The lower bound catches a dispatch bug wrapping commands in a
-	// near-zero timeout, which "at most phaseTimeout" alone would pass.
+	// the lower bound catches a dispatch bug wrapping commands in a near-zero
+	// timeout, which "at most phaseTimeout" alone would pass
 	remaining := time.Until(deadline)
 	if remaining > phaseTimeout || remaining < phaseTimeout/2 {
 		t.Errorf("deadline is %v away, want close to %v", remaining, phaseTimeout)
@@ -290,7 +287,7 @@ func TestRunReportsCommandFailure(t *testing.T) {
 	buffer := captureErrorOutput(t)
 	clearPasswordEnvironment(t)
 
-	// Mutates the shared commands map, so this test must not use t.Parallel.
+	// mutates the shared commands map, so no t.Parallel here
 	commands["stub-failure"] = func(context.Context, provision.Options) error {
 		return errors.New("stub-failure sentinel")
 	}
@@ -305,8 +302,6 @@ func TestRunReportsCommandFailure(t *testing.T) {
 }
 
 func TestCancelledContextReturnsPromptly(t *testing.T) {
-	// Create prints its step banner through the provision console; discard it
-	// so the test output stays clean.
 	previous := provision.SetConsoleOutput(io.Discard)
 	t.Cleanup(func() { provision.SetConsoleOutput(previous) })
 

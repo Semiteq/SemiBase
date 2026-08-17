@@ -8,9 +8,6 @@ import (
 
 var consoleWriter io.Writer = os.Stdout
 
-// SetConsoleOutput redirects the console helpers to writer and returns the
-// previous writer. Tests outside the package use it to keep step banners out
-// of their output; production code never calls it.
 func SetConsoleOutput(writer io.Writer) io.Writer {
 	previous := consoleWriter
 	consoleWriter = writer

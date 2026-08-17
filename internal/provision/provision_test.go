@@ -32,9 +32,8 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// The statement-builder tests pin the exact DDL text Create and ensureDatabase
-// execute: a hostile database name comes out as one double-quoted identifier,
-// inert as SQL. Dropping the Sanitize call at either site fails these.
+// these pin the exact DDL text: a hostile database name comes out as one
+// double-quoted identifier, inert as SQL. dropping Sanitize fails them
 func TestGrantConnectStatement(t *testing.T) {
 	hostile := `archive"; DROP DATABASE postgres; --`
 	want := `GRANT CONNECT ON DATABASE "archive""; DROP DATABASE postgres; --" TO scada_writer`
@@ -63,8 +62,7 @@ func TestRoleStatementsEscapeThePassword(t *testing.T) {
 	}
 }
 
-// The backslash cases pin escapeLiteral's standard_conforming_strings
-// contract.
+// the backslash cases pin the standard_conforming_strings contract
 func TestEscapeLiteral(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -16,3 +16,6 @@ linters:
       - path: _test\.go
         linters:
           - gosec
+      - linters:
+          - revive
+        text: "^(exported|package-comments):"
