@@ -283,6 +283,27 @@ func TestRunGivesCommandsADeadline(t *testing.T) {
 	}
 }
 
+// the Done line is the only place the endpoint reaches an operator on success, and the
+// socket spelling of it is what the init-script path prints
+func TestRunReportsTheEndpointItRanAgainst(t *testing.T) {
+	captureErrorOutput(t)
+	buffer := captureOutput(t)
+	clearPasswordEnvironment(t)
+
+	// mutates the shared commands map, so no t.Parallel here
+	commands["stub-done"] = func(context.Context, provision.Options) error { return nil }
+	t.Cleanup(func() { delete(commands, "stub-done") })
+
+	arguments := []string{"stub-done", "--host", "/var/run/postgresql", "--database", "semiplot_dev"}
+	if got := run(context.Background(), arguments); got != 0 {
+		t.Fatalf("run(stub-done) = %d, want exit code 0", got)
+	}
+	want := "Done: stub-done completed against /var/run/postgresql/.s.PGSQL.5432 (semiplot_dev)."
+	if !strings.Contains(buffer.String(), want) {
+		t.Errorf("output %q does not contain %q", buffer.String(), want)
+	}
+}
+
 func TestRunReportsCommandFailure(t *testing.T) {
 	buffer := captureErrorOutput(t)
 	clearPasswordEnvironment(t)

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestValidate(t *testing.T) {
@@ -127,15 +128,29 @@ func TestConnectionString(t *testing.T) {
 	}
 }
 
-// the string above is only worth anything if the driver reads the socket path back out of it
-func TestConnectionStringIsParsedByTheDriver(t *testing.T) {
+// the golden strings above prove nothing on their own: ?host=/var/run/postgresql and
+// ?host=%2Fvar%2Frun%2Fpostgresql parse to the same config. What has to hold is that the
+// driver then dials the socket, which is the network pgconn derives from the parsed host
+func TestConnectionStringIsDialedAsTheRightNetwork(t *testing.T) {
 	tests := []struct {
-		name    string
-		options Options
-		want    string
+		name        string
+		options     Options
+		wantHost    string
+		wantNetwork string
 	}{
-		{"tcp host", Options{Host: "localhost", Port: 5432}, "localhost"},
-		{"socket directory", Options{Host: "/var/run/postgresql", Port: 15432}, "/var/run/postgresql"},
+		{"tcp host", Options{Host: "localhost", Port: 5432}, "localhost", "tcp"},
+		{
+			"socket directory",
+			Options{Host: "/var/run/postgresql", Port: 15432},
+			"/var/run/postgresql",
+			"unix",
+		},
+		{
+			"windows drive path",
+			Options{Host: `C:\pgsock`, Port: 5432},
+			`C:\pgsock`,
+			"unix",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -143,8 +158,8 @@ func TestConnectionStringIsParsedByTheDriver(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseConfig: %v", err)
 			}
-			if config.Host != tt.want {
-				t.Errorf("parsed host = %q, want %q", config.Host, tt.want)
+			if config.Host != tt.wantHost {
+				t.Errorf("parsed host = %q, want %q", config.Host, tt.wantHost)
 			}
 			if config.Port != uint16(tt.options.Port) {
 				t.Errorf("parsed port = %d, want %d", config.Port, tt.options.Port)
@@ -155,10 +170,45 @@ func TestConnectionStringIsParsedByTheDriver(t *testing.T) {
 			if config.Password != "p@ss word" {
 				t.Errorf("parsed password = %q, want %q", config.Password, "p@ss word")
 			}
+			// the address is filepath.Join'd, so it differs by GOOS; only the network is portable
+			network, address := pgconn.NetworkAddress(config.Host, config.Port)
+			if network != tt.wantNetwork {
+				t.Errorf("dialled network = %q (address %q), want %q", network, address, tt.wantNetwork)
+			}
 		})
 	}
 }
 
+// the boundary of the socket branch is pgconn.isAbsolutePath and nothing wider: a host this
+// says yes to and pgx says no to would be dialled as a TCP name found in the host parameter
+func TestIsSocketHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"/var/run/postgresql", true},
+		{"/", true},
+		{`C:\pgsock`, true},
+		{`C:\`, true},
+		{`c:\pgsock`, false},
+		{"C:/pgsock", false},
+		{"C:pgsock", false},
+		{"@abstract", false},
+		{"localhost", false},
+		{"::1", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			if got := isSocketHost(tt.host); got != tt.want {
+				t.Errorf("isSocketHost(%q) = %v, want %v", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
+// the socket form must stay one quotable path: a database appended behind a slash would
+// name a directory under the socket file, which cannot exist
 func TestEndpoint(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -169,19 +219,27 @@ func TestEndpoint(t *testing.T) {
 		{
 			"socket directory names the socket file",
 			Options{Host: "/var/run/postgresql", Port: 5432},
-			"/var/run/postgresql/.s.PGSQL.5432/scada_archive",
+			"/var/run/postgresql/.s.PGSQL.5432 (scada_archive)",
 		},
 		{
 			"trailing slash does not double",
 			Options{Host: "/var/run/postgresql/", Port: 15432},
-			"/var/run/postgresql/.s.PGSQL.15432/scada_archive",
+			"/var/run/postgresql/.s.PGSQL.15432 (scada_archive)",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.options.Endpoint("scada_archive"); got != tt.want {
-				t.Errorf("Endpoint() = %q, want %q", got, tt.want)
+			if got := tt.options.endpoint("scada_archive"); got != tt.want {
+				t.Errorf("endpoint() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// Endpoint is the exported one, and it names the archive database rather than taking one
+func TestEndpointUsesTheConfiguredDatabase(t *testing.T) {
+	options := Options{Host: "/var/run/postgresql", Port: 5432, Database: "semiplot_dev"}
+	if got, want := options.Endpoint(), "/var/run/postgresql/.s.PGSQL.5432 (semiplot_dev)"; got != want {
+		t.Errorf("Endpoint() = %q, want %q", got, want)
 	}
 }

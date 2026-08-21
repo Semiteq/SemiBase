@@ -68,3 +68,47 @@ jobs:
           go build -o semibase ./cmd/semibase
           ./semibase all --database semiplot_dev --expected-major 17
           ./semibase all --database semiplot_dev --expected-major 17
+
+      # The socket path, which nothing else covers: the same binary, run the way
+      # the official image runs an init script. During init the server has
+      # listen_addresses empty and only /var/run/postgresql answers, superuser
+      # auth is local trust, and the script's own "set -e" makes the entrypoint
+      # abort on failure. So the container reaching a state where semiplot_reader
+      # selects over TCP proves create completed over the socket.
+      - name: Provision over a unix socket, as a postgres image init script
+        env:
+          SEMIBASE_WRITER_PASSWORD: ci-writer
+          SEMIBASE_READER_PASSWORD: ci-reader
+        run: |
+          set -euo pipefail
+          go build -o semibase-linux ./cmd/semibase
+          cat > initdb-semibase.sh <<'SCRIPT'
+          #!/bin/sh
+          set -e
+          /semibase create --host /var/run/postgresql --database semiplot_dev --expected-major 17
+          SCRIPT
+          # the entrypoint sources a non-executable init script instead of running it,
+          # and a binary without the bit set cannot run at all
+          chmod +x semibase-linux initdb-semibase.sh
+          cat > Dockerfile.initdb <<'DOCKERFILE'
+          FROM postgres:17-alpine
+          COPY semibase-linux /semibase
+          COPY initdb-semibase.sh /docker-entrypoint-initdb.d/10-semibase.sh
+          DOCKERFILE
+          docker build -f Dockerfile.initdb -t semibase-initdb .
+          # nothing is published: the host side of a published port is bound by
+          # docker-proxy before postgres listens, so it answers a probe too early
+          docker run -d --name semibase-initdb -e POSTGRES_PASSWORD=ci-super \
+            -e SEMIBASE_WRITER_PASSWORD -e SEMIBASE_READER_PASSWORD semibase-initdb
+          # TCP inside the container opens only once the init scripts have run
+          for _ in $(seq 60); do
+            if docker exec semibase-initdb pg_isready -h 127.0.0.1 -q 2>/dev/null; then break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' semibase-initdb)" != true ]; then break; fi
+            sleep 2
+          done
+          if ! docker exec -e PGPASSWORD=ci-reader semibase-initdb psql -h 127.0.0.1 \
+              -U semiplot_reader -d semiplot_dev -tAc 'select count(*) from semiplot_tags'; then
+            echo "::error::provisioning over the unix socket did not complete"
+            docker logs semibase-initdb
+            exit 1
+          fi

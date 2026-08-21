@@ -5,9 +5,9 @@ production instance alike. That is the point: a tool that has created the develo
 many times is proven; a tool written for commissioning and run once, on site, on the day it
 matters, is a liability.
 
-The binary is self-contained: `pgx/v5` talks to the server directly over TCP, so neither
-`psql.exe` nor any runtime needs to be present on the target machine. `sql/semiplot_tags.sql`
-is embedded at build time. Installing the PostgreSQL engine itself is one documented `winget`
+The binary is self-contained: `pgx/v5` speaks the wire protocol itself, over TCP or a unix
+socket, so neither `psql.exe` nor any runtime needs to be present on the target machine.
+`sql/semiplot_tags.sql` is embedded at build time. Installing the PostgreSQL engine itself is one documented `winget`
 line, deliberately outside the tool — OS package management is not database provisioning.
 
 ## Commands
@@ -30,6 +30,33 @@ file in the working directory is read as the lowest-precedence source (flag > en
 `.env`; `.env.example` is the template, `.env` is gitignored). A run without passwords leaves
 existing credentials untouched. Flag usage output shows only the environment variable names,
 never their values.
+
+## The connection target
+
+`--host` takes a hostname or a unix socket directory, and the split is the driver's own:
+`pgconn.isAbsolutePath` calls a value a socket directory when it starts with `/` or is a
+drive-letter path such as `C:\pgsock`. A socket directory cannot ride in the URL authority —
+its slashes would end the authority — so the connection string moves it, and the port with it,
+into the query, percent-encoded:
+
+```
+postgres://postgres:***@/scada_archive?host=%2Fvar%2Frun%2Fpostgresql&port=5432
+```
+
+pgx then dials `<directory>/.s.PGSQL.<port>` on the `unix` network. Widening the test past pgx's
+would be a trap, not a courtesy: libpq also accepts a leading `@` for Linux's abstract namespace,
+but pgx resolves such a host as a TCP name, so `semibase` leaves it on the TCP path.
+
+The socket form is what lets `create` run as an init script in the official `postgres` image,
+whose entrypoint serves `/docker-entrypoint-initdb.d/` from a temporary server with
+`listen_addresses` set to empty — reachable over the socket only. The Linux CI job runs exactly
+that: it layers the freshly built binary onto `postgres:17-alpine` behind such an init script and
+asserts the container reaches a state where the reader can query.
+
+Messages name the socket file rather than a URL —
+`/var/run/postgresql/.s.PGSQL.5432 (scada_archive)`. The database is in parentheses because a
+slash would make the socket file read as a directory and send the operator to a path that can
+never exist.
 
 ## Invariants the provision package owns
 
@@ -92,12 +119,6 @@ the same code path production takes, which is what keeps the fixture from drifti
 hand-written copy of the grants. `config` is not part of the bench: a throwaway container has
 nothing to tune. 14 remains the floor `create` accepts through `--expected-major`; the bench
 runs the pinned major, 17.
-
-`--host` takes a unix socket directory as well as a hostname: a value starting with `/` goes into
-the connection URL as the `host` query parameter (`postgres:///db?host=/var/run/postgresql`),
-because a URL authority cannot hold a path. That is what lets `create` run as an init script in the
-official `postgres` image, whose entrypoint serves `/docker-entrypoint-initdb.d/` from a temporary
-server with `listen_addresses` set to empty — reachable over the socket only.
 
 Two rules make the bench exercise what production exercises:
 

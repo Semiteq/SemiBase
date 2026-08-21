@@ -106,7 +106,7 @@ func run(ctx context.Context, arguments []string) int {
 		return 1
 	}
 	fmt.Fprintf(output, "\nDone: %s completed against %s.\n",
-		command, options.Endpoint(options.Database))
+		command, options.Endpoint())
 	return 0
 }
 

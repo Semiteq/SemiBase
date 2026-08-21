@@ -55,14 +55,21 @@ func (o Options) Verify(ctx context.Context) error {
 	return o.verify(ctx, false)
 }
 
-// libpq's own test for a socket host: a leading slash means a directory, not a hostname
+// pgx dials a unix socket exactly when pgconn.isAbsolutePath accepts the host. Widening this
+// past pgx would route a host into the query parameter that the driver then resolves as a TCP
+// name: libpq's extra "@" form for Linux's abstract namespace is that case, so it stays out.
 func isSocketHost(host string) bool {
-	return strings.HasPrefix(host, "/")
+	return strings.HasPrefix(host, "/") || isWindowsDrivePath(host)
+}
+
+// pgconn.isAbsolutePath's drive-letter clause, character for character
+func isWindowsDrivePath(host string) bool {
+	return len(host) >= 3 && host[0] >= 'A' && host[0] <= 'Z' && host[1] == ':' && host[2] == '\\'
 }
 
 // a socket directory cannot ride in the URL authority: its slashes would end the authority
 // and the rest of the path would be read as the URL path. libpq and pgx take the socket
-// directory from the host query parameter instead - postgres:///db?host=/var/run/postgresql
+// directory from the host query parameter instead, percent-encoded like any query value
 func (o Options) connectionString(database, user, password string) string {
 	target := url.URL{
 		Scheme: "postgres",
@@ -80,11 +87,17 @@ func (o Options) connectionString(database, user, password string) string {
 	return target.String()
 }
 
-// Endpoint names what a connection attempt targets, for messages. On a socket host the
-// server listens on one file per port, named <directory>/.s.PGSQL.<port>.
-func (o Options) Endpoint(database string) string {
+// Endpoint names what a connection to the archive database targets, for messages.
+func (o Options) Endpoint() string {
+	return o.endpoint(o.Database)
+}
+
+// the socket file is <directory>/.s.PGSQL.<port>, so the database cannot follow it behind a
+// slash: that would name a path under the socket file and send a reader of the message
+// looking for a directory that can never exist
+func (o Options) endpoint(database string) string {
 	if isSocketHost(o.Host) {
-		return fmt.Sprintf("%s/.s.PGSQL.%d/%s", strings.TrimSuffix(o.Host, "/"), o.Port, database)
+		return fmt.Sprintf("%s/.s.PGSQL.%d (%s)", strings.TrimRight(o.Host, `/\`), o.Port, database)
 	}
 	return fmt.Sprintf("%s:%d/%s", o.Host, o.Port, database)
 }
@@ -92,7 +105,7 @@ func (o Options) Endpoint(database string) string {
 func (o Options) connect(ctx context.Context, database, user, password string) (*pgx.Conn, error) {
 	conn, err := pgx.Connect(ctx, o.connectionString(database, user, password))
 	if err != nil {
-		return nil, fmt.Errorf("connecting to %s as %s: %w", o.Endpoint(database), user, err)
+		return nil, fmt.Errorf("connecting to %s as %s: %w", o.endpoint(database), user, err)
 	}
 	// escapeLiteral relies on this; USERSET, so no privilege is needed
 	if _, err := conn.Exec(ctx, "SET standard_conforming_strings = on"); err != nil {
