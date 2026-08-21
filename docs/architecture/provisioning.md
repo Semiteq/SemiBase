@@ -93,6 +93,12 @@ hand-written copy of the grants. `config` is not part of the bench: a throwaway 
 nothing to tune. 14 remains the floor `create` accepts through `--expected-major`; the bench
 runs the pinned major, 17.
 
+`--host` takes a unix socket directory as well as a hostname: a value starting with `/` goes into
+the connection URL as the `host` query parameter (`postgres:///db?host=/var/run/postgresql`),
+because a URL authority cannot hold a path. That is what lets `create` run as an init script in the
+official `postgres` image, whose entrypoint serves `/docker-entrypoint-initdb.d/` from a temporary
+server with `listen_addresses` set to empty — reachable over the socket only.
+
 Two rules make the bench exercise what production exercises:
 
 - The bench seeder connects **as `scada_writer`** and creates the archive tables itself, the way

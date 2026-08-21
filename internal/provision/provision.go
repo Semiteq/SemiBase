@@ -55,16 +55,44 @@ func (o Options) Verify(ctx context.Context) error {
 	return o.verify(ctx, false)
 }
 
-func (o Options) connect(ctx context.Context, database, user, password string) (*pgx.Conn, error) {
+// libpq's own test for a socket host: a leading slash means a directory, not a hostname
+func isSocketHost(host string) bool {
+	return strings.HasPrefix(host, "/")
+}
+
+// a socket directory cannot ride in the URL authority: its slashes would end the authority
+// and the rest of the path would be read as the URL path. libpq and pgx take the socket
+// directory from the host query parameter instead - postgres:///db?host=/var/run/postgresql
+func (o Options) connectionString(database, user, password string) string {
 	target := url.URL{
 		Scheme: "postgres",
 		User:   url.UserPassword(user, password),
-		Host:   net.JoinHostPort(o.Host, strconv.Itoa(o.Port)),
 		Path:   "/" + database,
 	}
-	conn, err := pgx.Connect(ctx, target.String())
+	if isSocketHost(o.Host) {
+		target.RawQuery = url.Values{
+			"host": {o.Host},
+			"port": {strconv.Itoa(o.Port)},
+		}.Encode()
+		return target.String()
+	}
+	target.Host = net.JoinHostPort(o.Host, strconv.Itoa(o.Port))
+	return target.String()
+}
+
+// Endpoint names what a connection attempt targets, for messages. On a socket host the
+// server listens on one file per port, named <directory>/.s.PGSQL.<port>.
+func (o Options) Endpoint(database string) string {
+	if isSocketHost(o.Host) {
+		return fmt.Sprintf("%s/.s.PGSQL.%d/%s", strings.TrimSuffix(o.Host, "/"), o.Port, database)
+	}
+	return fmt.Sprintf("%s:%d/%s", o.Host, o.Port, database)
+}
+
+func (o Options) connect(ctx context.Context, database, user, password string) (*pgx.Conn, error) {
+	conn, err := pgx.Connect(ctx, o.connectionString(database, user, password))
 	if err != nil {
-		return nil, fmt.Errorf("connecting to %s:%d/%s as %s: %w", o.Host, o.Port, database, user, err)
+		return nil, fmt.Errorf("connecting to %s as %s: %w", o.Endpoint(database), user, err)
 	}
 	// escapeLiteral relies on this; USERSET, so no privilege is needed
 	if _, err := conn.Exec(ctx, "SET standard_conforming_strings = on"); err != nil {

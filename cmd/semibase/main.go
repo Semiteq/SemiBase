@@ -105,8 +105,8 @@ func run(ctx context.Context, arguments []string) int {
 		fmt.Fprintln(errorOutput, "error:", err)
 		return 1
 	}
-	fmt.Fprintf(output, "\nDone: %s completed against %s:%d/%s.\n",
-		command, options.Host, options.Port, options.Database)
+	fmt.Fprintf(output, "\nDone: %s completed against %s.\n",
+		command, options.Endpoint(options.Database))
 	return 0
 }
 
@@ -146,7 +146,8 @@ func revisionFromSettings(settings []debug.BuildSetting) string {
 func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
-	flags.StringVar(&options.Host, "host", "localhost", "server host")
+	flags.StringVar(&options.Host, "host", "localhost",
+		"server host, or a unix socket directory such as /var/run/postgresql")
 	flags.IntVar(&options.Port, "port", 5432, "server port")
 	flags.StringVar(&options.Database, "database", "scada_archive", "archive database name")
 	flags.StringVar(&options.SuperUser, "superuser", "postgres", "superuser role name")
