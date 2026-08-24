@@ -79,9 +79,20 @@ jobs:
         env:
           SEMIBASE_WRITER_PASSWORD: ci-writer
           SEMIBASE_READER_PASSWORD: ci-reader
+          # postgres:17-alpine is musl. The runner has a C toolchain, so an
+          # unset CGO_ENABLED defaults to 1 and links against glibc; the image
+          # then reports the binary as "not found", which reads as a missing
+          # file rather than a missing interpreter. release.yml builds the
+          # shipped Linux artifact the same way.
+          CGO_ENABLED: "0"
         run: |
           set -euo pipefail
           go build -o semibase-linux ./cmd/semibase
+          if ! file semibase-linux | grep -q 'statically linked'; then
+            echo "::error::semibase-linux is not statically linked, so it cannot run on Alpine"
+            file semibase-linux
+            exit 1
+          fi
           cat > initdb-semibase.sh <<'SCRIPT'
           #!/bin/sh
           set -e
