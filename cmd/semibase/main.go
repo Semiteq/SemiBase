@@ -29,8 +29,8 @@ Commands:
   bench    a throwaway container: the same, without the tuning
   version  print the build revision
 
-Both commands end by checking that semiplot_reader can read public.trends and
-cannot write it; a failed check is a non-zero exit.
+Both commands end by reading public.trends as semiplot_reader and checking that the
+same role cannot write it; a failed check is a non-zero exit.
 
 Every step checks before it creates; re-running either command is safe. Passwords of
 existing roles change only when the corresponding flag or variable is set.
@@ -40,6 +40,10 @@ directory (flag wins over environment, environment wins over .env):
   --super-password    SEMIBASE_SUPER_PASSWORD    superuser
   --writer-password   SEMIBASE_WRITER_PASSWORD   scada_writer
   --reader-password   SEMIBASE_READER_PASSWORD   semiplot_reader
+
+A first run creates both roles and fails without their passwords. Once the roles exist,
+the superuser password alone carries a run; the reader password then only decides
+whether the run also tests the semiplot_reader login, which it does over TCP.
 
 Run 'semibase <command> --help' for the command's flags.
 `

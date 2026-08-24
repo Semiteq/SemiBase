@@ -30,7 +30,7 @@ plaintext password in a client configuration file an acceptable risk.
 | --- | --- |
 | `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning in two commands, `site` and `bench`: instance tuning (`site` only), database, roles, grants, `semiplot_tags`, `public.trends`, and the reader-access checks that end every run |
 | `sql/semiplot_tags.sql` | DDL for the one object we invented, embedded into the binary |
-| `sql/trends.sql` | The vendor's archive-table shape, transcribed and embedded; applied as `scada_writer` |
+| `sql/trends.sql` | The vendor's archive-table shape, transcribed and embedded; applied under `SET ROLE scada_writer`, so the table's owner is the writer |
 | `Dockerfile` | `ghcr.io/semiteq/semibase` — the Linux binary alone on `scratch`, for consumers that layer it into a bench image |
 | `docs/architecture/` | The instance as it is: configuration deltas, provisioning order, ownership |
 
@@ -49,8 +49,11 @@ The order matters, because the default privileges have to be in place before any
    `semiplot_tags` and `public.trends`; it ends by proving the reader reads `trends` and cannot
    write it, and warns while `shared_buffers` waits for a service restart.
 3. Restart the PostgreSQL service or reboot the machine, so `shared_buffers` takes effect.
-4. Point the Simple-Scada project at the database and start it once. It finds `trends` in place
-   and creates the day partitions and `messages` itself.
+4. Point the Simple-Scada project at the database and start it once. It is expected to find
+   `trends` in place, write into it, and create the day partitions and `messages` itself — an
+   **unverified** assumption, with the experiment that settles it, in
+   `provisioning.md` ("Assumption: the SCADA meeting an existing `trends`"). Set
+   `log_statement = 'all'` for that first start and read back the DDL the SCADA issued.
 5. Fill `semiplot_tags` with the variables to be trended.
 6. Write the SemiPlot connection file, including the source time zone.
 

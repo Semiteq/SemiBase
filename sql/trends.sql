@@ -3,10 +3,11 @@
 -- not ours: this tool creates the table so the reader's access chain is complete before the
 -- SCADA's first start, and never alters it afterwards.
 --
--- Applied while connected as `scada_writer`, so the table's owner is the role the SCADA
--- writes with and the reader's SELECT arrives through the default privileges set for that
--- role. A superuser-owned table would give the reader access for a different reason than a
--- site gets it.
+-- Applied under `SET ROLE scada_writer`, so the table's owner is the role the SCADA writes
+-- with and the reader's SELECT arrives through the default privileges set for that role. A
+-- superuser-owned table would give the reader access for a different reason than a site gets
+-- it. SET ROLE rather than a `scada_writer` login: the owner and the ACL come out identical,
+-- and no pg_hba.conf line has to admit that role.
 --
 -- `messages` is not created: nothing we ship reads it, and every object we create is a
 -- surface that can drift from the vendor.

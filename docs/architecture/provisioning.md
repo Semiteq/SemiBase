@@ -88,7 +88,7 @@ a test of what a site runs:
 | Archive database, both roles, grants, default privileges, `semiplot_tags` | yes | yes |
 | `public.trends` with the `tpdefault` partition, created as `scada_writer` | yes | yes |
 | Reader-access checks at the tail | yes | yes |
-| Pending-restart warning at the tail | yes | no — nothing was tuned, so nothing can be pending |
+| Pending-restart warning at the tail | yes | yes — `bench` tunes nothing, but it runs against existing servers too, and one a `site` run tuned can still be waiting for its restart |
 
 `version` (or `--version`) prints the build revision: the ldflags value
 (`-X main.revision=...`) when a release sets it, otherwise the VCS revision from
@@ -149,9 +149,10 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
   (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`.
 - **Pending-restart reporting.** The tool never touches the service manager. The tuning phase
   applies its deltas with `pg_reload_conf()` and reads `pg_settings.pending_restart` back from
-  the server; `site` reads it again at the tail, so the last thing an operator sees names a
-  pending `shared_buffers`. The operator restarts the service or reboots the machine — the one
-  manual step, and the tool says so instead of doing it.
+  the server; both commands read it again as the **last** statement of the tail, after the
+  access checks, so the last line either prints names a pending `shared_buffers`. The operator
+  restarts the service or reboots the machine — the one manual step, and the tool says so
+  instead of doing it.
 
 ## The reader-access chain
 
@@ -166,9 +167,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE scada_writer IN SCHEMA public
 
 This is in place **before** `public.trends` is created and before the writer first starts; tables
 `scada_writer` creates afterwards are readable automatically. If a table was created before the
-statement ran, the repair is a one-time `GRANT SELECT ON ALL TABLES IN SCHEMA public` plus the
-default-privileges statement for the partitions still to come — the tail check detects that state
-and prints the repair.
+statement ran, the repair is a one-time `GRANT SELECT ON ALL TABLES IN SCHEMA public` for the
+tables that exist plus the default-privileges statement for the partitions still to come, then
+another run of the tool — the tail check detects that state and prints all three.
 
 On PostgreSQL 15 and later the `public` schema no longer grants `CREATE` to everyone, so
 `create` grants it to `scada_writer` explicitly. On 14 the grant is redundant and harmless.
@@ -179,11 +180,16 @@ On PostgreSQL 15 and later the `public` schema no longer grants `CREATE` to ever
 shape, transcribed from a customer archive dump. Three properties of how it is created carry the
 weight:
 
-- **The role, more than the shape.** The table is created over a `scada_writer` login of its own,
-  never with `SET ROLE`, because the reader's `SELECT` has to arrive through the default privileges
-  set for that role a moment earlier. A superuser-owned table would give the reader access for a
-  different reason than a site gets it, and a bench would then test a different thing from
-  production. A run that finds no `public.trends` and no writer password fails and says so.
+- **The role, more than the shape.** The table is created as `scada_writer`, because the reader's
+  `SELECT` has to arrive through the default privileges set for that role a moment earlier. A
+  superuser-owned table would give the reader access for a different reason than a site gets it,
+  and a bench would then test a different thing from production. The role is assumed with
+  `SET ROLE` on the superuser connection, not through a `scada_writer` login: measured on
+  `postgres:17-alpine`, both routes leave the same `relowner` and the same `relacl`
+  (`{scada_writer=arwdDxtm/scada_writer,semiplot_reader=r/scada_writer}`), while a login also has
+  to be admitted by `pg_hba.conf` — and `local all all peer`, the default on Debian, Ubuntu and
+  RHEL, refuses it on a unix socket. Creating the table therefore needs no writer password; the
+  writer password is needed only on a first run, to create the role itself.
 - **`messages` is not created.** Nothing we ship reads it, and every object we create is a surface
   that can drift from the vendor.
 - **Day partitions are not created.** `tpYYYYmMMdDD` belongs to the SCADA on a site and to the
@@ -191,7 +197,12 @@ weight:
   no day partition exists lands somewhere instead of failing.
 
 Existence is checked first (`to_regclass('public.trends')`), so a second run leaves the table
-untouched — including a table the SCADA has since altered.
+untouched — including a table the SCADA has since altered. Untouched is not unread: on that path
+the run reads back what it promises. `public.tpdefault` must be there, and its absence is a
+failure with the one `CREATE TABLE ... PARTITION OF ... DEFAULT` that repairs it, because a table
+without it rejects any row no day partition covers. Its row count is then reported — always zero
+on the create path, but on a table that may be months old a non-empty `tpdefault` is the only
+signal that a day partition was missing at write time, so it is a warning rather than a failure.
 
 ## Assumption: the SCADA meeting an existing `trends`
 
@@ -209,11 +220,24 @@ replaced by what was observed and `sql/trends.sql` is reconsidered.
 Both commands end with them, and a failure is a non-zero exit — the run did not reach the state it
 promises. They are knowable at exit precisely because this tool creates `public.trends` itself:
 
-1. `semiplot_reader` holds `SELECT` on `public.trends`. Failing this prints the one repair message
-   that turns a silent misconfiguration into an actionable one.
-2. `semiplot_reader` does not hold `INSERT` on `public.trends` — the reader is read-only.
-3. `site` only: no setting waits for a service restart (`pg_settings.pending_restart`) — a warning,
-   not a failure, so a pending `shared_buffers` never blocks the access checks.
+1. **`semiplot_reader` reads `public.trends`.** The read itself, not a catalog bit:
+   `SET ROLE semiplot_reader` on the superuser connection, then
+   `SELECT count(*) FROM (SELECT 1 FROM public.trends LIMIT 1) probe`. `has_table_privilege`
+   cannot carry this check — after `REVOKE USAGE ON SCHEMA public FROM public` it still answers
+   `t` while every read the reader issues fails with `permission denied for schema public`
+   (measured). The catalog bit is asked only when the read has already failed, to split a missing
+   table grant from a schema the reader cannot enter, and each answer prints its own repair.
+   `SET ROLE` rather than a login for the `pg_hba.conf` reason above.
+2. **The `semiplot_reader` login reads it too**, over TCP, when the reader password is present in
+   the run. This is the half `SET ROLE` cannot reach: `pg_hba.conf` admitting the role and the
+   password a consumer will carry. It is skipped, with a printed note, when no reader password
+   was given, and on a socket host — `peer` is the platform default there and no consumer reads
+   over the socket.
+3. `semiplot_reader` does not hold `INSERT` on `public.trends` — the reader is read-only. This one
+   stays a catalog question: a failed `INSERT` proves nothing about the next one.
+4. No setting waits for a service restart (`pg_settings.pending_restart`) — a warning, not a
+   failure, so a pending `shared_buffers` never blocks the access checks. Both commands read it,
+   last, after the access checks.
 
 ## Development benches
 

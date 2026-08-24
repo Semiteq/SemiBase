@@ -107,13 +107,15 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 
 `site` and `bench` differ in one thing: `site` applies the `ALTER SYSTEM` memory constants,
 `bench` does not. Both create the database, the roles, the grants, `semiplot_tags` and
-`public.trends`, and both end by checking that `semiplot_reader` reads `public.trends` and
-cannot write it. A failed check is a non-zero exit.
+`public.trends`, and both end by actually reading `public.trends` as `semiplot_reader` and
+checking that the same role holds no `INSERT`. A failed check is a non-zero exit.
 
 Passwords come from flags, env, or a `.env` file in the working directory (flag > env > `.env`;
 template `.env.example`): `SEMIBASE_SUPER_PASSWORD`, `SEMIBASE_WRITER_PASSWORD`,
-`SEMIBASE_READER_PASSWORD`. The writer password is needed to create `public.trends`, which the
-tool does over a `scada_writer` login so the table's owner is the role the SCADA writes with.
+`SEMIBASE_READER_PASSWORD`. The writer and reader passwords are needed only on a first run,
+which creates those roles; `public.trends` is created under `SET ROLE scada_writer` on the
+superuser connection, so the table's owner is the role the SCADA writes with and no
+`pg_hba.conf` line has to admit a `scada_writer` login.
 
 ## Layout
 

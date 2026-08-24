@@ -247,21 +247,40 @@ func TestEndpointUsesTheConfiguredDatabase(t *testing.T) {
 	}
 }
 
-// the archive table is the vendor's shape, transcribed. This pins the parts a consumer
-// depends on and the one object we deliberately do not create
-func TestEmbeddedTrendsSQL(t *testing.T) {
-	required := []string{
-		"CREATE TABLE public.trends",
-		"PARTITION BY RANGE (t)",
-		"ADD CONSTRAINT tpk PRIMARY KEY (id, l, t)",
-		"CREATE TABLE public.tpdefault PARTITION OF public.trends DEFAULT",
-	}
-	for _, fragment := range required {
-		if !strings.Contains(semibase.TrendsSQL, fragment) {
-			t.Errorf("trends.sql does not contain %q", fragment)
+// the file's header prose names the objects the DDL deliberately leaves alone, so a claim
+// about what the DDL creates has to be made against the statements only
+func sqlStatementsOf(sql string) string {
+	kept := make([]string, 0, strings.Count(sql, "\n"))
+	for line := range strings.SplitSeq(sql, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
 		}
+		kept = append(kept, line)
 	}
-	if strings.Contains(semibase.TrendsSQL, "public.messages") {
-		t.Error("trends.sql creates public.messages; nothing we ship reads it")
+	return strings.Join(strings.Fields(strings.Join(kept, " ")), " ")
+}
+
+// the archive table is the vendor's shape, transcribed by hand from a dump, and the whole
+// statement text is pinned rather than a few fragments of it: a consumer that reads id, l, t,
+// v and q gets wrong charts rather than an error when a type, a default or a column drifts.
+// Reformatting the file is meant to fail this - re-read sql/semiplot_dev.sql in the consumer
+// repository before changing the golden text.
+func TestEmbeddedTrendsSQL(t *testing.T) {
+	want := "CREATE TABLE public.trends ( " +
+		"id integer DEFAULT 0 NOT NULL, " +
+		"l smallint DEFAULT 0 NOT NULL, " +
+		"t timestamp(3) without time zone NOT NULL, " +
+		"v double precision, " +
+		"q integer NOT NULL " +
+		") PARTITION BY RANGE (t); " +
+		"ALTER TABLE ONLY public.trends ADD CONSTRAINT tpk PRIMARY KEY (id, l, t); " +
+		"CREATE TABLE public.tpdefault PARTITION OF public.trends DEFAULT;"
+	got := sqlStatementsOf(semibase.TrendsSQL)
+	if got != want {
+		t.Errorf("trends.sql statements =\n%q\nwant\n%q", got, want)
+	}
+	// unqualified as well as public.messages: the guard is about the object, not the spelling
+	if strings.Contains(got, "messages") {
+		t.Error("trends.sql creates messages; nothing we ship reads it")
 	}
 }
