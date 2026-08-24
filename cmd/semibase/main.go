@@ -1,4 +1,3 @@
-// Command semibase provisions the SemiBase PostgreSQL instance.
 package main
 
 import (
@@ -43,25 +42,18 @@ directory (flag wins over environment, environment wins over .env):
 Run 'semibase <command> --help' for the command's flags.
 `
 
-// revision identifies the build; a release sets it with
-// -ldflags "-X main.revision=...". Empty means "not embedded".
+// set by a release with -ldflags "-X main.revision=..."
 var revision string
 
-// phaseTimeout bounds every command. Provisioning is DDL on empty objects, so
-// a generous fixed bound is enough.
 const phaseTimeout = 5 * time.Minute
 
-// output receives the success reporting (help text, version, the final Done
-// line) and errorOutput the usage and flag-parse reporting. Variables so tests
-// capture the output instead of writing to the test log.
+// variables so tests can capture the streams
 var (
 	output      io.Writer = os.Stdout
 	errorOutput io.Writer = os.Stderr
 )
 
-// commands is the single source for command validation and dispatch. A name
-// missing here is an error, never a fallback to All. Production code never
-// writes this map; only tests insert stub entries.
+// only tests write to this map, to insert stubs
 var commands = map[string]func(context.Context, provision.Options) error{
 	"config": func(ctx context.Context, options provision.Options) error { return options.Config(ctx) },
 	"create": func(ctx context.Context, options provision.Options) error { return options.Create(ctx) },
@@ -77,9 +69,6 @@ func main() {
 	os.Exit(exitCode)
 }
 
-// run owns the whole command lifecycle and returns the exit code; main alone
-// turns it into os.Exit. Ctrl+C cancels ctx, which cancels the in-flight
-// query through pgx instead of hard-killing the process mid-DDL.
 func run(ctx context.Context, arguments []string) int {
 	if len(arguments) == 0 {
 		fmt.Fprint(errorOutput, usage)
@@ -116,15 +105,11 @@ func run(ctx context.Context, arguments []string) int {
 		fmt.Fprintln(errorOutput, "error:", err)
 		return 1
 	}
-	fmt.Fprintf(output, "\nDone: %s completed against %s:%d/%s.\n",
-		command, options.Host, options.Port, options.Database)
+	fmt.Fprintf(output, "\nDone: %s completed against %s.\n",
+		command, options.Endpoint())
 	return 0
 }
 
-// resolveRevision returns the embedded ldflags revision verbatim when a
-// release set it; otherwise it falls back to the VCS revision the Go
-// toolchain recorded at build time. Test binaries and non-VCS builds resolve
-// to "unknown".
 func resolveRevision(embedded string) string {
 	if embedded != "" {
 		return embedded
@@ -156,13 +141,13 @@ func revisionFromSettings(settings []debug.BuildSetting) string {
 	return vcsRevision
 }
 
-// newFlagSet registers the shared command flags on a ContinueOnError set.
-// Password flags default to empty so the usage output can only ever show the
-// environment variable names, never their values.
+// password flags default to empty so the usage output can only ever show the
+// variable names, never their values
 func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
-	flags.StringVar(&options.Host, "host", "localhost", "server host")
+	flags.StringVar(&options.Host, "host", "localhost",
+		"server host, or a unix socket directory such as /var/run/postgresql")
 	flags.IntVar(&options.Port, "port", 5432, "server port")
 	flags.StringVar(&options.Database, "database", "scada_archive", "archive database name")
 	flags.StringVar(&options.SuperUser, "superuser", "postgres", "superuser role name")
@@ -191,8 +176,6 @@ func parseOptions(command string, arguments []string) (provision.Options, error)
 	return options, nil
 }
 
-// resolvePasswordsFromEnvironment fills every password the flags left empty
-// from its SEMIBASE_* variable.
 func resolvePasswordsFromEnvironment(options *provision.Options) {
 	if options.SuperPassword == "" {
 		options.SuperPassword = os.Getenv("SEMIBASE_SUPER_PASSWORD")
@@ -207,10 +190,8 @@ func resolvePasswordsFromEnvironment(options *provision.Options) {
 
 const dotEnvName = ".env"
 
-// loadDotEnv applies variables from a .env file in the working directory.
-// Variables already present in the process environment win; flags win over both.
-// A missing file is normal and silent; any other failure is reported so an
-// unreadable file does not degrade into a misleading missing-password error.
+// an unreadable file is reported so it does not degrade into a misleading
+// missing-password error later
 func loadDotEnv() {
 	file, err := os.Open(dotEnvName)
 	if err != nil {
@@ -250,8 +231,8 @@ func applyEnv(reader io.Reader) error {
 	return scanner.Err()
 }
 
-// Only a matching pair of surrounding quotes ("..." or '...') is removed, so
-// a password that legitimately starts or ends with a quote passes intact.
+// only a matching pair is removed, so a password that legitimately starts or
+// ends with a quote passes intact
 func trimMatchingQuotes(value string) string {
 	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
 		return value[1 : len(value)-1]

@@ -66,8 +66,8 @@ func TestLoadDotEnvAbsentFileIsSilent(t *testing.T) {
 
 func TestLoadDotEnvDirectoryReportsReadError(t *testing.T) {
 	t.Chdir(t.TempDir())
-	// On Windows os.Open succeeds on a directory; the read fails, exercising
-	// the scanner.Err() warning path.
+	// on Windows os.Open succeeds on a directory; the read fails, exercising
+	// the scanner.Err() warning path
 	if err := os.Mkdir(dotEnvName, 0o755); err != nil {
 		t.Fatal(err)
 	}

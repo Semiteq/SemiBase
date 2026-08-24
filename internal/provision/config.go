@@ -8,16 +8,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// setting is one ALTER SYSTEM delta. Order is kept for readable output.
 type setting struct {
 	Name  string
 	Value string
 }
 
-// settings are the configuration deltas. Every installation guarantees at
-// least 8 GB of RAM, so the memory figures are constants sized to that floor
-// and every machine runs the same configuration. The rationale for every
-// value is in docs/architecture/configuration.md.
 var settings = []setting{
 	{"shared_buffers", "2GB"},
 	{"effective_cache_size", "4GB"},
@@ -32,11 +27,6 @@ var settings = []setting{
 	{"track_io_timing", "on"},
 }
 
-// Config writes the configuration deltas through ALTER SYSTEM and applies
-// them with pg_reload_conf(). Every setting except shared_buffers is
-// reload-context or weaker, so it takes effect immediately; shared_buffers
-// waits for the next service restart, which Config reports through the
-// server's own pending-restart list instead of touching the service.
 func (o Options) Config(ctx context.Context) error {
 	if err := o.Validate(); err != nil {
 		return err
@@ -60,8 +50,8 @@ func (o Options) Config(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, "SELECT pg_reload_conf()"); err != nil {
 		return fmt.Errorf("reloading the configuration: %w", err)
 	}
-	// pg_reload_conf signals the reload asynchronously; the pause lets the
-	// server processes apply the new files before pending_restart is read.
+	// pg_reload_conf signals asynchronously; the pause lets the server processes apply
+	// the new files before pending_restart is read
 	if _, err := conn.Exec(ctx, "SELECT pg_sleep(0.5)"); err != nil {
 		return fmt.Errorf("waiting for the reload: %w", err)
 	}

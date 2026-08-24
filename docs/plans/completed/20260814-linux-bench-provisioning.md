@@ -47,11 +47,12 @@ vanilla PostgreSQL 17 via `winget` (`PostgreSQL.PostgreSQL.17`), so the bench ru
 2. [x] `GOOS=linux GOARCH=amd64 go build ./...` and `GOOS=darwin GOARCH=arm64 go build ./...`
        both exit 0; `GOOS=linux go vet ./...` exits 0.
 3. [x] `go mod tidy` drops `golang.org/x/sys` — nothing else in the module uses it.
-4. [ ] The Ubuntu CI job is green: build, unit tests, and the provisioning step — `all` run twice
+4. [x] The Ubuntu CI job is green: build, unit tests, and the provisioning step — `all` run twice
        against the `postgres:17-alpine` service container, proving the bench path and idempotency
        in one step (`verify` inside `all` reports "writer has not run" as a state, not a failure).
        Lint runs once, on the Windows job — the same config over the same untagged code.
-5. [ ] The Windows CI job stays green.
+       Confirmed 2026-08-14: master push run `31793374588` succeeded.
+5. [x] The Windows CI job stays green. Same run.
 
 ## Implementation Steps
 
@@ -81,7 +82,7 @@ vanilla PostgreSQL 17 via `winget` (`PostgreSQL.PostgreSQL.17`), so the bench ru
 - [x] `ubuntu-latest` job in `.github/workflows/ci.yml`: build, `go test -race`, and a
       `postgres:17-alpine` service container provisioned by running `all` twice
 - [x] the stale "does not build on a Linux runner" comment removed from `ci.yml` and `CLAUDE.md`
-- [ ] first push shows both jobs green (acceptance items 4 and 5)
+- [x] first push shows both jobs green (acceptance items 4 and 5)
 
 ### Task 4: Documentation — done
 
@@ -94,8 +95,8 @@ vanilla PostgreSQL 17 via `winget` (`PostgreSQL.PostgreSQL.17`), so the bench ru
 
 ### Task 5: Close the plan
 
-- [ ] CI green on master confirms acceptance items 4 and 5
-- [ ] move this plan to `docs/plans/completed/`
+- [x] CI green on master confirms acceptance items 4 and 5
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 
