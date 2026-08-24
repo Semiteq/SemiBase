@@ -11,3 +11,9 @@ Thumbs.db
 
 # Local secrets
 .env
+
+# Container image build context
+/image/
+
+# Archive dumps taken from a customer installation. The repository is public.
+/samples/

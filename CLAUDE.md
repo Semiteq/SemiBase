@@ -3,7 +3,8 @@
 SemiBase is the deployable PostgreSQL service for the semiconductor-tools installation. It
 provisions and configures the instance that hosts the Simple-Scada 2 archive: the SCADA writes
 `trends`/`messages` into it, SemiPlot and future tools read from it. The deliverable is one
-CLI binary, `semibase.exe`, plus the instance's architecture docs.
+CLI binary, `semibase.exe`, a container image carrying its Linux build, plus the instance's
+architecture docs.
 Deployment target: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver
 `pgx/v5`, `sql/semiplot_tags.sql` embedded via `go:embed`. Entry point: `cmd/semibase`.
 The module is pure `pgx` and compiles for any GOOS; Linux builds serve the containerised
@@ -27,6 +28,26 @@ cross-compiles `windows/amd64` and `linux/amd64` with `CGO_ENABLED=0` — the mo
 `semibase_<version>_<goos>_amd64[.exe]` to the GitHub release — no extension on the Linux
 artifact, an ELF is executable by its mode bit. `-X main.revision=<tag>` is embedded, so
 `semibase version` prints the tag.
+
+The same job then pushes `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` — the root
+`Dockerfile`, `FROM scratch`, a copy of the Linux artifact as the only file. The image is built
+and smoke-run before the release is created, so a bad `Dockerfile` aborts with nothing
+published, and pushed after it, since consumers track `:latest` and still download the release
+assets. "Latest" is one decision made once in the `Read the tag` step — the tag has no `-`
+suffix **and** it is the newest release tag in the repository (`git tag -l --sort=-v:refname`
+over plain `vN.N.N` tags) — and both the release page's `prerelease`/`make_latest` and the
+`:latest` push read it, so they cannot disagree. A prerelease publishes its version tag alone,
+and re-running an old tag's workflow cannot walk either "latest" backwards. Build it by hand the
+way both workflows do — `--platform linux/amd64`, since `FROM scratch` otherwise stamps the
+builder's architecture into the manifest, and a context of one file, so the Dockerfile's
+`COPY semibase` finds it and nothing else reaches the daemon:
+
+```powershell
+$env:CGO_ENABLED = "0"; $env:GOOS = "linux"; $env:GOARCH = "amd64"
+go build -trimpath -ldflags "-s -w -X main.revision=v0.0.0-dev" -o image/semibase ./cmd/semibase
+docker build --platform linux/amd64 -f Dockerfile -t semibase:dev image
+docker run --rm semibase:dev version
+```
 
 The release is named after the tag and nothing else. The whole annotated tag message becomes
 the body, verbatim; blank lines survive, so write it in sections and give it no title line.
@@ -60,7 +81,8 @@ golangci-lint is pinned to 2.12.2 (`winget install GolangCI.golangci-lint --vers
 config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build`, `go test -race`,
 and the same lint on `windows-latest` and `ubuntu-latest` for every push and pull request;
 the Linux job also provisions a `postgres:17-alpine` service container by running `all`
-twice — the bench path and the idempotency check in one step.
+twice — the bench path and the idempotency check in one step — and builds the container image,
+so a broken `Dockerfile` fails on the pull request rather than at tag time. CI pushes nothing.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests; the `verify` command is the integration

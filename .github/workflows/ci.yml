@@ -123,3 +123,15 @@ jobs:
             docker logs semibase-initdb
             exit 1
           fi
+
+      # The published image, built and smoke-checked but never pushed - a broken
+      # Dockerfile has to fail here rather than at tag time. It reuses the binary
+      # the socket step already proved statically linked, which is what lets it
+      # run at all: scratch has no loader, no shell and no libc.
+      - name: Build the container image
+        run: |
+          set -euo pipefail
+          mkdir -p image
+          cp semibase-linux image/semibase
+          docker build --platform linux/amd64 -f Dockerfile -t semibase:ci image
+          docker run --rm semibase:ci version

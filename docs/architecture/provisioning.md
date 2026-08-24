@@ -10,6 +10,63 @@ socket, so neither `psql.exe` nor any runtime needs to be present on the target 
 `sql/semiplot_tags.sql` is embedded at build time. Installing the PostgreSQL engine itself is one documented `winget`
 line, deliberately outside the tool — OS package management is not database provisioning.
 
+## Distribution
+
+A tagged release carries three artifacts, all built from one commit by
+`.github/workflows/release.yml`:
+
+| Artifact | Form | Consumer |
+| --- | --- | --- |
+| `semibase_<version>_windows_amd64.exe` | GitHub release asset | Commissioning on the installation machine |
+| `semibase_<version>_linux_amd64` | GitHub release asset | Provisioning a bench from a Linux host or CI runner |
+| `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` | Container image | Bench images that layer the binary onto `postgres:17-alpine` |
+
+The image is `FROM scratch` and holds one file, `/semibase` — the same bytes as the Linux
+release asset, copied rather than built a second time. It carries no shell, no libc and no CA
+certificates, because nothing runs it as a base: the consumer copies the binary out
+(`COPY --from=ghcr.io/semiteq/semibase:latest /semibase /semibase`) onto its own postgres image
+and runs it as an init script over the unix socket. The init script belongs to that consumer,
+not to the image. The `ENTRYPOINT` is there so
+`docker run ghcr.io/semiteq/semibase:latest version` answers, and it is what the release job
+runs against the built image before pushing it — the one execution of the shipped bytes.
+
+The manifest says `linux/amd64` because every build passes `--platform linux/amd64`. `FROM
+scratch` otherwise takes the platform of whatever machine built it, so the manifest would state
+the runner rather than the payload. A `FROM --platform=` pin does not substitute for the flag —
+it sets the base stage's platform, and scratch carries no config for the output to inherit — so
+the release job reads the built image back and fails if the manifest says anything else.
+
+`latest` is the tag consumers track, and that is deliberate. A delivered installation updates
+neither the database service nor the viewer on its own, so the only pair ever newly deployed is
+the newest SemiBase with the reader as it stands; a bench pinned to an old image would test a
+pair nobody runs. The `vX.Y.Z` tag is immutable and exists to place blame and to reproduce a
+failing pair.
+
+"Latest" only ever moves forward, and that is enforced rather than assumed. One decision, made
+once in the release job, drives all of it: the tag is a release tag (no `-` suffix) **and** it is
+the newest release tag in the repository. That answer sets the GitHub release's `prerelease` and
+`make_latest` fields and gates the `:latest` push alike, so `/releases/latest` and `:latest`
+cannot name different versions. Without the newest test, re-running an old tag's workflow from
+the Actions UI, or pushing two tags at once, walks "latest" backwards with no signal to anyone
+tracking it. A skipped `:latest` push says so in the job log; it is never silent.
+
+The newest tag is found with git's version ordering (`git tag -l --sort=-v:refname`) over plain
+`vN.N[.N…]` tags. That ordering compares the numeric fields as numbers, which a string compare
+does not — `v0.10.0` outranks `v0.9.0`. Narrowing the candidates to unsuffixed tags keeps
+prereleases out of the comparison, and with them git's own placement of `v1.0.0-rc1` *after*
+`v1.0.0` unless `versionsort.suffix` is configured. All tags have to be in the checkout for any
+of it to mean anything; `fetch-depth: 0` is what puts them there, and the job fails loudly if
+the tag being released is not among them.
+
+The image is pushed after the GitHub release exists, never before: consumers still download the
+release assets, so `latest` must never name a version whose assets are missing. The image is
+*built* before it, because a bad copy or a bad `Dockerfile` has to abort while there is still
+nothing published to withdraw.
+
+The GHCR package is public, because consumers pull it anonymously from their own CI. The first
+push creates it private; that is switched once, in the package's settings, and the workflow has
+no say in it.
+
 ## Commands
 
 | Command | What it does | When |
