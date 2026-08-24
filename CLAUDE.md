@@ -30,16 +30,22 @@ artifact, an ELF is executable by its mode bit. `-X main.revision=<tag>` is embe
 `semibase version` prints the tag.
 
 The same job then pushes `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` — the root
-`Dockerfile`, `FROM scratch`, a copy of the Linux artifact as the only file. It runs after the
-release is created, since consumers track `:latest` and still download the release assets; a
-prerelease tag (`v1.2.3-rc1`) publishes its version tag and leaves `latest` alone. Build it by
-hand the way both workflows do — a context of one file, so the Dockerfile's `COPY semibase`
-finds it and nothing else reaches the daemon:
+`Dockerfile`, `FROM scratch`, a copy of the Linux artifact as the only file. The image is built
+and smoke-run before the release is created, so a bad `Dockerfile` aborts with nothing
+published, and pushed after it, since consumers track `:latest` and still download the release
+assets. "Latest" is one decision made once in the `Read the tag` step — the tag has no `-`
+suffix **and** it is the newest release tag in the repository (`git tag -l --sort=-v:refname`
+over plain `vN.N.N` tags) — and both the release page's `prerelease`/`make_latest` and the
+`:latest` push read it, so they cannot disagree. A prerelease publishes its version tag alone,
+and re-running an old tag's workflow cannot walk either "latest" backwards. Build it by hand the
+way both workflows do — `--platform linux/amd64`, since `FROM scratch` otherwise stamps the
+builder's architecture into the manifest, and a context of one file, so the Dockerfile's
+`COPY semibase` finds it and nothing else reaches the daemon:
 
 ```powershell
 $env:CGO_ENABLED = "0"; $env:GOOS = "linux"; $env:GOARCH = "amd64"
 go build -trimpath -ldflags "-s -w -X main.revision=v0.0.0-dev" -o image/semibase ./cmd/semibase
-docker build -f Dockerfile -t semibase:dev image
+docker build --platform linux/amd64 -f Dockerfile -t semibase:dev image
 docker run --rm semibase:dev version
 ```
 

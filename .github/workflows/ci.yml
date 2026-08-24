@@ -133,5 +133,5 @@ jobs:
           set -euo pipefail
           mkdir -p image
           cp semibase-linux image/semibase
-          docker build -f Dockerfile -t semibase:ci image
+          docker build --platform linux/amd64 -f Dockerfile -t semibase:ci image
           docker run --rm semibase:ci version

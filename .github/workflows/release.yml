@@ -5,9 +5,14 @@ on:
     tags:
       - "v*"
 
+# The group is the workflow alone, deliberately: with github.ref in it, two tags
+# pushed together (git push --tags) run as separate concurrent jobs and whichever
+# `docker push :latest` lands last wins. Cancelling is off for the same reason -
+# a job killed between the GitHub release and the image push leaves the pair
+# half-published.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -18,10 +23,11 @@ jobs:
       packages: write
 
     steps:
-      # fetch-depth: 0 is load-bearing. At a finite depth actions/checkout
-      # fetches the tag by SHA and leaves a LIGHTWEIGHT tag behind, which
-      # throws the annotation away and drops every release to the fallback
-      # text without failing anything.
+      # fetch-depth: 0 is load-bearing twice over. At a finite depth
+      # actions/checkout fetches the tag by SHA and leaves a LIGHTWEIGHT tag
+      # behind, which throws the annotation away and drops every release to the
+      # fallback text without failing anything; and the :latest guard below
+      # needs every other tag present to know whether this one is the newest.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -43,9 +49,55 @@ jobs:
         id: tag
         shell: bash
         run: |
+          set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+          # ghcr.io accepts lowercase names only, and the owner is not lowercase
+          IMAGE="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+          # semver: everything after the first hyphen is a prerelease. This test
+          # and the newest-tag one below settle every "latest" in the release -
+          # the GitHub release's prerelease and make_latest fields and the
+          # image's :latest tag all read the same two answers, so the release
+          # page and the registry cannot name different versions.
+          case "$TAG" in
+            *-*) PRERELEASE=true ;;
+            *) PRERELEASE=false ;;
+          esac
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+          # "Latest" may only ever move forward, and two ordinary operator moves
+          # walk it backwards without this test: re-running an old tag's
+          # workflow from the Actions UI, and pushing two tags at once. So the
+          # tag being released has to BE the newest release tag in the
+          # repository, not merely a non-prerelease one. Every tag has to be
+          # present for that to mean anything - checkout's fetch-depth: 0 is
+          # what puts them there, and this fails loudly if they are missing.
+          #
+          # The comparison is git's version ordering, not a string compare:
+          # -v:refname reads the numeric fields as numbers, so v0.10.0 outranks
+          # v0.9.0, which "v0.10.0" > "v0.9.0" as text does not. Candidates are
+          # narrowed to plain vN.N[.N...] tags, so no prerelease and no oddly
+          # named tag can be the newest - which also keeps git's own ordering of
+          # suffixed tags out of it, since it puts v1.0.0-rc1 AFTER v1.0.0
+          # unless versionsort.suffix is configured.
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::tag $TAG is not in the checkout, so it cannot be compared against the others"
+            exit 1
+          fi
+          NEWEST=$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+(\.[0-9]+)+$' | head -n 1 || true)
+          echo "newest=$NEWEST" >> "$GITHUB_OUTPUT"
+
+          if [ "$PRERELEASE" = false ] && [ "$NEWEST" = "$TAG" ]; then
+            MAKE_LATEST=true
+          else
+            MAKE_LATEST=false
+          fi
+          echo "make_latest=$MAKE_LATEST" >> "$GITHUB_OUTPUT"
+          echo "$TAG: prerelease=$PRERELEASE, newest release tag=${NEWEST:-none}, latest moves=$MAKE_LATEST"
 
           # objecttype is the only reliable test. A lightweight tag is a bare
           # ref onto the commit, so %(contents) silently resolves to the COMMIT
@@ -100,6 +152,35 @@ jobs:
           cp "dist/semibase_${VERSION}_linux_amd64" image/semibase
           ls -l dist image
 
+      # Built before the release exists, pushed after it. The build is the half
+      # that fails on a bad copy or a bad Dockerfile, and it has to fail while
+      # there is still nothing published to withdraw.
+      - name: Build the container image
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          IMAGE: ${{ steps.tag.outputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 -f Dockerfile -t "$IMAGE:$TAG" image
+
+          # The only run of the shipped bytes anywhere. CI's smoke check runs a
+          # binary built without -trimpath and without -s -w, so it exercises a
+          # different artifact than the one consumers pull.
+          docker run --rm "$IMAGE:$TAG" version
+
+          # provisioning.md states the image is linux/amd64, and FROM scratch
+          # otherwise takes its manifest from whatever built it. --platform is
+          # the only thing that sets it - a FROM --platform= pin does not, since
+          # scratch carries no config for the output to inherit - so the claim
+          # is read back off the built image rather than trusted.
+          PLATFORM=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE:$TAG")
+          echo "image platform: $PLATFORM"
+          if [ "$PLATFORM" != linux/amd64 ]; then
+            echo "::error::image manifest says $PLATFORM, not linux/amd64"
+            exit 1
+          fi
+
       # Pinned to a commit, not a tag: this is the one third-party action that
       # runs with the job's contents: write token, so a moved tag in its
       # repository would be a write-capable supply chain change.
@@ -110,8 +191,8 @@ jobs:
           name: ${{ steps.tag.outputs.tag }}
           body: ${{ steps.tag.outputs.body }}
           draft: false
-          prerelease: false
-          make_latest: true
+          prerelease: ${{ steps.tag.outputs.prerelease }}
+          make_latest: ${{ steps.tag.outputs.make_latest }}
           files: dist/*
 
       # After the release, never before: SemiPlot's bench tracks :latest and its
@@ -124,25 +205,34 @@ jobs:
       - name: Publish the container image
         env:
           TAG: ${{ steps.tag.outputs.tag }}
-          REPOSITORY: ${{ github.repository }}
+          PRERELEASE: ${{ steps.tag.outputs.prerelease }}
+          NEWEST: ${{ steps.tag.outputs.newest }}
+          MOVE_LATEST: ${{ steps.tag.outputs.make_latest }}
+          IMAGE: ${{ steps.tag.outputs.image }}
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          # ghcr.io accepts lowercase names only, and the owner is not lowercase
-          IMAGE="ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          # on a trap, so the credential leaves ~/.docker/config.json on the
+          # skip and failure paths too, not only on the one that runs to the end
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
           printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
 
-          docker build -f Dockerfile -t "$IMAGE:$TAG" image
           docker push "$IMAGE:$TAG"
 
-          # semver: everything after the first hyphen is a prerelease, so
-          # v1.2.3-rc1 publishes its own tag and leaves :latest where it is
-          case "$TAG" in
-            *-*) echo "prerelease $TAG: :latest not moved" ;;
-            *)
-              docker tag "$IMAGE:$TAG" "$IMAGE:latest"
-              docker push "$IMAGE:latest"
-              ;;
-          esac
+          # The same answer the GitHub release's make_latest was set from, so
+          # :latest and /releases/latest move together or not at all. A skipped
+          # push says why; it is never silent.
+          if [ "$MOVE_LATEST" != true ]; then
+            if [ "$PRERELEASE" = true ]; then
+              echo ":latest not moved: $TAG is a prerelease"
+            else
+              echo ":latest not moved: $TAG is not the newest release tag (${NEWEST:-none} is)"
+            fi
+            exit 0
+          fi
+
+          docker tag "$IMAGE:$TAG" "$IMAGE:latest"
+          docker push "$IMAGE:latest"
+          echo ":latest now names $TAG"
