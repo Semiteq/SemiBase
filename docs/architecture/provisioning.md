@@ -7,8 +7,9 @@ matters, is a liability.
 
 The binary is self-contained: `pgx/v5` speaks the wire protocol itself, over TCP or a unix
 socket, so neither `psql.exe` nor any runtime needs to be present on the target machine.
-`sql/semiplot_tags.sql` is embedded at build time. Installing the PostgreSQL engine itself is one documented `winget`
-line, deliberately outside the tool — OS package management is not database provisioning.
+`sql/semiplot_tags.sql` and `sql/trends.sql` are embedded at build time. Installing the PostgreSQL
+engine itself is one documented `winget` line, deliberately outside the tool — OS package management
+is not database provisioning.
 
 ## Distribution
 
@@ -69,12 +70,25 @@ no say in it.
 
 ## Commands
 
+The tool is a setup script: it brings an instance to a known state and exits. It is run once, at
+commissioning, and nobody comes back to run a second command by hand. So the surface names the two
+situations it is run in, not the phases it runs through.
+
 | Command | What it does | When |
 | --- | --- | --- |
-| `config` | Writes the `ALTER SYSTEM` deltas from `configuration.md` and applies them with `pg_reload_conf()`; prints the server's pending-restart list (`shared_buffers` is the one entry, active after the next service restart or reboot) | Production. Never against a shared dev server — it retunes the whole instance; a throwaway bench container needs no tuning |
-| `create` | Creates the archive database, the roles, the grants, the default privileges, and `semiplot_tags` | Before the SCADA's first start |
-| `verify` | Proves the reader access chain against the tables the writer created | After the SCADA's first start |
-| `all` | `config` + `create` + `verify`; `verify` reports "writer has not run" as a distinct state, not a failure | Fresh instance |
+| `site` | The memory tuning, then everything else | An installation machine |
+| `bench` | Everything else, without the tuning | A throwaway container: a consumer's test bench or a development database |
+
+The two differ in exactly one thing, the tuning. The rest is identical, which is what makes a bench
+a test of what a site runs:
+
+| Step | `site` | `bench` |
+| --- | --- | --- |
+| `ALTER SYSTEM` constants from `configuration.md`, applied with `pg_reload_conf()` | yes | no — the constants are sized for an installation machine and mean nothing to a container |
+| Archive database, both roles, grants, default privileges, `semiplot_tags` | yes | yes |
+| `public.trends` with the `tpdefault` partition, created as `scada_writer` | yes | yes |
+| Reader-access checks at the tail | yes | yes |
+| Pending-restart warning at the tail | yes | yes — `bench` tunes nothing, but it runs against existing servers too, and one a `site` run tuned can still be waiting for its restart |
 
 `version` (or `--version`) prints the build revision: the ldflags value
 (`-X main.revision=...`) when a release sets it, otherwise the VCS revision from
@@ -104,7 +118,7 @@ pgx then dials `<directory>/.s.PGSQL.<port>` on the `unix` network. Widening the
 would be a trap, not a courtesy: libpq also accepts a leading `@` for Linux's abstract namespace,
 but pgx resolves such a host as a TCP name, so `semibase` leaves it on the TCP path.
 
-The socket form is what lets `create` run as an init script in the official `postgres` image,
+The socket form is what lets `bench` run as an init script in the official `postgres` image,
 whose entrypoint serves `/docker-entrypoint-initdb.d/` from a temporary server with
 `listen_addresses` set to empty — reachable over the socket only. The Linux CI job runs exactly
 that: it layers the freshly built binary onto `postgres:17-alpine` behind such an init script and
@@ -120,7 +134,7 @@ never exist.
 The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
 
 - **Database-name validation.** `Options.Validate()` checks `Database` against
-  `^[a-z_][a-z0-9_]*$` and runs first in every phase (`Config`, `Create`, `verify`). The
+  `^[a-z_][a-z0-9_]*$` and runs first in every phase (`config`, `create`, `check`). The
   pattern lives only in `internal/provision`; the CLI calls the same method for the friendly
   early error.
 - **Identifier quoting.** Every interpolation of the database name into DDL goes through
@@ -133,60 +147,116 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
   in-flight query through pgx instead of killing the process mid-DDL. The context itself —
   `signal.NotifyContext(..., os.Interrupt)` plus the five-minute per-command timeout
   (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`.
-- **Pending-restart reporting.** The tool never touches the service manager. `config` applies
-  its deltas with `pg_reload_conf()` and reads `pg_settings.pending_restart` back from the
-  server; `verify` warns while any setting still waits. The operator restarts the service or
-  reboots the machine — the one manual step, and the tool says so instead of doing it.
+- **Pending-restart reporting.** The tool never touches the service manager. The tuning phase
+  applies its deltas with `pg_reload_conf()` and reads `pg_settings.pending_restart` back from
+  the server; both commands read it again as the **last** statement of the tail, after the
+  access checks, so the last line either prints names a pending `shared_buffers`. The operator
+  restarts the service or reboots the machine — the one manual step, and the tool says so
+  instead of doing it.
 
 ## The reader-access chain
 
-`semiplot_reader` needs `SELECT` on `trends` and `messages` — tables that do not exist until the
-SCADA has run once. A plain `GRANT` cannot be issued on a table that is not there, so `create`
-sets:
+`semiplot_reader` needs `SELECT` on `trends` and on every day partition the SCADA creates later —
+objects that do not exist when the grant has to be decided. A plain `GRANT` cannot be issued on a
+table that is not there, so the create phase sets:
 
 ```sql
 ALTER DEFAULT PRIVILEGES FOR ROLE scada_writer IN SCHEMA public
     GRANT SELECT ON TABLES TO semiplot_reader;
 ```
 
-This must be in place **before** the writer first starts; tables the writer creates afterwards are
-readable automatically. If the writer ran first, the repair is a one-time
-`GRANT SELECT ON ALL TABLES IN SCHEMA public` plus the default-privileges statement for the
-partitions still to come — `verify` detects this state and says so.
+This is in place **before** `public.trends` is created and before the writer first starts; tables
+`scada_writer` creates afterwards are readable automatically. If a table was created before the
+statement ran, the repair is a one-time `GRANT SELECT ON ALL TABLES IN SCHEMA public` for the
+tables that exist plus the default-privileges statement for the partitions still to come, then
+another run of the tool — the tail check detects that state and prints all three.
 
 On PostgreSQL 15 and later the `public` schema no longer grants `CREATE` to everyone, so
 `create` grants it to `scada_writer` explicitly. On 14 the grant is redundant and harmless.
 
-## What `verify` proves
+## The archive table
 
-1. `public.trends` and `public.messages` exist — the writer has run.
-2. `semiplot_reader` holds `SELECT` and does not hold `INSERT` on `trends`.
-3. When the reader password is supplied, an actual connection as `semiplot_reader` reads one row —
-   the whole chain, not just the catalog view of it.
-4. The default partition is empty. Rows in it mean a day partition was missing at write time,
-   which is a writer-side fault worth surfacing during commissioning.
-5. No setting waits for a service restart (`pg_settings.pending_restart`) — a warning, not a
-   failure, so a pending `shared_buffers` never blocks the access-chain checks.
+`public.trends` is created by this tool, by both commands, from `sql/trends.sql` — the vendor's
+shape, transcribed from a customer archive dump. Three properties of how it is created carry the
+weight:
+
+- **The role, more than the shape.** The table is created as `scada_writer`, because the reader's
+  `SELECT` has to arrive through the default privileges set for that role a moment earlier. A
+  superuser-owned table would give the reader access for a different reason than a site gets it,
+  and a bench would then test a different thing from production. The role is assumed with
+  `SET ROLE` on the superuser connection, not through a `scada_writer` login: measured on
+  `postgres:17-alpine`, both routes leave the same `relowner` and the same `relacl`
+  (`{scada_writer=arwdDxtm/scada_writer,semiplot_reader=r/scada_writer}`), while a login also has
+  to be admitted by `pg_hba.conf` — and `local all all peer`, the default on Debian, Ubuntu and
+  RHEL, refuses it on a unix socket. Creating the table therefore needs no writer password; the
+  writer password is needed only on a first run, to create the role itself.
+- **`messages` is not created.** Nothing we ship reads it, and every object we create is a surface
+  that can drift from the vendor.
+- **Day partitions are not created.** `tpYYYYmMMdDD` belongs to the SCADA on a site and to the
+  consumer's seeder on a bench. Only the `tpdefault` catch-all is created, so a row written while
+  no day partition exists lands somewhere instead of failing.
+
+Existence is checked first (`to_regclass('public.trends')`), so a second run leaves the table
+untouched — including a table the SCADA has since altered. Untouched is not unread: on that path
+the run reads back what it promises. `public.tpdefault` must be there, and its absence is a
+failure with the one `CREATE TABLE ... PARTITION OF ... DEFAULT` that repairs it, because a table
+without it rejects any row no day partition covers. Its row count is then reported — always zero
+on the create path, but on a table that may be months old a non-empty `tpdefault` is the only
+signal that a day partition was missing at write time, so it is a warning rather than a failure.
+
+## Assumption: the SCADA meeting an existing `trends`
+
+**Unverified.** Simple-Scada 2's behaviour when its archive target already exists is undocumented
+and unmeasured. The expectation is that it writes into the existing table the way it does after a
+reconnect, because the shape it finds is the shape it makes.
+
+The experiment that settles it: set `log_statement = 'all'`, start a Simple-Scada project once
+against a database provisioned by `semibase site`, and read from the PostgreSQL log the DDL the
+SCADA issues. If it creates the table unconditionally, or alters what it finds, this section is
+replaced by what was observed and `sql/trends.sql` is reconsidered.
+
+## What the tail checks prove
+
+Both commands end with them, and a failure is a non-zero exit — the run did not reach the state it
+promises. They are knowable at exit precisely because this tool creates `public.trends` itself:
+
+1. **`semiplot_reader` reads `public.trends`.** The read itself, not a catalog bit:
+   `SET ROLE semiplot_reader` on the superuser connection, then
+   `SELECT count(*) FROM (SELECT 1 FROM public.trends LIMIT 1) probe`. `has_table_privilege`
+   cannot carry this check — after `REVOKE USAGE ON SCHEMA public FROM public` it still answers
+   `t` while every read the reader issues fails with `permission denied for schema public`
+   (measured). The catalog bit is asked only when the read has already failed, to split a missing
+   table grant from a schema the reader cannot enter, and each answer prints its own repair.
+   `SET ROLE` rather than a login for the `pg_hba.conf` reason above.
+2. **The `semiplot_reader` login reads it too**, over TCP, when the reader password is present in
+   the run. This is the half `SET ROLE` cannot reach: `pg_hba.conf` admitting the role and the
+   password a consumer will carry. It is skipped, with a printed note, when no reader password
+   was given, and on a socket host — `peer` is the platform default there and no consumer reads
+   over the socket.
+3. `semiplot_reader` does not hold `INSERT` on `public.trends` — the reader is read-only. This one
+   stays a catalog question: a failed `INSERT` proves nothing about the next one.
+4. No setting waits for a service restart (`pg_settings.pending_restart`) — a warning, not a
+   failure, so a pending `shared_buffers` never blocks the access checks. Both commands read it,
+   last, after the access checks.
 
 ## Development benches
 
 The bench is an ephemeral vanilla `postgres:17-alpine` container. The consumer's test fixture
-starts it and provisions it by running `create --database semiplot_dev --expected-major 17` —
-the same code path production takes, which is what keeps the fixture from drifting into a
-hand-written copy of the grants. `config` is not part of the bench: a throwaway container has
-nothing to tune. 14 remains the floor `create` accepts through `--expected-major`; the bench
-runs the pinned major, 17.
+starts it and provisions it by running `bench --database semiplot_dev --expected-major 17` — the
+same code path a site takes minus the tuning, which is what keeps the fixture from drifting into a
+hand-written copy of the grants. 14 remains the floor accepted through `--expected-major`; the
+bench runs the pinned major, 17.
 
 Two rules make the bench exercise what production exercises:
 
-- The bench seeder connects **as `scada_writer`** and creates the archive tables itself, the way
-  the SCADA would. This is what makes the default-privileges chain a daily-tested path instead of
-  a commissioning-day surprise.
+- `public.trends` is created **as `scada_writer`**, by both commands, so the default-privileges
+  chain is a daily-tested path instead of a commissioning-day surprise.
 - Bench integration tests read **as `semiplot_reader`**, never as a superuser, so a broken grant
   fails a test today.
 
-The seeder and the tests live in the SemiPlot repository; this repository only promises them a
-correctly provisioned database.
+The consumer's seeder fills the archive and creates the day partitions its data needs; it and the
+tests live in the SemiPlot repository. This repository promises them a provisioned database with an
+empty `public.trends` in it.
 
 ## Passwords
 

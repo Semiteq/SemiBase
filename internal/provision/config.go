@@ -27,7 +27,7 @@ var settings = []setting{
 	{"track_io_timing", "on"},
 }
 
-func (o Options) Config(ctx context.Context) error {
+func (o Options) config(ctx context.Context) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}

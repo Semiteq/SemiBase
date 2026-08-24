@@ -41,18 +41,25 @@ func (o Options) Validate() error {
 	return nil
 }
 
-func (o Options) All(ctx context.Context) error {
-	if err := o.Config(ctx); err != nil {
+// Site brings an installation machine to its commissioned state: memory tuning, then
+// everything the archive needs.
+func (o Options) Site(ctx context.Context) error {
+	if err := o.config(ctx); err != nil {
 		return err
 	}
-	if err := o.Create(ctx); err != nil {
+	if err := o.create(ctx); err != nil {
 		return err
 	}
-	return o.verify(ctx, true)
+	return o.check(ctx)
 }
 
-func (o Options) Verify(ctx context.Context) error {
-	return o.verify(ctx, false)
+// Bench brings a throwaway container to the same state minus the tuning: its memory
+// constants are sized for an installation machine and mean nothing to a container.
+func (o Options) Bench(ctx context.Context) error {
+	if err := o.create(ctx); err != nil {
+		return err
+	}
+	return o.check(ctx)
 }
 
 // pgx dials a unix socket exactly when pgconn.isAbsolutePath accepts the host. Widening this
@@ -139,11 +146,16 @@ func alterRolePasswordStatement(name, password string) string {
 	return fmt.Sprintf("ALTER ROLE %s PASSWORD '%s'", name, escapeLiteral(password))
 }
 
-func (o Options) Create(ctx context.Context) error {
+func defaultPrivilegesStatement() string {
+	return fmt.Sprintf("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA public GRANT SELECT ON TABLES TO %s",
+		WriterRole, ReaderRole)
+}
+
+func (o Options) create(ctx context.Context) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}
-	step("Phase create: database %s, roles, access chain", o.Database)
+	step("Phase create: database %s, roles, access chain, archive table", o.Database)
 
 	super, err := o.connect(ctx, "postgres", o.SuperUser, o.SuperPassword)
 	if err != nil {
@@ -200,11 +212,9 @@ func (o Options) Create(ctx context.Context) error {
 		return fmt.Errorf("granting CREATE on schema public: %w", err)
 	}
 
-	// trends/messages do not exist until the SCADA runs, so SELECT on them can only be
-	// granted ahead of time, through default privileges of their future owner
-	defaultPrivileges := fmt.Sprintf(
-		"ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA public GRANT SELECT ON TABLES TO %s",
-		WriterRole, ReaderRole)
+	// the writer creates public.trends below and its partitions later, so SELECT on them
+	// can only be granted ahead of time, through default privileges of their owner
+	defaultPrivileges := defaultPrivilegesStatement()
 	if _, err := archive.Exec(ctx, defaultPrivileges); err != nil {
 		return fmt.Errorf("%s: %w", defaultPrivileges, err)
 	}
@@ -217,6 +227,92 @@ func (o Options) Create(ctx context.Context) error {
 		return fmt.Errorf("granting SELECT on semiplot_tags: %w", err)
 	}
 	ok("semiplot_tags in place, readable by %s", ReaderRole)
+
+	return ensureArchiveTable(ctx, archive)
+}
+
+func relationExists(ctx context.Context, conn *pgx.Conn, name string) (bool, error) {
+	var exists bool
+	if err := conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", name).Scan(&exists); err != nil {
+		return false, fmt.Errorf("checking %s: %w", name, err)
+	}
+	return exists, nil
+}
+
+// runAs assumes role for the statements fn issues on conn, and drops back afterwards. The
+// superuser connection is short-lived, but a leaked role would silently change what every
+// later statement on it is allowed to do.
+func runAs(ctx context.Context, conn *pgx.Conn, role string, fn func() error) error {
+	if _, err := conn.Exec(ctx, "SET ROLE "+role); err != nil {
+		return fmt.Errorf("assuming the %s role: %w", role, err)
+	}
+	err := fn()
+	if _, resetErr := conn.Exec(ctx, "RESET ROLE"); resetErr != nil && err == nil {
+		return fmt.Errorf("dropping the %s role: %w", role, resetErr)
+	}
+	return err
+}
+
+func ensureArchiveTable(ctx context.Context, archive *pgx.Conn) error {
+	exists, err := relationExists(ctx, archive, "public.trends")
+	if err != nil {
+		return err
+	}
+	if exists {
+		return inspectArchiveTable(ctx, archive)
+	}
+	return createArchiveTable(ctx, archive)
+}
+
+// public.trends is created as scada_writer, so the table's owner is the role the SCADA writes
+// with and the reader's SELECT arrives through the default privileges set for that role a
+// moment earlier. A superuser-owned table would hand the reader access for a different reason,
+// and a bench would then test something production does not do.
+//
+// The role is assumed with SET ROLE on the superuser connection rather than through a
+// scada_writer login. Both produce the same owner and the same relacl - measured, not assumed -
+// but a login also has to be admitted by pg_hba.conf, and "local all all peer", the default on
+// Debian, Ubuntu and RHEL, refuses it on a unix socket.
+func createArchiveTable(ctx context.Context, archive *pgx.Conn) error {
+	err := runAs(ctx, archive, WriterRole, func() error {
+		if _, err := archive.Exec(ctx, semibase.TrendsSQL); err != nil {
+			return fmt.Errorf("applying trends.sql as %s: %w", WriterRole, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	ok("public.trends created as %s, partitioned by t, with the tpdefault partition", WriterRole)
+	return nil
+}
+
+// an existing table is never altered - it may be one the SCADA has since changed - but the run
+// still promises the state this tool describes, so what it promises is read back.
+func inspectArchiveTable(ctx context.Context, archive *pgx.Conn) error {
+	ok("public.trends exists, left untouched")
+
+	defaultPartition, err := relationExists(ctx, archive, "public.tpdefault")
+	if err != nil {
+		return err
+	}
+	if !defaultPartition {
+		return fmt.Errorf("public.trends exists without its default partition public.tpdefault: a row "+
+			"whose timestamp no day partition covers is rejected at write time. Repair with "+
+			"CREATE TABLE public.tpdefault PARTITION OF public.trends DEFAULT, issued as %s", WriterRole)
+	}
+
+	// on the create path this is always zero; here the table can be months old, and a non-empty
+	// tpdefault is the only signal that a day partition was missing at write time
+	var strayRows int64
+	if err := archive.QueryRow(ctx, "SELECT count(*) FROM public.tpdefault").Scan(&strayRows); err != nil {
+		return fmt.Errorf("counting public.tpdefault rows: %w", err)
+	}
+	if strayRows > 0 {
+		warn("default partition tpdefault holds %d rows - a day partition was missing at write time.", strayRows)
+		return nil
+	}
+	ok("default partition tpdefault is present and empty")
 	return nil
 }
 
@@ -278,11 +374,17 @@ func (o Options) ensureDatabase(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-func (o Options) verify(ctx context.Context, asPartOfAll bool) error {
+// the cheapest statement that still needs SELECT on public.trends and USAGE on the schema it
+// lives in, whatever the table's size
+const readerProbe = "SELECT count(*) FROM (SELECT 1 FROM public.trends LIMIT 1) probe"
+
+// the tail of every run. The tool created public.trends itself a moment ago, so the reader's
+// access to it is knowable at exit instead of after the SCADA's first start.
+func (o Options) check(ctx context.Context) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}
-	step("Phase verify: post-writer checks")
+	step("Phase check: the reader access chain")
 
 	archive, err := o.connect(ctx, o.Database, o.SuperUser, o.SuperPassword)
 	if err != nil {
@@ -290,52 +392,63 @@ func (o Options) verify(ctx context.Context, asPartOfAll bool) error {
 	}
 	defer archive.Close(ctx)
 
-	pending, err := pendingRestartSettings(ctx, archive)
-	if err != nil {
+	if err := assertReaderReads(ctx, archive); err != nil {
 		return err
 	}
-	if len(pending) > 0 {
-		warn("settings waiting for a service restart: %s - restart the PostgreSQL service or reboot the machine.",
-			strings.Join(pending, ", "))
+	if err := assertReaderCannotWrite(ctx, archive); err != nil {
+		return err
 	}
+	if err := o.checkReaderLogin(ctx); err != nil {
+		return err
+	}
+	// last, so a pending shared_buffers is the last thing the run prints
+	return reportPendingRestart(ctx, archive)
+}
 
-	var trendsExists bool
-	if err := archive.QueryRow(ctx, "SELECT to_regclass('public.trends') IS NOT NULL").Scan(&trendsExists); err != nil {
-		return fmt.Errorf("checking public.trends: %w", err)
+// the load-bearing check: the read itself, issued as the reader. has_table_privilege answers
+// from one catalog bit and stops there - it says yes for a reader that REVOKE USAGE ON SCHEMA
+// public has locked out of the schema the table lives in, a state this tool has to fail on.
+// SET ROLE rather than a login, for the pg_hba reason createArchiveTable states; the login is
+// checked separately, where it can be.
+func assertReaderReads(ctx context.Context, archive *pgx.Conn) error {
+	var probeErr error
+	if err := runAs(ctx, archive, ReaderRole, func() error {
+		var probed int
+		probeErr = archive.QueryRow(ctx, readerProbe).Scan(&probed)
+		return nil
+	}); err != nil {
+		return err
 	}
-	if !trendsExists {
-		message := "writer has not run yet: public.trends does not exist. " +
-			"Start the Simple-Scada project against this database once, then run verify."
-		if asPartOfAll {
-			note("%s", message)
-			return nil
-		}
-		return fmt.Errorf("%s", message)
+	if probeErr != nil {
+		return diagnoseFailedRead(ctx, archive, probeErr)
 	}
-	ok("public.trends exists")
+	ok("%s reads public.trends", ReaderRole)
+	return nil
+}
 
-	var messagesExists bool
-	if err := archive.QueryRow(ctx, "SELECT to_regclass('public.messages') IS NOT NULL").Scan(&messagesExists); err != nil {
-		return fmt.Errorf("checking public.messages: %w", err)
-	}
-	if messagesExists {
-		ok("public.messages exists")
-	} else {
-		warn("public.messages does not exist")
-	}
-
-	var canSelect bool
+// the catalog bit earns its place here and only here: it separates a missing table grant, whose
+// repair is the default-privileges chain, from a schema the reader cannot enter
+func diagnoseFailedRead(ctx context.Context, archive *pgx.Conn, probeErr error) error {
+	var granted bool
 	if err := archive.QueryRow(ctx,
-		"SELECT has_table_privilege($1, 'public.trends', 'SELECT')", ReaderRole).Scan(&canSelect); err != nil {
-		return fmt.Errorf("checking reader SELECT privilege: %w", err)
+		"SELECT has_table_privilege($1, 'public.trends', 'SELECT')", ReaderRole).Scan(&granted); err != nil {
+		return fmt.Errorf("%s cannot read public.trends (%w) and its SELECT privilege could not be read: %w",
+			ReaderRole, probeErr, err)
 	}
-	if !canSelect {
-		return fmt.Errorf("%s cannot SELECT on public.trends: the writer ran before default privileges "+
-			"were set; repair with GRANT SELECT ON ALL TABLES IN SCHEMA public TO %s, then re-run create",
-			ReaderRole, ReaderRole)
+	if !granted {
+		return fmt.Errorf("%s cannot read public.trends: it holds no SELECT on the table, so the table was "+
+			"created before the default privileges were set (%w). Repair with GRANT SELECT ON ALL TABLES IN "+
+			"SCHEMA public TO %s for the tables that exist, then %s for the partitions still to come, then "+
+			"re-run this command", ReaderRole, probeErr, ReaderRole, defaultPrivilegesStatement())
 	}
-	ok("%s holds SELECT on public.trends", ReaderRole)
+	return fmt.Errorf("%s holds SELECT on public.trends and still cannot read it: %w. The usual cause is a "+
+		"revoked schema privilege; repair with GRANT USAGE ON SCHEMA public TO %s, then re-run this command",
+		ReaderRole, probeErr, ReaderRole)
+}
 
+// the reader is read-only. No probe can prove the absence of a privilege the way a read proves
+// its presence, so this one stays a catalog question.
+func assertReaderCannotWrite(ctx context.Context, archive *pgx.Conn) error {
 	var canInsert bool
 	if err := archive.QueryRow(ctx,
 		"SELECT has_table_privilege($1, 'public.trends', 'INSERT')", ReaderRole).Scan(&canInsert); err != nil {
@@ -345,37 +458,47 @@ func (o Options) verify(ctx context.Context, asPartOfAll bool) error {
 		return fmt.Errorf("%s holds INSERT on public.trends - the reader must be read-only", ReaderRole)
 	}
 	ok("%s does not hold INSERT", ReaderRole)
+	return nil
+}
 
-	if o.ReaderPassword != "" {
-		reader, err := o.connect(ctx, o.Database, ReaderRole, o.ReaderPassword)
-		if err != nil {
-			return fmt.Errorf("live reader connection: %w", err)
-		}
-		defer reader.Close(ctx)
-		var probed int
-		if err := reader.QueryRow(ctx,
-			"SELECT count(*) FROM (SELECT 1 FROM public.trends LIMIT 1) probe").Scan(&probed); err != nil {
-			return fmt.Errorf("live reader probe: %w", err)
-		}
-		ok("live connection as %s reads public.trends", ReaderRole)
-	} else {
-		note("reader password not supplied - live connection as %s not tested.", ReaderRole)
+// what SET ROLE cannot reach: pg_hba admitting the reader, and the password a consumer will
+// carry. It needs that password, and it is skipped on a socket host - "local all all peer" is
+// the platform default there, no consumer reads over the socket, and the socket path exists so
+// this tool can run as an init script inside a postgres image.
+func (o Options) checkReaderLogin(ctx context.Context) error {
+	switch {
+	case o.ReaderPassword == "":
+		note("no %s password given - the login was not tested, only the privileges behind it.", ReaderRole)
+		return nil
+	case isSocketHost(o.Host):
+		note("socket host - the %s login was not tested; a consumer connects over TCP.", ReaderRole)
+		return nil
 	}
 
-	var defaultPartitionExists bool
-	if err := archive.QueryRow(ctx, "SELECT to_regclass('public.tpdefault') IS NOT NULL").Scan(&defaultPartitionExists); err != nil {
-		return fmt.Errorf("checking public.tpdefault: %w", err)
+	reader, err := o.connect(ctx, o.Database, ReaderRole, o.ReaderPassword)
+	if err != nil {
+		return err
 	}
-	if defaultPartitionExists {
-		var strayRows int64
-		if err := archive.QueryRow(ctx, "SELECT count(*) FROM public.tpdefault").Scan(&strayRows); err != nil {
-			return fmt.Errorf("counting tpdefault rows: %w", err)
-		}
-		if strayRows > 0 {
-			warn("default partition tpdefault holds %d rows - a day partition was missing at write time.", strayRows)
-		} else {
-			ok("default partition tpdefault is empty")
-		}
+	defer reader.Close(ctx)
+
+	var probed int
+	if err := reader.QueryRow(ctx, readerProbe).Scan(&probed); err != nil {
+		return fmt.Errorf("%s reads public.trends over its own login: %w", ReaderRole, err)
+	}
+	ok("%s logs in and reads public.trends", ReaderRole)
+	return nil
+}
+
+// both commands report it: bench tunes nothing, but it can run against a server a previous
+// site run tuned and nobody restarted
+func reportPendingRestart(ctx context.Context, conn *pgx.Conn) error {
+	pending, err := pendingRestartSettings(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if len(pending) > 0 {
+		warn("settings waiting for a service restart: %s - restart the PostgreSQL service or reboot the machine.",
+			strings.Join(pending, ", "))
 	}
 	return nil
 }

@@ -15,8 +15,8 @@ its own retention setting.
 
 | Consumer | Role | Access |
 | --- | --- | --- |
-| Simple-Scada 2 (archives into PostgreSQL) | `scada_writer` | Creates and writes `trends`/`messages` and their partitions; executes retention |
-| SemiPlot (trend viewer) | `semiplot_reader` | `SELECT` on `trends`, `messages`, `semiplot_tags` — nothing else |
+| Simple-Scada 2 (archives into PostgreSQL) | `scada_writer` | Owns and writes `trends`, creates its day partitions, creates and writes `messages`; executes retention |
+| SemiPlot (trend viewer) | `semiplot_reader` | `SELECT` on `trends` and `semiplot_tags` — nothing else |
 
 The `semiplot_*` objects are owned by `postgres`; commissioning fills `semiplot_tags` as the
 superuser. A dedicated owner role appears when a tag-editing mechanism exists to hold it.
@@ -28,8 +28,9 @@ plaintext password in a client configuration file an acceptable risk.
 
 | Component | Responsibility |
 | --- | --- |
-| `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning: instance configuration, database, roles, grants, `semiplot_tags`, post-writer verification |
-| `sql/semiplot_tags.sql` | DDL for the one object we add to the archive database, embedded into the binary |
+| `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning in two commands, `site` and `bench`: instance tuning (`site` only), database, roles, grants, `semiplot_tags`, `public.trends`, and the reader-access checks that end every run |
+| `sql/semiplot_tags.sql` | DDL for the one object we invented, embedded into the binary |
+| `sql/trends.sql` | The vendor's archive-table shape, transcribed and embedded; applied under `SET ROLE scada_writer`, so the table's owner is the writer |
 | `Dockerfile` | `ghcr.io/semiteq/semibase` — the Linux binary alone on `scratch`, for consumers that layer it into a bench image |
 | `docs/architecture/` | The instance as it is: configuration deltas, provisioning order, ownership |
 
@@ -40,20 +41,27 @@ silently stop.
 
 ## Provisioning order
 
-The order matters, because the archive tables do not exist until the SCADA has run once.
+The order matters, because the default privileges have to be in place before any table
+`scada_writer` owns is created.
 
 1. Install the engine: `winget install --id PostgreSQL.PostgreSQL.17 --exact`.
-2. `semibase config` — apply the configuration deltas; `shared_buffers` takes effect at the
-   next service restart or reboot, and `verify` warns while it waits.
-3. `semibase create` — archive database, both roles, default privileges, `semiplot_tags`.
-4. Point the Simple-Scada project at the database and start it once. It creates `trends`,
-   `messages` and the first daily partitions.
-5. `semibase verify` — prove the reader access chain against the tables the writer created.
-6. Fill `semiplot_tags` with the variables to be trended.
-7. Write the SemiPlot connection file, including the source time zone.
+2. `semibase site` — tuning, then the archive database, both roles, default privileges,
+   `semiplot_tags` and `public.trends`; it ends by proving the reader reads `trends` and cannot
+   write it, and warns while `shared_buffers` waits for a service restart.
+3. Restart the PostgreSQL service or reboot the machine, so `shared_buffers` takes effect.
+4. Point the Simple-Scada project at the database and start it once. It is expected to find
+   `trends` in place, write into it, and create the day partitions and `messages` itself — an
+   **unverified** assumption, with the experiment that settles it, in
+   `provisioning.md` ("Assumption: the SCADA meeting an existing `trends`"). Set
+   `log_statement = 'all'` for that first start and read back the DDL the SCADA issued.
+5. Fill `semiplot_tags` with the variables to be trended.
+6. Write the SemiPlot connection file, including the source time zone.
 
-Every consumer must survive every intermediate state of this sequence — no database, database
-without `trends`, `trends` without `semiplot_tags`, `semiplot_tags` without rows. Each is a normal
+A bench replaces step 2 with `semibase bench` and has no step 3 or 4: the consumer's seeder plays
+the writer's part.
+
+Every consumer must survive every intermediate state of this sequence — no database, empty
+`trends`, `trends` without `semiplot_tags`, `semiplot_tags` without rows. Each is a normal
 condition, not a crash.
 
 ## Upgrades

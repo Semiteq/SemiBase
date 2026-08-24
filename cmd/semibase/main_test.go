@@ -66,7 +66,7 @@ func TestFlagUsageHidesPasswordValues(t *testing.T) {
 	}
 
 	options := provision.Options{}
-	flags := newFlagSet("create", &options)
+	flags := newFlagSet("bench", &options)
 	buffer := &bytes.Buffer{}
 	flags.SetOutput(buffer)
 	flags.PrintDefaults()
@@ -134,7 +134,7 @@ func TestParseOptions(t *testing.T) {
 				t.Setenv(name, value)
 			}
 
-			options, err := parseOptions("create", tt.arguments)
+			options, err := parseOptions("bench", tt.arguments)
 
 			switch {
 			case tt.wantErr != nil:
@@ -221,6 +221,22 @@ func TestRunVersionCommandExitsZero(t *testing.T) {
 	}
 }
 
+// the surface is two commands and nothing else: config, create, verify and all were
+// removed with no alias and no tombstone
+func TestCommandSurface(t *testing.T) {
+	want := map[string]bool{"site": true, "bench": true}
+	for name := range commands {
+		if !want[name] {
+			t.Errorf("unexpected command %q in the dispatch map", name)
+		}
+	}
+	for name := range want {
+		if _, known := commands[name]; !known {
+			t.Errorf("command %q is missing from the dispatch map", name)
+		}
+	}
+}
+
 func TestRunUnmappedCommandIsAnError(t *testing.T) {
 	buffer := captureErrorOutput(t)
 
@@ -247,8 +263,8 @@ func TestRunHelpFlagExitsZero(t *testing.T) {
 	buffer := captureErrorOutput(t)
 	clearPasswordEnvironment(t)
 
-	if got := run(context.Background(), []string{"create", "--help"}); got != 0 {
-		t.Fatalf("run(create --help) = %d, want exit code 0", got)
+	if got := run(context.Background(), []string{"bench", "--help"}); got != 0 {
+		t.Fatalf("run(bench --help) = %d, want exit code 0", got)
 	}
 	if !strings.Contains(buffer.String(), "-super-password") {
 		t.Errorf("help output does not list the command flags: %q", buffer.String())
@@ -336,13 +352,13 @@ func TestCancelledContextReturnsPromptly(t *testing.T) {
 	cancel()
 
 	started := time.Now()
-	err := commands["create"](ctx, options)
+	err := commands["bench"](ctx, options)
 	elapsed := time.Since(started)
 
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("create with cancelled context returned %v, want context.Canceled in the chain", err)
+		t.Fatalf("bench with cancelled context returned %v, want context.Canceled in the chain", err)
 	}
 	if elapsed > 2*time.Second {
-		t.Errorf("create with cancelled context took %v, want a prompt return", elapsed)
+		t.Errorf("bench with cancelled context took %v, want a prompt return", elapsed)
 	}
 }
