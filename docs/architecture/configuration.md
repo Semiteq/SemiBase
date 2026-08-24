@@ -1,6 +1,6 @@
 # Instance configuration
 
-Every setting the `config` command writes is listed. Most differ from the PostgreSQL default;
+Every setting the `site` command writes is listed. Most differ from the PostgreSQL default;
 two (`effective_cache_size`, `checkpoint_completion_target`) equal it and are pinned
 deliberately, so the values in force are visible here rather than implied. The workload is a
 sustained append-only insert stream from one writer plus a small number of read-heavy
@@ -10,12 +10,15 @@ Every installation machine guarantees at least 8 GB of RAM and 50 GB of disk for
 so the memory figures are fixed constants sized to that floor: every machine runs the identical
 configuration, and no setting depends on inspecting the host.
 
-The `config` command of `semibase.exe` writes these through `ALTER SYSTEM`, so they live in
-`postgresql.auto.conf` and survive a reinstall of `postgresql.conf`, and applies them with
-`pg_reload_conf()`. Every setting below except `shared_buffers` is reload-context or weaker and
-takes effect immediately; `shared_buffers` takes effect at the next service restart or reboot.
-`config` prints the server's own pending-restart list (`pg_settings.pending_restart`), and
-`verify` warns while any setting still waits, so a missed restart surfaces during commissioning.
+`semibase site` writes these through `ALTER SYSTEM`, so they live in `postgresql.auto.conf` and
+survive a reinstall of `postgresql.conf`, and applies them with `pg_reload_conf()`. Every setting
+below except `shared_buffers` is reload-context or weaker and takes effect immediately;
+`shared_buffers` takes effect at the next service restart or reboot. The tuning phase prints the
+server's own pending-restart list (`pg_settings.pending_restart`) and `site` warns about it again
+on its last lines, so a missed restart surfaces during commissioning.
+
+`semibase bench` writes none of them: the values are constants sized to the installation
+machine's hardware floor and mean nothing to a throwaway container.
 
 ## Server settings
 

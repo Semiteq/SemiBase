@@ -6,10 +6,10 @@ provisions and configures the instance that hosts the Simple-Scada 2 archive: th
 CLI binary, `semibase.exe`, a container image carrying its Linux build, plus the instance's
 architecture docs.
 Deployment target: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver
-`pgx/v5`, `sql/semiplot_tags.sql` embedded via `go:embed`. Entry point: `cmd/semibase`.
-The module is pure `pgx` and compiles for any GOOS; Linux builds serve the containerised
-test bench of consumers (SemiPlot runs `create` against an ephemeral `postgres:17` container).
-All commands run from the repository root.
+`pgx/v5`, `sql/semiplot_tags.sql` and `sql/trends.sql` embedded via `go:embed`. Entry point:
+`cmd/semibase`. The module is pure `pgx` and compiles for any GOOS; Linux builds serve the
+containerised test bench of consumers (SemiPlot runs `bench` against an ephemeral `postgres:17`
+container). All commands run from the repository root.
 
 ## Build
 
@@ -80,13 +80,15 @@ golangci-lint run
 golangci-lint is pinned to 2.12.2 (`winget install GolangCI.golangci-lint --version 2.12.2`);
 config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build`, `go test -race`,
 and the same lint on `windows-latest` and `ubuntu-latest` for every push and pull request;
-the Linux job also provisions a `postgres:17-alpine` service container by running `all`
-twice — the bench path and the idempotency check in one step — and builds the container image,
-so a broken `Dockerfile` fails on the pull request rather than at tag time. CI pushes nothing.
+the Linux job also provisions a `postgres:17-alpine` service container by running `site`
+twice — the tuning path and the idempotency check in one step — provisions a second container
+with `bench` as a `postgres` image init script over the unix socket, and builds the container
+image, so a broken `Dockerfile` fails on the pull request rather than at tag time. CI pushes
+nothing.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
-table-driven. There are no database-touching tests; the `verify` command is the integration
-check, run against a live server.
+table-driven. There are no database-touching tests in the repository; the integration check is
+the reader-access check both commands run at the tail, against a live server.
 
 ## Format
 
@@ -97,24 +99,29 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 ## Run
 
 ```powershell
-.\semibase.exe --help                     # commands: config | create | verify | all | version
-.\semibase.exe create --port 15432 --database semiplot_dev --expected-major 17
-.\semibase.exe verify --reader-password <pw>   # post-writer proof of the reader access chain
+.\semibase.exe --help                     # commands: site | bench | version
+.\semibase.exe site                       # an installation machine: tuning, then everything else
+.\semibase.exe bench --port 15432 --database semiplot_dev --expected-major 17
 .\semibase.exe version                    # print the build revision
 ```
 
+`site` and `bench` differ in one thing: `site` applies the `ALTER SYSTEM` memory constants,
+`bench` does not. Both create the database, the roles, the grants, `semiplot_tags` and
+`public.trends`, and both end by checking that `semiplot_reader` reads `public.trends` and
+cannot write it. A failed check is a non-zero exit.
+
 Passwords come from flags, env, or a `.env` file in the working directory (flag > env > `.env`;
 template `.env.example`): `SEMIBASE_SUPER_PASSWORD`, `SEMIBASE_WRITER_PASSWORD`,
-`SEMIBASE_READER_PASSWORD`.
-`verify` failing with "writer has not run" before the SCADA's first start is the expected
-order, not a bug.
+`SEMIBASE_READER_PASSWORD`. The writer password is needed to create `public.trends`, which the
+tool does over a `scada_writer` login so the table's owner is the role the SCADA writes with.
 
 ## Layout
 
 ```
 cmd/semibase/        CLI entry point: command dispatch, flags, usage text
-internal/provision/  the phases: config (ALTER SYSTEM), create (db/roles/grants), verify
-sql/                 DDL for objects we own (semiplot_tags), embedded into the binary
+internal/provision/  the phases behind the two commands: config (ALTER SYSTEM), create
+                     (db/roles/grants/semiplot_tags/trends), check (reader access)
+sql/                 embedded DDL: semiplot_tags (ours) and trends (the vendor's shape)
 docs/                human docs in Russian (enter at docs/readme.md)
 docs/architecture/   agent-facing design docs in English
 docs/plans/          dated implementation plans
@@ -129,3 +136,6 @@ docs/plans/          dated implementation plans
   in `docs/plans/completed/`.
 - The archive schema itself belongs to the SCADA and is documented in the SemiPlot repository
   (`docs/architecture/scada-archive.md` there); this repository documents the instance around it.
+  `sql/trends.sql` is a transcription of the vendor's shape, created once and never altered —
+  whether the SCADA tolerates finding it already there is an unverified assumption, stated with
+  its experiment in `docs/architecture/provisioning.md`.

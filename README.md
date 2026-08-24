@@ -29,6 +29,6 @@ SemiBase — разворачиваемый PostgreSQL-сервис для ус�
 # установка pgsql
 winget install --id PostgreSQL.PostgreSQL.17 --exact
 
-# конфигурация сервера, архивная база, роли, права
-.\semibase.exe all
+# конфигурация сервера, архивная база, роли, права, таблица архива
+.\semibase.exe site
 ```

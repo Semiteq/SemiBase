@@ -8,8 +8,8 @@ Declarative architecture docs (English, present tense). These describe the syste
 
 - [overview.md](./overview.md) — purpose, consumers, components, provisioning order.
 - [configuration.md](./configuration.md) — every setting changed from the PostgreSQL default, with why.
-- [provisioning.md](./provisioning.md) — the tool's commands, idempotency rules, and the
-  reader-access chain.
+- [provisioning.md](./provisioning.md) — the tool's two commands, idempotency rules, the
+  reader-access chain, and the stated assumption about the SCADA meeting an existing `trends`.
 
 ## Locked decisions
 
@@ -18,12 +18,13 @@ Declarative architecture docs (English, present tense). These describe the syste
 | Installation | PostgreSQL via `winget`, major version pinned, automatic upgrade disabled; engine install stays outside the tool |
 | Major version | 17 for new installs, pinned latest; floor 14 (SemiPlot needs `date_bin`; Simple-Scada 2 docs require 14+) |
 | Provisioning tool | Go single binary `semibase.exe` (`pgx/v5`, embedded SQL); no runtime or `psql` on the target machine |
-| Instance configuration | Fixed `ALTER SYSTEM` deltas applied by `semibase config` via `pg_reload_conf()`, never by editing `postgresql.conf`; `shared_buffers` takes effect at the next service restart, reported through `pg_settings.pending_restart` |
+| Instance configuration | Fixed `ALTER SYSTEM` deltas applied by `semibase site` via `pg_reload_conf()`, never by editing `postgresql.conf`; `shared_buffers` takes effect at the next service restart, reported through `pg_settings.pending_restart` |
 | Hardware floor | Installation machines guarantee 8 GB RAM and 50 GB database disk; memory settings are fixed constants sized to that floor, identical on every machine |
 | Roles | `scada_writer` (SCADA), `semiplot_reader` (viewers, `SELECT` only); `semiplot_*` objects owned by `postgres` — a dedicated owner role appears when a tag-editing mechanism exists |
-| Reader access | `ALTER DEFAULT PRIVILEGES FOR ROLE scada_writer` set **before** the writer first runs |
-| Objects we add | `semiplot_tags` only — no triggers, functions, scheduled jobs, or extensions |
-| Archive schema | Owned by Simple-Scada 2; documented in the SemiPlot repository, never created or altered here |
+| Command surface | Two commands, `site` and `bench`, named for the situation rather than for the tool's internal steps; they differ in one thing, the memory tuning, which only `site` applies |
+| Reader access | `ALTER DEFAULT PRIVILEGES FOR ROLE scada_writer` set **before** `public.trends` is created, and before the writer first runs |
+| Objects we add | `semiplot_tags` and the vendor-shaped `public.trends` — no triggers, functions, scheduled jobs, or extensions; `messages` is not created, nothing we ship reads it |
+| Archive schema | Owned by Simple-Scada 2 and documented in the SemiPlot repository. This tool creates `public.trends` once, with the vendor's shape, connected as `scada_writer`, and never alters it afterwards; day partitions and every later change to the schema remain the vendor's |
 | Distribution | Binaries as GitHub release assets; the Linux binary also as `ghcr.io/semiteq/semibase`, `FROM scratch`, one file, pushed after the release exists; benches track `:latest` and a prerelease never moves it |
 | Backup method | `UNDECIDED` — commissioning-time, needs the customer's archive size |
 | Retention depth / disk sizing | `UNDECIDED` — needs a measured write rate from a working installation |

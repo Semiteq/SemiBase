@@ -55,10 +55,10 @@ jobs:
       - name: Test
         run: go test -race ./...
 
-      # The bench path: the same binary provisions the service container the
-      # way it provisions production. Run twice to prove idempotency. "all"
-      # ends with verify, which reports "writer has not run" as a state, not
-      # a failure - the expected order before any SCADA has started.
+      # The site path, the only thing that covers the ALTER SYSTEM tuning: the
+      # same binary provisions the service container the way it provisions an
+      # installation machine. Run twice to prove idempotency - the second run
+      # finds every object in place and still exits on a passing access check.
       - name: Provision the service container
         env:
           SEMIBASE_SUPER_PASSWORD: ci-super
@@ -66,15 +66,15 @@ jobs:
           SEMIBASE_READER_PASSWORD: ci-reader
         run: |
           go build -o semibase ./cmd/semibase
-          ./semibase all --database semiplot_dev --expected-major 17
-          ./semibase all --database semiplot_dev --expected-major 17
+          ./semibase site --database semiplot_dev --expected-major 17
+          ./semibase site --database semiplot_dev --expected-major 17
 
       # The socket path, which nothing else covers: the same binary, run the way
       # the official image runs an init script. During init the server has
       # listen_addresses empty and only /var/run/postgresql answers, superuser
       # auth is local trust, and the script's own "set -e" makes the entrypoint
       # abort on failure. So the container reaching a state where semiplot_reader
-      # selects over TCP proves create completed over the socket.
+      # selects over TCP proves bench completed over the socket.
       - name: Provision over a unix socket, as a postgres image init script
         env:
           SEMIBASE_WRITER_PASSWORD: ci-writer
@@ -96,7 +96,7 @@ jobs:
           cat > initdb-semibase.sh <<'SCRIPT'
           #!/bin/sh
           set -e
-          /semibase create --host /var/run/postgresql --database semiplot_dev --expected-major 17
+          /semibase bench --host /var/run/postgresql --database semiplot_dev --expected-major 17
           SCRIPT
           # the entrypoint sources a non-executable init script instead of running it,
           # and a binary without the bit set cannot run at all

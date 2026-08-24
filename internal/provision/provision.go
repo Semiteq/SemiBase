@@ -41,18 +41,32 @@ func (o Options) Validate() error {
 	return nil
 }
 
-func (o Options) All(ctx context.Context) error {
-	if err := o.Config(ctx); err != nil {
+// the tuning phase is the only thing that can leave a setting waiting for a service
+// restart, so only the site run reads pending_restart back at the end
+const (
+	afterTuning   = true
+	withoutTuning = false
+)
+
+// Site brings an installation machine to its commissioned state: memory tuning, then
+// everything the archive needs.
+func (o Options) Site(ctx context.Context) error {
+	if err := o.config(ctx); err != nil {
 		return err
 	}
-	if err := o.Create(ctx); err != nil {
+	if err := o.create(ctx); err != nil {
 		return err
 	}
-	return o.verify(ctx, true)
+	return o.check(ctx, afterTuning)
 }
 
-func (o Options) Verify(ctx context.Context) error {
-	return o.verify(ctx, false)
+// Bench brings a throwaway container to the same state minus the tuning: its memory
+// constants are sized for an installation machine and mean nothing to a container.
+func (o Options) Bench(ctx context.Context) error {
+	if err := o.create(ctx); err != nil {
+		return err
+	}
+	return o.check(ctx, withoutTuning)
 }
 
 // pgx dials a unix socket exactly when pgconn.isAbsolutePath accepts the host. Widening this
@@ -139,11 +153,11 @@ func alterRolePasswordStatement(name, password string) string {
 	return fmt.Sprintf("ALTER ROLE %s PASSWORD '%s'", name, escapeLiteral(password))
 }
 
-func (o Options) Create(ctx context.Context) error {
+func (o Options) create(ctx context.Context) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}
-	step("Phase create: database %s, roles, access chain", o.Database)
+	step("Phase create: database %s, roles, access chain, archive table", o.Database)
 
 	super, err := o.connect(ctx, "postgres", o.SuperUser, o.SuperPassword)
 	if err != nil {
@@ -200,8 +214,8 @@ func (o Options) Create(ctx context.Context) error {
 		return fmt.Errorf("granting CREATE on schema public: %w", err)
 	}
 
-	// trends/messages do not exist until the SCADA runs, so SELECT on them can only be
-	// granted ahead of time, through default privileges of their future owner
+	// the writer creates public.trends below and its partitions later, so SELECT on them
+	// can only be granted ahead of time, through default privileges of their owner
 	defaultPrivileges := fmt.Sprintf(
 		"ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA public GRANT SELECT ON TABLES TO %s",
 		WriterRole, ReaderRole)
@@ -217,6 +231,39 @@ func (o Options) Create(ctx context.Context) error {
 		return fmt.Errorf("granting SELECT on semiplot_tags: %w", err)
 	}
 	ok("semiplot_tags in place, readable by %s", ReaderRole)
+
+	return o.ensureArchiveTable(ctx, archive)
+}
+
+// public.trends is created over a scada_writer login of its own, never with SET ROLE: the
+// reader's SELECT has to arrive through the default privileges set for that role above, which
+// is how a site gets it. A superuser-owned table would hand the reader access for a different
+// reason, and a bench would then test something production does not do.
+func (o Options) ensureArchiveTable(ctx context.Context, archive *pgx.Conn) error {
+	var exists bool
+	if err := archive.QueryRow(ctx,
+		"SELECT to_regclass('public.trends') IS NOT NULL").Scan(&exists); err != nil {
+		return fmt.Errorf("checking public.trends: %w", err)
+	}
+	if exists {
+		ok("public.trends exists, left untouched")
+		return nil
+	}
+	if o.WriterPassword == "" {
+		return fmt.Errorf("public.trends does not exist and no %s password was given to create it "+
+			"as that role; supply --writer-password or SEMIBASE_WRITER_PASSWORD", WriterRole)
+	}
+
+	writer, err := o.connect(ctx, o.Database, WriterRole, o.WriterPassword)
+	if err != nil {
+		return err
+	}
+	defer writer.Close(ctx)
+
+	if _, err := writer.Exec(ctx, semibase.TrendsSQL); err != nil {
+		return fmt.Errorf("applying trends.sql as %s: %w", WriterRole, err)
+	}
+	ok("public.trends created by %s, partitioned by t, with the tpdefault partition", WriterRole)
 	return nil
 }
 
@@ -278,11 +325,13 @@ func (o Options) ensureDatabase(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-func (o Options) verify(ctx context.Context, asPartOfAll bool) error {
+// the tail of every run. The tool created public.trends itself a moment ago, so the reader's
+// access to it is knowable at exit instead of after the SCADA's first start.
+func (o Options) check(ctx context.Context, reportPendingRestart bool) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}
-	step("Phase verify: post-writer checks")
+	step("Phase check: the reader access chain")
 
 	archive, err := o.connect(ctx, o.Database, o.SuperUser, o.SuperPassword)
 	if err != nil {
@@ -290,38 +339,15 @@ func (o Options) verify(ctx context.Context, asPartOfAll bool) error {
 	}
 	defer archive.Close(ctx)
 
-	pending, err := pendingRestartSettings(ctx, archive)
-	if err != nil {
-		return err
-	}
-	if len(pending) > 0 {
-		warn("settings waiting for a service restart: %s - restart the PostgreSQL service or reboot the machine.",
-			strings.Join(pending, ", "))
-	}
-
-	var trendsExists bool
-	if err := archive.QueryRow(ctx, "SELECT to_regclass('public.trends') IS NOT NULL").Scan(&trendsExists); err != nil {
-		return fmt.Errorf("checking public.trends: %w", err)
-	}
-	if !trendsExists {
-		message := "writer has not run yet: public.trends does not exist. " +
-			"Start the Simple-Scada project against this database once, then run verify."
-		if asPartOfAll {
-			note("%s", message)
-			return nil
+	if reportPendingRestart {
+		pending, err := pendingRestartSettings(ctx, archive)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("%s", message)
-	}
-	ok("public.trends exists")
-
-	var messagesExists bool
-	if err := archive.QueryRow(ctx, "SELECT to_regclass('public.messages') IS NOT NULL").Scan(&messagesExists); err != nil {
-		return fmt.Errorf("checking public.messages: %w", err)
-	}
-	if messagesExists {
-		ok("public.messages exists")
-	} else {
-		warn("public.messages does not exist")
+		if len(pending) > 0 {
+			warn("settings waiting for a service restart: %s - restart the PostgreSQL service or reboot the machine.",
+				strings.Join(pending, ", "))
+		}
 	}
 
 	var canSelect bool
@@ -330,8 +356,8 @@ func (o Options) verify(ctx context.Context, asPartOfAll bool) error {
 		return fmt.Errorf("checking reader SELECT privilege: %w", err)
 	}
 	if !canSelect {
-		return fmt.Errorf("%s cannot SELECT on public.trends: the writer ran before default privileges "+
-			"were set; repair with GRANT SELECT ON ALL TABLES IN SCHEMA public TO %s, then re-run create",
+		return fmt.Errorf("%s cannot SELECT on public.trends: the table was created before the default "+
+			"privileges were set; repair with GRANT SELECT ON ALL TABLES IN SCHEMA public TO %s",
 			ReaderRole, ReaderRole)
 	}
 	ok("%s holds SELECT on public.trends", ReaderRole)
@@ -345,37 +371,5 @@ func (o Options) verify(ctx context.Context, asPartOfAll bool) error {
 		return fmt.Errorf("%s holds INSERT on public.trends - the reader must be read-only", ReaderRole)
 	}
 	ok("%s does not hold INSERT", ReaderRole)
-
-	if o.ReaderPassword != "" {
-		reader, err := o.connect(ctx, o.Database, ReaderRole, o.ReaderPassword)
-		if err != nil {
-			return fmt.Errorf("live reader connection: %w", err)
-		}
-		defer reader.Close(ctx)
-		var probed int
-		if err := reader.QueryRow(ctx,
-			"SELECT count(*) FROM (SELECT 1 FROM public.trends LIMIT 1) probe").Scan(&probed); err != nil {
-			return fmt.Errorf("live reader probe: %w", err)
-		}
-		ok("live connection as %s reads public.trends", ReaderRole)
-	} else {
-		note("reader password not supplied - live connection as %s not tested.", ReaderRole)
-	}
-
-	var defaultPartitionExists bool
-	if err := archive.QueryRow(ctx, "SELECT to_regclass('public.tpdefault') IS NOT NULL").Scan(&defaultPartitionExists); err != nil {
-		return fmt.Errorf("checking public.tpdefault: %w", err)
-	}
-	if defaultPartitionExists {
-		var strayRows int64
-		if err := archive.QueryRow(ctx, "SELECT count(*) FROM public.tpdefault").Scan(&strayRows); err != nil {
-			return fmt.Errorf("counting tpdefault rows: %w", err)
-		}
-		if strayRows > 0 {
-			warn("default partition tpdefault holds %d rows - a day partition was missing at write time.", strayRows)
-		} else {
-			ok("default partition tpdefault is empty")
-		}
-	}
 	return nil
 }

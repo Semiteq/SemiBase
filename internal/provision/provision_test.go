@@ -1,10 +1,13 @@
 package provision
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	semibase "github.com/Semiteq/SemiBase"
 )
 
 func TestValidate(t *testing.T) {
@@ -241,5 +244,24 @@ func TestEndpointUsesTheConfiguredDatabase(t *testing.T) {
 	options := Options{Host: "/var/run/postgresql", Port: 5432, Database: "semiplot_dev"}
 	if got, want := options.Endpoint(), "/var/run/postgresql/.s.PGSQL.5432 (semiplot_dev)"; got != want {
 		t.Errorf("Endpoint() = %q, want %q", got, want)
+	}
+}
+
+// the archive table is the vendor's shape, transcribed. This pins the parts a consumer
+// depends on and the one object we deliberately do not create
+func TestEmbeddedTrendsSQL(t *testing.T) {
+	required := []string{
+		"CREATE TABLE public.trends",
+		"PARTITION BY RANGE (t)",
+		"ADD CONSTRAINT tpk PRIMARY KEY (id, l, t)",
+		"CREATE TABLE public.tpdefault PARTITION OF public.trends DEFAULT",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(semibase.TrendsSQL, fragment) {
+			t.Errorf("trends.sql does not contain %q", fragment)
+		}
+	}
+	if strings.Contains(semibase.TrendsSQL, "public.messages") {
+		t.Error("trends.sql creates public.messages; nothing we ship reads it")
 	}
 }

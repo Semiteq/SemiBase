@@ -17,20 +17,22 @@ import (
 	"github.com/Semiteq/SemiBase/internal/provision"
 )
 
-const usage = `semibase - provisions the SemiBase PostgreSQL instance.
+const usage = `semibase - brings a PostgreSQL instance to its provisioned state and exits.
 
 Usage:
   semibase <command> [flags]
 
 Commands:
-  config   apply the server configuration deltas (ALTER SYSTEM + reload);
-           shared_buffers takes effect at the next service restart
-  create   create the archive database, the roles, the access chain, and semiplot_tags
-  verify   post-writer checks: archive tables exist, the reader reads and cannot write
-  all      config + create + verify
+  site     an installation machine: apply the memory tuning (ALTER SYSTEM + reload),
+           then create the archive database, the roles, the access chain,
+           semiplot_tags and public.trends
+  bench    a throwaway container: the same, without the tuning
   version  print the build revision
 
-Every step checks before it creates; re-running any command is safe. Passwords of
+Both commands end by checking that semiplot_reader can read public.trends and
+cannot write it; a failed check is a non-zero exit.
+
+Every step checks before it creates; re-running either command is safe. Passwords of
 existing roles change only when the corresponding flag or variable is set.
 
 Passwords come from flags, environment variables, or a .env file in the working
@@ -55,10 +57,8 @@ var (
 
 // only tests write to this map, to insert stubs
 var commands = map[string]func(context.Context, provision.Options) error{
-	"config": func(ctx context.Context, options provision.Options) error { return options.Config(ctx) },
-	"create": func(ctx context.Context, options provision.Options) error { return options.Create(ctx) },
-	"verify": func(ctx context.Context, options provision.Options) error { return options.Verify(ctx) },
-	"all":    func(ctx context.Context, options provision.Options) error { return options.All(ctx) },
+	"site":  func(ctx context.Context, options provision.Options) error { return options.Site(ctx) },
+	"bench": func(ctx context.Context, options provision.Options) error { return options.Bench(ctx) },
 }
 
 func main() {
@@ -141,8 +141,10 @@ func revisionFromSettings(settings []debug.BuildSetting) string {
 	return vcsRevision
 }
 
-// password flags default to empty so the usage output can only ever show the
-// variable names, never their values
+// One flag set serves both commands: site and bench differ only in the tuning phase,
+// which reads no flag of its own, so every flag below is used by either command.
+// Password flags default to empty so the usage output can only ever show the variable
+// names, never their values.
 func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
