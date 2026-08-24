@@ -24,6 +24,7 @@ Declarative architecture docs (English, present tense). These describe the syste
 | Reader access | `ALTER DEFAULT PRIVILEGES FOR ROLE scada_writer` set **before** the writer first runs |
 | Objects we add | `semiplot_tags` only — no triggers, functions, scheduled jobs, or extensions |
 | Archive schema | Owned by Simple-Scada 2; documented in the SemiPlot repository, never created or altered here |
+| Distribution | Binaries as GitHub release assets; the Linux binary also as `ghcr.io/semiteq/semibase`, `FROM scratch`, one file, pushed after the release exists; benches track `:latest` and a prerelease never moves it |
 | Backup method | `UNDECIDED` — commissioning-time, needs the customer's archive size |
 | Retention depth / disk sizing | `UNDECIDED` — needs a measured write rate from a working installation |
 

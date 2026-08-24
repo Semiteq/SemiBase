@@ -30,6 +30,7 @@ plaintext password in a client configuration file an acceptable risk.
 | --- | --- |
 | `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning: instance configuration, database, roles, grants, `semiplot_tags`, post-writer verification |
 | `sql/semiplot_tags.sql` | DDL for the one object we add to the archive database, embedded into the binary |
+| `Dockerfile` | `ghcr.io/semiteq/semibase` — the Linux binary alone on `scratch`, for consumers that layer it into a bench image |
 | `docs/architecture/` | The instance as it is: configuration deltas, provisioning order, ownership |
 
 Nothing else is added to the database. Specifically, and deliberately: no summary tables, no

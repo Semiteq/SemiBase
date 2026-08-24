@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
 
     steps:
       # fetch-depth: 0 is load-bearing. At a finite depth actions/checkout
@@ -89,7 +90,15 @@ jobs:
           # no extension on linux - an ELF is executable by its mode bit
           build windows amd64 .exe
           build linux amd64 ""
-          ls -l dist
+
+          # The image gets a copy of the linux artifact under the plain name the
+          # Dockerfile expects, in a directory of its own: the release attaches
+          # dist/*, and an unversioned duplicate in there would be attached too.
+          # A copy rather than a second build, so the bytes in the image and the
+          # bytes on the release page are provably the same binary.
+          mkdir -p image
+          cp "dist/semibase_${VERSION}_linux_amd64" image/semibase
+          ls -l dist image
 
       # Pinned to a commit, not a tag: this is the one third-party action that
       # runs with the job's contents: write token, so a moved tag in its
@@ -104,3 +113,36 @@ jobs:
           prerelease: false
           make_latest: true
           files: dist/*
+
+      # After the release, never before: SemiPlot's bench tracks :latest and its
+      # CI still downloads the release assets, so an image published first would
+      # leave a window where :latest names a version whose assets do not exist.
+      #
+      # docker login rather than docker/login-action: the action would be a
+      # third-party step holding a write-capable token, and the CLI needs no
+      # such trust for one command.
+      - name: Publish the container image
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ghcr.io accepts lowercase names only, and the owner is not lowercase
+          IMAGE="ghcr.io/$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+
+          docker build -f Dockerfile -t "$IMAGE:$TAG" image
+          docker push "$IMAGE:$TAG"
+
+          # semver: everything after the first hyphen is a prerelease, so
+          # v1.2.3-rc1 publishes its own tag and leaves :latest where it is
+          case "$TAG" in
+            *-*) echo "prerelease $TAG: :latest not moved" ;;
+            *)
+              docker tag "$IMAGE:$TAG" "$IMAGE:latest"
+              docker push "$IMAGE:latest"
+              ;;
+          esac
