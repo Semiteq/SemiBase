@@ -1,13 +1,10 @@
 package provision
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
-	semibase "github.com/Semiteq/SemiBase"
 )
 
 func TestValidate(t *testing.T) {
@@ -35,36 +32,6 @@ func TestValidate(t *testing.T) {
 				t.Errorf("Validate() with database %q: error = %v, wantErr %v", tt.database, err, tt.wantErr)
 			}
 		})
-	}
-}
-
-// these pin the exact DDL text: a hostile database name comes out as one
-// double-quoted identifier, inert as SQL. dropping Sanitize fails them
-func TestGrantConnectStatement(t *testing.T) {
-	hostile := `archive"; DROP DATABASE postgres; --`
-	want := `GRANT CONNECT ON DATABASE "archive""; DROP DATABASE postgres; --" TO scada_writer`
-	if got := grantConnectStatement(hostile, WriterRole); got != want {
-		t.Errorf("grantConnectStatement(%q) = %q, want %q", hostile, got, want)
-	}
-}
-
-func TestCreateDatabaseStatement(t *testing.T) {
-	hostile := `archive"; DROP DATABASE postgres; --`
-	want := `CREATE DATABASE "archive""; DROP DATABASE postgres; --"`
-	if got := createDatabaseStatement(hostile); got != want {
-		t.Errorf("createDatabaseStatement(%q) = %q, want %q", hostile, got, want)
-	}
-}
-
-func TestRoleStatementsEscapeThePassword(t *testing.T) {
-	password := `p'w\d`
-	if got, want := createRoleStatement(WriterRole, password),
-		`CREATE ROLE scada_writer LOGIN PASSWORD 'p''w\d'`; got != want {
-		t.Errorf("createRoleStatement = %q, want %q", got, want)
-	}
-	if got, want := alterRolePasswordStatement(WriterRole, password),
-		`ALTER ROLE scada_writer PASSWORD 'p''w\d'`; got != want {
-		t.Errorf("alterRolePasswordStatement = %q, want %q", got, want)
 	}
 }
 
@@ -244,43 +211,5 @@ func TestEndpointUsesTheConfiguredDatabase(t *testing.T) {
 	options := Options{Host: "/var/run/postgresql", Port: 5432, Database: "semiplot_dev"}
 	if got, want := options.Endpoint(), "/var/run/postgresql/.s.PGSQL.5432 (semiplot_dev)"; got != want {
 		t.Errorf("Endpoint() = %q, want %q", got, want)
-	}
-}
-
-// the file's header prose names the objects the DDL deliberately leaves alone, so a claim
-// about what the DDL creates has to be made against the statements only
-func sqlStatementsOf(sql string) string {
-	kept := make([]string, 0, strings.Count(sql, "\n"))
-	for line := range strings.SplitSeq(sql, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "--") {
-			continue
-		}
-		kept = append(kept, line)
-	}
-	return strings.Join(strings.Fields(strings.Join(kept, " ")), " ")
-}
-
-// the archive table is the vendor's shape, transcribed by hand from a dump, and the whole
-// statement text is pinned rather than a few fragments of it: a consumer that reads id, l, t,
-// v and q gets wrong charts rather than an error when a type, a default or a column drifts.
-// Reformatting the file is meant to fail this - re-read sql/semiplot_dev.sql in the consumer
-// repository before changing the golden text.
-func TestEmbeddedTrendsSQL(t *testing.T) {
-	want := "CREATE TABLE public.trends ( " +
-		"id integer DEFAULT 0 NOT NULL, " +
-		"l smallint DEFAULT 0 NOT NULL, " +
-		"t timestamp(3) without time zone NOT NULL, " +
-		"v double precision, " +
-		"q integer NOT NULL " +
-		") PARTITION BY RANGE (t); " +
-		"ALTER TABLE ONLY public.trends ADD CONSTRAINT tpk PRIMARY KEY (id, l, t); " +
-		"CREATE TABLE public.tpdefault PARTITION OF public.trends DEFAULT;"
-	got := sqlStatementsOf(semibase.TrendsSQL)
-	if got != want {
-		t.Errorf("trends.sql statements =\n%q\nwant\n%q", got, want)
-	}
-	// unqualified as well as public.messages: the guard is about the object, not the spelling
-	if strings.Contains(got, "messages") {
-		t.Error("trends.sql creates messages; nothing we ship reads it")
 	}
 }

@@ -18,7 +18,7 @@ import (
 var passwordEnvironmentNames = []string{
 	"SEMIBASE_SUPER_PASSWORD",
 	"SEMIBASE_WRITER_PASSWORD",
-	"SEMIBASE_READER_PASSWORD",
+	"SEMIBASE_PLOT_PASSWORD",
 }
 
 // callers must not use t.Parallel: the streams are package-level
@@ -59,7 +59,7 @@ func TestFlagUsageHidesPasswordValues(t *testing.T) {
 	secrets := map[string]string{
 		"SEMIBASE_SUPER_PASSWORD":  "hunter2-super",
 		"SEMIBASE_WRITER_PASSWORD": "hunter2-writer",
-		"SEMIBASE_READER_PASSWORD": "hunter2-reader",
+		"SEMIBASE_PLOT_PASSWORD":   "hunter2-plot",
 	}
 	for name, value := range secrets {
 		t.Setenv(name, value)

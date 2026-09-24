@@ -24,13 +24,16 @@ Usage:
 
 Commands:
   site     an installation machine: apply the memory tuning (ALTER SYSTEM + reload),
-           then create the archive database, the roles, the access chain,
-           semiplot_tags and public.trends
+           then create the archive database, the roles, the access chain, public.trends,
+           the four semiplot_* tables and semiplot_register_new_pens()
   bench    a throwaway container: the same, without the tuning
   version  print the build revision
 
-Both commands end by reading public.trends as semiplot_reader and checking that the
-same role cannot write it; a failed check is a non-zero exit.
+Both commands end by checking the semiplot role in a transaction that is rolled back:
+it reads public.trends and semiplot_meta, registers new pens through
+semiplot_register_new_pens(), updates pen settings and groups, and is refused an insert,
+a delete or a key change on semiplot_tags; it writes neither the archive nor
+semiplot_meta and holds no CREATE on schema public. A failed check is a non-zero exit.
 
 Every step checks before it creates; re-running either command is safe. Passwords of
 existing roles change only when the corresponding flag or variable is set.
@@ -39,11 +42,13 @@ Passwords come from flags, environment variables, or a .env file in the working
 directory (flag wins over environment, environment wins over .env):
   --super-password    SEMIBASE_SUPER_PASSWORD    superuser
   --writer-password   SEMIBASE_WRITER_PASSWORD   scada_writer
-  --reader-password   SEMIBASE_READER_PASSWORD   semiplot_reader
+  --plot-password     SEMIBASE_PLOT_PASSWORD     semiplot
 
-A first run creates both roles and fails without their passwords. Once the roles exist,
-the superuser password alone carries a run; the reader password then only decides
-whether the run also tests the semiplot_reader login, which it does over TCP.
+A first run creates scada_writer and semiplot and fails without their passwords; it also
+creates semiplot_registrar, which owns the registration function and never logs in, so
+it has no password. Once the roles exist,
+the superuser password alone carries a run; the semiplot password then only decides
+whether the run also tests the semiplot login, which it does over TCP.
 
 Run 'semibase <command> --help' for the command's flags.
 `
@@ -161,8 +166,8 @@ func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 		"superuser password (env SEMIBASE_SUPER_PASSWORD)")
 	flags.StringVar(&options.WriterPassword, "writer-password", "",
 		"scada_writer password (env SEMIBASE_WRITER_PASSWORD)")
-	flags.StringVar(&options.ReaderPassword, "reader-password", "",
-		"semiplot_reader password (env SEMIBASE_READER_PASSWORD)")
+	flags.StringVar(&options.PlotPassword, "plot-password", "",
+		"semiplot password (env SEMIBASE_PLOT_PASSWORD)")
 	flags.IntVar(&options.ExpectedMajor, "expected-major", 0,
 		"required server major version; 0 accepts any major >= 14")
 	return flags
@@ -189,8 +194,8 @@ func resolvePasswordsFromEnvironment(options *provision.Options) {
 	if options.WriterPassword == "" {
 		options.WriterPassword = os.Getenv("SEMIBASE_WRITER_PASSWORD")
 	}
-	if options.ReaderPassword == "" {
-		options.ReaderPassword = os.Getenv("SEMIBASE_READER_PASSWORD")
+	if options.PlotPassword == "" {
+		options.PlotPassword = os.Getenv("SEMIBASE_PLOT_PASSWORD")
 	}
 }
 

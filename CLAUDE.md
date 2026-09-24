@@ -6,7 +6,7 @@ provisions and configures the instance that hosts the Simple-Scada 2 archive: th
 CLI binary, `semibase.exe`, a container image carrying its Linux build, plus the instance's
 architecture docs.
 Deployment target: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver
-`pgx/v5`, `sql/semiplot_tags.sql` and `sql/trends.sql` embedded via `go:embed`. Entry point:
+`pgx/v5`, the four `sql/semiplot_*.sql` files and `sql/trends.sql` embedded via `go:embed`. Entry point:
 `cmd/semibase`. The module is pure `pgx` and compiles for any GOOS; Linux builds serve the
 containerised test bench of consumers (SemiPlot runs `bench` against an ephemeral `postgres:17`
 container). All commands run from the repository root.
@@ -81,14 +81,21 @@ golangci-lint is pinned to 2.12.2 (`winget install GolangCI.golangci-lint --vers
 config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build`, `go test -race`,
 and the same lint on `windows-latest` and `ubuntu-latest` for every push and pull request;
 the Linux job also provisions a `postgres:17-alpine` service container by running `site`
-twice — the tuning path and the idempotency check in one step — provisions a second container
-with `bench` as a `postgres` image init script over the unix socket, and builds the container
-image, so a broken `Dockerfile` fails on the pull request rather than at tag time. CI pushes
-nothing.
+twice — the tuning path and the idempotency check in one step.
+It then runs `bench` against a `postgres:14-alpine` container — the version floor, and the only
+place `REVOKE CREATE ON SCHEMA public FROM PUBLIC` bites, because 15 and later withhold that grant
+by engine default — provisions a third container with `bench` as a `postgres` image init script
+over the unix socket, and builds the container image, so a broken `Dockerfile` fails on the pull
+request rather than at tag time. CI pushes nothing. Between the 17 and the 14 steps, the
+`Register pens from the keys SCADA wrote` step writes `trends` rows as `scada_writer`, calls
+`semiplot_register_new_pens()` twice as `semiplot` and requires 3, then 0, and the three rows it
+added: the only place the function body runs over a non-empty archive. It needs `psql` on the
+runner; to run it locally, point `psql` at a container.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
-table-driven. There are no database-touching tests in the repository; the integration check is
-the reader-access check both commands run at the tail, against a live server.
+table-driven. There are no database-touching tests in the repository; the integration checks are
+the `semiplot` access check both commands run at the tail and the four CI database steps above,
+against a live server.
 
 ## Format
 
@@ -106,24 +113,51 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 ```
 
 `site` and `bench` differ in one thing: `site` applies the `ALTER SYSTEM` memory constants,
-`bench` does not. Both create the database, the roles, the grants, `semiplot_tags` and
-`public.trends`, and both end by actually reading `public.trends` as `semiplot_reader` and
-checking that the same role holds no `INSERT`. A failed check is a non-zero exit.
+`bench` does not. Both create the database, the roles, the grants, the four SemiPlot tables
+(`semiplot_tags`, `semiplot_groups`, `semiplot_pen_groups`, `semiplot_meta`), the
+`semiplot_register_new_pens()` function and `public.trends`, and both end by actually reading
+`public.trends` and `semiplot_meta.schema_version` as `semiplot`, actually calling
+`semiplot_register_new_pens()`, proving it ignores a temporary `trends` of its caller, and writing
+`semiplot_groups`, `semiplot_pen_groups` and the settings columns of `semiplot_tags` as `semiplot`
+in a rolled-back transaction, requiring 42501 for `INSERT`, `DELETE` and `UPDATE ... SET id` on
+`semiplot_tags` in the same transaction, and checking that `PUBLIC` holds no `EXECUTE` on
+`semiplot_register_new_pens()`, and that `semiplot` holds no `INSERT`, `UPDATE` or `DELETE`
+on the archive or on `semiplot_meta` and no `CREATE` on schema `public` (revoked from `PUBLIC` by
+`create`, since 14 still grants it). A failed check is a non-zero exit.
+
+The `semiplot` grant on `semiplot_tags` is column-level: `SELECT` and `UPDATE` on the eight settings
+columns, never `id`, so `has_table_privilege(..., 'UPDATE')` answers false for that table and no
+check may ask it.
+
+Four roles take part: the superuser the tool connects as (it owns the `semiplot_*` tables),
+`scada_writer`, `semiplot`, and `semiplot_registrar`, a `NOLOGIN` role that owns
+`semiplot_register_new_pens()` and holds only what its body needs. The function is `SECURITY
+DEFINER` with `search_path = pg_catalog, pg_temp` and a schema-qualified body; the reasons are in
+`docs/architecture/provisioning.md#registering-new-pens`. `scada_writer` is trusted: the grants bound
+the operator acting through `semiplot`, not the SCADA (`docs/architecture/provisioning.md#trust`).
+`semiplot_meta.schema_version` is `1` in
+this release and is a floor: a viewer refuses a database below the version it needs and accepts one
+above.
 
 Passwords come from flags, env, or a `.env` file in the working directory (flag > env > `.env`;
 template `.env.example`): `SEMIBASE_SUPER_PASSWORD`, `SEMIBASE_WRITER_PASSWORD`,
-`SEMIBASE_READER_PASSWORD`. The writer and reader passwords are needed only on a first run,
-which creates those roles; `public.trends` is created under `SET ROLE scada_writer` on the
-superuser connection, so the table's owner is the role the SCADA writes with and no
-`pg_hba.conf` line has to admit a `scada_writer` login.
+`SEMIBASE_PLOT_PASSWORD`. The writer and `semiplot` passwords are needed on a first run, which
+creates those roles. Otherwise the superuser password alone carries a run, and the `semiplot` password only decides
+whether the run also tests that role's TCP login. `public.trends` is created under
+`SET ROLE scada_writer` on the superuser connection, so the table's owner is the role the SCADA
+writes with and no `pg_hba.conf` line has to admit a `scada_writer` login.
 
 ## Layout
 
 ```
 cmd/semibase/        CLI entry point: command dispatch, flags, usage text
-internal/provision/  the phases behind the two commands: config (ALTER SYSTEM), create
-                     (db/roles/grants/semiplot_tags/trends), check (reader access)
-sql/                 embedded DDL: semiplot_tags (ours) and trends (the vendor's shape)
+internal/provision/  one file per phase behind the two commands: config.go (ALTER SYSTEM),
+                     create.go (db/roles/grants/trends), schema.go (the semiplot schema files,
+                     their grants, the pen-registration function's grant and its owner's
+                     registrarStatements), check.go (semiplot access). provision.go
+                     holds Options, Site/Bench and the connection plumbing they share
+sql/                 embedded DDL: the four semiplot_* files (ours: the tables, the
+                     pen-registration function, the version stamp) and trends (the vendor's shape)
 docs/                human docs in Russian (enter at docs/readme.md)
 docs/architecture/   agent-facing design docs in English
 docs/plans/          dated implementation plans

@@ -30,6 +30,9 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
+    env:
+      SEMIBASE_SUPER_PASSWORD: ci-super
+      SEMIBASE_WRITER_PASSWORD: ci-writer
     services:
       postgres:
         image: postgres:17-alpine
@@ -61,24 +64,57 @@ jobs:
       # finds every object in place and still exits on a passing access check.
       - name: Provision the service container
         env:
-          SEMIBASE_SUPER_PASSWORD: ci-super
-          SEMIBASE_WRITER_PASSWORD: ci-writer
-          SEMIBASE_READER_PASSWORD: ci-reader
+          SEMIBASE_PLOT_PASSWORD: ci-plot
         run: |
           go build -o semibase ./cmd/semibase
           ./semibase site --database semiplot_dev --expected-major 17
           ./semibase site --database semiplot_dev --expected-major 17
 
+      # Every other step runs semiplot_register_new_pens() over an empty
+      # public.trends, so its INSERT adds nothing.
+      - name: Register pens from the keys SCADA wrote
+        env:
+          PGHOST: localhost
+          PGDATABASE: semiplot_dev
+        run: |
+          set -euo pipefail
+          as_writer() { PGUSER=scada_writer PGPASSWORD=ci-writer psql -v ON_ERROR_STOP=1 -qtAc "$1"; }
+          as_plot() { PGUSER=semiplot PGPASSWORD=ci-plot psql -v ON_ERROR_STOP=1 -qtAc "$1"; }
+          as_writer "CREATE TABLE public.tp2026m01d01 PARTITION OF public.trends
+              FOR VALUES FROM ('2026-01-01') TO ('2026-01-02');
+            INSERT INTO public.trends (id, l, t, v, q) VALUES
+              (0, 0, '2026-01-01 00:00:00', 1.5, 192), (0, 0, '2026-01-01 00:00:01', 1.6, 192),
+              (13, 0, '2026-01-01 00:00:00', 20, 192), (40, 1, '2026-01-01 00:01:00', 7, 192)"
+          first=$(as_plot 'SELECT semiplot_register_new_pens()')
+          second=$(as_plot 'SELECT semiplot_register_new_pens()')
+          pens=$(as_plot "SELECT string_agg(concat_ws(' ', id, name, color, enabled_on_start), ','
+            ORDER BY id) FROM semiplot_tags")
+          want='0 0 #4E79A7 f,13 13 #F28E2B f,40 40 #59A14F f'
+          if [[ "$first" != 3 || "$second" != 0 || "$pens" != "$want" ]]; then
+            echo "::error::first call '$first' (want 3), second '$second' (want 0), pens '$pens' (want '$want')"
+            exit 1
+          fi
+
+      - name: Provision a PostgreSQL 14 container, where the REVOKE bites
+        env:
+          SEMIBASE_PLOT_PASSWORD: ci-plot
+        run: |
+          set -euo pipefail
+          docker run -d --name semibase-pg14 -e POSTGRES_PASSWORD=ci-super \
+            -p 15434:5432 postgres:14-alpine
+          bash .github/scripts/wait-for-postgres.sh semibase-pg14
+          # ./semibase is the binary the service-container step built
+          ./semibase bench --host 127.0.0.1 --port 15434 --database semiplot_dev --expected-major 14
+
       # The socket path, which nothing else covers: the same binary, run the way
       # the official image runs an init script. During init the server has
       # listen_addresses empty and only /var/run/postgresql answers, superuser
       # auth is local trust, and the script's own "set -e" makes the entrypoint
-      # abort on failure. So the container reaching a state where semiplot_reader
+      # abort on failure. So the container reaching a state where semiplot
       # selects over TCP proves bench completed over the socket.
       - name: Provision over a unix socket, as a postgres image init script
         env:
-          SEMIBASE_WRITER_PASSWORD: ci-writer
-          SEMIBASE_READER_PASSWORD: ci-reader
+          SEMIBASE_PLOT_PASSWORD: ci-plot
           # postgres:17-alpine is musl. The runner has a C toolchain, so an
           # unset CGO_ENABLED defaults to 1 and links against glibc; the image
           # then reports the binary as "not found", which reads as a missing
@@ -110,15 +146,11 @@ jobs:
           # nothing is published: the host side of a published port is bound by
           # docker-proxy before postgres listens, so it answers a probe too early
           docker run -d --name semibase-initdb -e POSTGRES_PASSWORD=ci-super \
-            -e SEMIBASE_WRITER_PASSWORD -e SEMIBASE_READER_PASSWORD semibase-initdb
+            -e SEMIBASE_WRITER_PASSWORD -e SEMIBASE_PLOT_PASSWORD semibase-initdb
           # TCP inside the container opens only once the init scripts have run
-          for _ in $(seq 60); do
-            if docker exec semibase-initdb pg_isready -h 127.0.0.1 -q 2>/dev/null; then break; fi
-            if [ "$(docker inspect -f '{{.State.Running}}' semibase-initdb)" != true ]; then break; fi
-            sleep 2
-          done
-          if ! docker exec -e PGPASSWORD=ci-reader semibase-initdb psql -h 127.0.0.1 \
-              -U semiplot_reader -d semiplot_dev -tAc 'select count(*) from semiplot_tags'; then
+          bash .github/scripts/wait-for-postgres.sh semibase-initdb
+          if ! docker exec -e PGPASSWORD=ci-plot semibase-initdb psql -h 127.0.0.1 \
+              -U semiplot -d semiplot_dev -tAc 'select count(*) from semiplot_tags'; then
             echo "::error::provisioning over the unix socket did not complete"
             docker logs semibase-initdb
             exit 1
