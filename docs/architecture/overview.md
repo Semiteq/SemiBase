@@ -65,7 +65,9 @@ The order matters, because the default privileges have to be in place before any
 5. Start the viewer. Pens appear in `semiplot_tags` on their own, one per variable the SCADA has
    written to `trends`, with default settings the viewer's editor then changes. A person never
    inserts a pen, and only the superuser can delete one.
-6. Write the SemiPlot connection file, including the source time zone.
+6. Write the SemiPlot connection file: host `127.0.0.1`, the `semiplot` role and its password. The
+   file names no time zone: the viewer runs on the SCADA machine and reads the archive in that
+   machine's zone.
 
 A bench replaces step 2 with `semibase bench` and has no step 3 or 4: the consumer's seeder plays
 the writer's part.
