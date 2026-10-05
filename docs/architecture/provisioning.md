@@ -253,8 +253,8 @@ arriving uneditable.
 
 The archive carries no variable catalogue of its own, so `trends.id` is the only reliable source of
 pen keys. `semiplot_register_new_pens()` (`sql/semiplot_register.sql`) inserts one `semiplot_tags`
-row for every key in `trends` that has none and returns how many it added. The viewer calls it at
-start and from its pen editor's refresh button. A new row is named by its number, takes a colour
+row for every key in `trends` that has none and returns how many it added. The viewer calls it only
+from its pen editor's "Refresh pen list" button, never at start. A new row is named by its number, takes a colour
 from a fixed twelve-colour palette by `id % 12`, which assumes SCADA variable numbers are
 non-negative (a negative `id` gets a `NULL` colour, and the viewer picks one), starts with
 `enabled_on_start = false`, so a SCADA
@@ -309,7 +309,7 @@ per partition per step, 0.8 ms on 17 and 1.4 ms on 14 over the one-day archive.
 The measured archives are small, and the cost is linear in keys times partitions. A linear
 extrapolation from the 91-partition row, not a measurement: 500 keys over 365 day partitions is 40
 times the probes, about 2.6 s for a call that adds nothing and about 4.8 s for one that adds every
-key, which is past one second at every viewer start and refresh. Whether a site reaches that
+key, which is past one second at every press of the refresh button. Whether a site reaches that
 depends on the retention depth, which is `UNDECIDED` ([README.md](./README.md)); the call stays
 inside the `semiplot` role's 30 s `statement_timeout` either way.
 
