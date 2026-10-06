@@ -822,9 +822,9 @@ its row: its history is still in `trends`. PostgreSQL grants `EXECUTE` on a new 
       OWNER TO` in the same invocation, which succeeds or aborts the run, so it guarded an
       unreachable state; the checks after it are renumbered. A failed pen-registration call no
       longer prescribes `GRANT EXECUTE`: a 42501 raised inside the body is not a missing `EXECUTE`
-- [x] + review fix: the CI step `Register pens from the keys SCADA wrote` runs the function body over
-      three keys written as `scada_writer` and requires 3, then 0, and each row's name, colour and
-      `enabled_on_start = false`
+- [x] + review fix: the CI step `Register pens and probe the semiplot_tags constraints` runs the
+      function body over three keys written as `scada_writer` and requires 3, then 0, and each
+      row's name, colour and `enabled_on_start = false`
 - [x] + review fix: the temporary-trends replay stays although `create` writes the function from
       embedded bytes that `TestRegisterFunctionIgnoresTheCallersSchemas` pins. It is the only
       execution proof that `semiplot` cannot make the function add a key absent from `public.trends`,
@@ -959,8 +959,9 @@ the allowed writes, and the refused `semiplot_tags` writes.
    `UPDATE semiplot_tags SET id = id` each fail with `permission denied` (42501). On `v0.3.0` the INSERT and
    DELETE succeeded.
 2. **A key SCADA writes becomes a hidden pen.** As `scada_writer`, create a day partition and write rows for
-   ids 0, 13, 40 (the CI step "Register pens from the keys SCADA wrote" in `.github/workflows/ci.yml` has the
-   exact statements). As `semiplot`: `SELECT semiplot_register_new_pens()` returns 3, a second call 0, and
+   ids 0, 13, 40 (the CI step "Register pens and probe the semiplot_tags constraints" in
+   `.github/workflows/ci.yml` has the exact statements). As `semiplot`:
+   `SELECT semiplot_register_new_pens()` returns 3, a second call 0, and
    `SELECT id, name, color, enabled_on_start FROM semiplot_tags ORDER BY id` shows
    `0 0 #4E79A7 f`, `13 13 #F28E2B f`, `40 40 #59A14F f`.
 3. **`semiplot` cannot register a key it invents.** As `semiplot`:

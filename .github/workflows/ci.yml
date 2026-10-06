@@ -72,7 +72,7 @@ jobs:
 
       # Every other step runs semiplot_register_new_pens() over an empty
       # public.trends, so its INSERT adds nothing.
-      - name: Register pens from the keys SCADA wrote
+      - name: Register pens and probe the semiplot_tags constraints
         env:
           PGHOST: localhost
           PGDATABASE: semiplot_dev
@@ -87,13 +87,40 @@ jobs:
               (13, 0, '2026-01-01 00:00:00', 20, 192), (40, 1, '2026-01-01 00:01:00', 7, 192)"
           first=$(as_plot 'SELECT semiplot_register_new_pens()')
           second=$(as_plot 'SELECT semiplot_register_new_pens()')
-          pens=$(as_plot "SELECT string_agg(concat_ws(' ', id, name, color, enabled_on_start), ','
+          pens=$(as_plot "SELECT string_agg(concat_ws(' ', id, name, color, enabled_on_start, log_scale_on_start), ','
             ORDER BY id) FROM semiplot_tags")
-          want='0 0 #4E79A7 f,13 13 #F28E2B f,40 40 #59A14F f'
+          want='0 0 #4E79A7 f f,13 13 #F28E2B f f,40 40 #59A14F f f'
           if [[ "$first" != 3 || "$second" != 0 || "$pens" != "$want" ]]; then
             echo "::error::first call '$first' (want 3), second '$second' (want 0), pens '$pens' (want '$want')"
             exit 1
           fi
+          constraints=$(cat <<'SQL'
+          DO $$
+          BEGIN
+            UPDATE semiplot_tags SET scale_min_on_start = 1, scale_max_on_start = 10 WHERE id = 0;
+            IF NOT FOUND THEN
+              RAISE EXCEPTION 'pen 0 is missing';
+            END IF;
+            BEGIN
+              UPDATE semiplot_tags SET scale_min_on_start = 5, scale_max_on_start = NULL WHERE id = 0;
+              RAISE EXCEPTION 'semiplot_tags accepted the scale bounds (5, NULL)';
+            EXCEPTION WHEN check_violation THEN NULL;
+            END;
+            BEGIN
+              UPDATE semiplot_tags SET scale_min_on_start = 5, scale_max_on_start = 1 WHERE id = 0;
+              RAISE EXCEPTION 'semiplot_tags accepted the scale bounds (5, 1)';
+            EXCEPTION WHEN check_violation THEN NULL;
+            END;
+            BEGIN
+              UPDATE semiplot_tags SET log_scale_on_start = NULL WHERE id = 0;
+              RAISE EXCEPTION 'semiplot_tags accepted a NULL log_scale_on_start';
+            EXCEPTION WHEN not_null_violation THEN NULL;
+            END;
+          END
+          $$
+          SQL
+          )
+          as_plot "$constraints"
 
       - name: Provision a PostgreSQL 14 container, where the REVOKE bites
         env:

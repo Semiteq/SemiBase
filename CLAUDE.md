@@ -87,10 +87,12 @@ place `REVOKE CREATE ON SCHEMA public FROM PUBLIC` bites, because 15 and later w
 by engine default — provisions a third container with `bench` as a `postgres` image init script
 over the unix socket, and builds the container image, so a broken `Dockerfile` fails on the pull
 request rather than at tag time. CI pushes nothing. Between the 17 and the 14 steps, the
-`Register pens from the keys SCADA wrote` step writes `trends` rows as `scada_writer`, calls
-`semiplot_register_new_pens()` twice as `semiplot` and requires 3, then 0, and the three rows it
-added: the only place the function body runs over a non-empty archive. It needs `psql` on the
-runner; to run it locally, point `psql` at a container.
+`Register pens and probe the semiplot_tags constraints` step writes `trends` rows as
+`scada_writer`, calls `semiplot_register_new_pens()` twice as `semiplot` and requires 3, then 0,
+and the three rows it added: the only place the function body runs over a non-empty archive. As
+`semiplot` it then updates pen 0 and requires the scale-pair `CHECK` to refuse unpaired and
+inverted bounds (23514) and the log flag to refuse `NULL` (23502). It needs `psql` on the runner;
+to run it locally, point `psql` at a container.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests in the repository; the integration checks are
@@ -125,7 +127,7 @@ in a rolled-back transaction, requiring 42501 for `INSERT`, `DELETE` and `UPDATE
 on the archive or on `semiplot_meta` and no `CREATE` on schema `public` (revoked from `PUBLIC` by
 `create`, since 14 still grants it). A failed check is a non-zero exit.
 
-The `semiplot` grant on `semiplot_tags` is column-level: `SELECT` and `UPDATE` on the eight settings
+The `semiplot` grant on `semiplot_tags` is column-level: `SELECT` and `UPDATE` on the nine settings
 columns, never `id`, so `has_table_privilege(..., 'UPDATE')` answers false for that table and no
 check may ask it.
 
@@ -137,7 +139,8 @@ DEFINER` with `search_path = pg_catalog, pg_temp` and a schema-qualified body; t
 the operator acting through `semiplot`, not the SCADA (`docs/architecture/provisioning.md#trust`).
 `semiplot_meta.schema_version` is `1` in
 this release and is a floor: a viewer refuses a database below the version it needs and accepts one
-above.
+above. Until the first installation, a schema change, a rename included, edits the `CREATE TABLE`
+alone and keeps `1` (`docs/architecture/provisioning.md#the-schema-version-is-a-floor`).
 
 Passwords come from flags, env, or a `.env` file in the working directory (flag > env > `.env`;
 template `.env.example`): `SEMIBASE_SUPER_PASSWORD`, `SEMIBASE_WRITER_PASSWORD`,

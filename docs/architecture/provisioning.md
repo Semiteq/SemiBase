@@ -173,7 +173,7 @@ Four roles take part, and the tool creates three of them.
 | The superuser (`--superuser`, default `postgres`) | the engine install | Every connection this tool makes. It owns the four `semiplot_*` tables, because it is the connection that applies their DDL |
 | `semiplot_registrar` | `semibase` | `NOLOGIN`. Owns `semiplot_register_new_pens()` and holds what its body needs: `SELECT` on `public.trends`, `SELECT (id)` and `INSERT (id, name, color, enabled_on_start)` on `semiplot_tags` ([Registering new pens](#registering-new-pens)) |
 | `scada_writer` | `semibase` | Owns `public.trends`, its day partitions and `messages`, and writes them. `CREATE` on schema `public`. Nothing on any `semiplot_*` table |
-| `semiplot` | `semibase` | `SELECT` on `trends` and `messages`; `SELECT` on `semiplot_tags` and `UPDATE` on its eight settings columns, never on `id`; `SELECT, INSERT, UPDATE, DELETE` on `semiplot_groups` and `semiplot_pen_groups`; `SELECT` on `semiplot_meta`; `EXECUTE` on `semiplot_register_new_pens()`. No `CREATE` on schema `public` |
+| `semiplot` | `semibase` | `SELECT` on `trends` and `messages`; `SELECT` on `semiplot_tags` and `UPDATE` on its nine settings columns, never on `id`; `SELECT, INSERT, UPDATE, DELETE` on `semiplot_groups` and `semiplot_pen_groups`; `SELECT` on `semiplot_meta`; `EXECUTE` on `semiplot_register_new_pens()`. No `CREATE` on schema `public` |
 
 `semiplot` edits its own pen catalogue and cannot touch the archive. Both facts are grants on
 individual tables, so the second does not weaken when the first is given: the viewer's editor
@@ -182,11 +182,11 @@ saves a pen through the same connection it reads history on, and a bug in it can
 
 A `semiplot_tags` row is keyed by `id`, the SCADA variable number. SemiPlot owns the settings in the
 row and none of the keys: its editor changes a pen and never adds one, deletes one or moves one onto
-another variable. The grant on that table is therefore column-level,
-`GRANT SELECT, UPDATE (name, unit, format, color, line_style, enabled_on_start, scale_min_on_start, scale_max_on_start)`,
-and a table-level `UPDATE` would not do: it would let `UPDATE semiplot_tags SET id = ...` re-key a
-pen. A column grant is not a table grant, so `has_table_privilege('semiplot', 'semiplot_tags',
-'UPDATE')` answers false, and no check asks it. A pen row is added only by
+another variable. The grant on that table is therefore column-level, `GRANT SELECT, UPDATE (name,
+unit, format, color, line_style, enabled_on_start, scale_min_on_start, scale_max_on_start,
+log_scale_on_start)`, and a table-level `UPDATE` would not do: it would let `UPDATE semiplot_tags
+SET id = ...` re-key a pen. A column grant is not a table grant, so `has_table_privilege('semiplot',
+'semiplot_tags', 'UPDATE')` answers false, and no check asks it. A pen row is added only by
 `semiplot_register_new_pens()` ([Registering new pens](#registering-new-pens)), and only the
 superuser deletes a pen.
 
@@ -235,7 +235,7 @@ checks a `LANGUAGE sql` body against the relations it names when the function is
 
 | Table | Holds |
 | --- | --- |
-| `semiplot_tags` | One pen: `id` matching `trends.id`, `name`, `unit`, `format` as a .NET numeric format string the viewer applies and the server does not validate, `color` as `#RRGGBB`, `line_style` (0 interpolated, 1 stepped), `enabled_on_start`, and the `scale_min_on_start`/`scale_max_on_start` pair that bounds the pen's own Y axis. Both bounds `NULL` means autoscale. A column with the `_on_start` suffix holds a start value: what the pen opens with in a new window and what the viewer's "Restore initial scale" returns to. Editing the pen on the chart changes the current view and never a start value, and a changed start value never changes a chart already open. Every other settings column is a live setting, which a running chart applies at its next catalogue read |
+| `semiplot_tags` | One pen: `id` matching `trends.id`, `name`, `unit`, `format` as a .NET numeric format string the viewer applies and the server does not validate, `color` as `#RRGGBB`, `line_style` (0 interpolated, 1 stepped), `enabled_on_start`, the `scale_min_on_start`/`scale_max_on_start` pair that bounds the pen's own Y axis (both `NULL` means autoscale), and `log_scale_on_start`, the type of that axis: `false` is linear, `true` is log10. A column with the `_on_start` suffix holds a start value: what the pen opens with in a new window; for the scale pair and the log flag, also what the viewer's "Restore initial scale" returns to. Editing the pen on the chart changes the current view and never a start value, and a changed start value never changes a chart already open. Every other settings column is a live setting, which a running chart applies at its next catalogue read |
 | `semiplot_groups` | A group name. `GENERATED ALWAYS AS IDENTITY` rather than `serial`, so `semiplot` needs no `USAGE` on a sequence to insert one |
 | `semiplot_pen_groups` | Membership, `(pen_id, group_id)`. A pen may sit in several groups and in none: a pen with no row here is legal and the viewer shows it ungrouped |
 | `semiplot_meta` | One row: `schema_version`. A `singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton)` admits no second row, and the value is written by one `INSERT ... ON CONFLICT (singleton) DO UPDATE`, so a failure cannot leave the table empty and a re-run cannot leave two rows |
@@ -254,12 +254,12 @@ arriving uneditable.
 The archive carries no variable catalogue of its own, so `trends.id` is the only reliable source of
 pen keys. `semiplot_register_new_pens()` (`sql/semiplot_register.sql`) inserts one `semiplot_tags`
 row for every key in `trends` that has none and returns how many it added. The viewer calls it only
-from its pen editor's "Refresh pen list" button, never at start. A new row is named by its number, takes a colour
-from a fixed twelve-colour palette by `id % 12`, which assumes SCADA variable numbers are
-non-negative (a negative `id` gets a `NULL` colour, and the viewer picks one), starts with
-`enabled_on_start = false`, so a SCADA
-with 500 variables does not draw 500 lines at the next start, and autoscales. A variable SCADA
-stops writing keeps its row, because its history is still in `trends`. A trigger on `trends` was
+from its pen editor's "Refresh pen list" button, never at start. A new row is named by its number,
+takes a colour from a fixed twelve-colour palette by `id % 12`, which assumes SCADA variable numbers
+are non-negative (a negative `id` gets a `NULL` colour, and the viewer picks one), starts with
+`enabled_on_start = false`, so a SCADA with 500 variables does not draw 500 lines at the next start,
+autoscales, and opens on a linear axis (`log_scale_on_start = false`). A variable SCADA stops
+writing keeps its row, because its history is still in `trends`. A trigger on `trends` was
 rejected: it would run on every sample SCADA writes, on the one table SemiPlot does not own.
 
 The function is `SECURITY DEFINER`, so `semiplot` adds a pen through it and holds no `INSERT` on
@@ -320,8 +320,10 @@ storing a **lower** one; a **higher** one is accepted, because the versions this
 grow by addition and a database carrying more than a viewer needs still carries what it needs.
 The rule starts with the first installation. Until a site runs a provisioned database, a schema
 change, a column rename included, edits the `CREATE TABLE` alone, issues no `ALTER`, and leaves the
-number at `1`. When `semiplot_markers` arrives it bumps the number to 2, and a viewer that reads only the pen
-tables has to keep working against it, which an equality check would break.
+number at `1`. A database provisioned before such a change is recreated, not provisioned again:
+`CREATE TABLE IF NOT EXISTS` keeps its old table, and the column grant then fails with 42703 on the
+column that table lacks. When `semiplot_markers` arrives it bumps the number to 2, and a viewer that
+reads only the pen tables has to keep working against it, which an equality check would break.
 
 A removal is not signalled by this number. An older viewer meeting a dropped column gets 42703,
 which SemiPlot maps to an unexpected-shape failure naming the column.
@@ -424,7 +426,7 @@ promises. They are knowable at exit precisely because this tool creates `public.
    body still reads `public.trends` and the check passes (both measured on 17). The qualifiers are
    what keeps the shadow out.
    Then `INSERT`, `UPDATE` and `DELETE` on `semiplot_groups` and `semiplot_pen_groups`, and one
-   `UPDATE` setting all eight settings columns of `semiplot_tags` to themselves (`WHERE id = -1`,
+   `UPDATE` setting all nine settings columns of `semiplot_tags` to themselves (`WHERE id = -1`,
    which matches no row), issued as the role, in the
    order the foreign keys need. The membership `INSERT` pairs the probe group with whatever pen
    exists (`INSERT ... SELECT tag.id, grp.id FROM semiplot_tags tag, semiplot_groups grp ... LIMIT
