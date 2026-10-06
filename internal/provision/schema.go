@@ -28,6 +28,7 @@ var plotEditableTagColumns = []string{
 	"enabled_on_start",
 	"scale_min_on_start",
 	"scale_max_on_start",
+	"log_scale_on_start",
 }
 
 const (

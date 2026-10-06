@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS semiplot_tags (
 	enabled_on_start   boolean  NOT NULL DEFAULT true,
 	scale_min_on_start double precision,
 	scale_max_on_start double precision,
+	log_scale_on_start boolean  NOT NULL DEFAULT false,
 	CONSTRAINT semiplot_tags_scale_paired CHECK (
 		(scale_min_on_start IS NULL) = (scale_max_on_start IS NULL)
 		AND (scale_min_on_start IS NULL OR scale_min_on_start < scale_max_on_start)),

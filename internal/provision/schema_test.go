@@ -71,6 +71,7 @@ func TestSemiplotTagsColumns(t *testing.T) {
 		"enabled_on_start",
 		"scale_min_on_start",
 		"scale_max_on_start",
+		"log_scale_on_start",
 	}
 	got := columnNamesOf(semibase.SemiplotTagsSQL)
 	if len(got) != len(want) {
@@ -144,13 +145,16 @@ func TestSemiplotTablesMatchTheEmbeddedFiles(t *testing.T) {
 	}
 }
 
+func tagsColumnGrant() string {
+	return "GRANT SELECT, UPDATE (" + strings.Join(plotEditableTagColumns, ", ") + ") ON semiplot_tags TO semiplot"
+}
+
 func TestSemiplotGrantStatements(t *testing.T) {
 	want := []struct {
 		object    string
 		statement string
 	}{
-		{"semiplot_tags", "GRANT SELECT, UPDATE (name, unit, format, color, line_style, enabled_on_start, " +
-			"scale_min_on_start, scale_max_on_start) ON semiplot_tags TO semiplot"},
+		{"semiplot_tags", tagsColumnGrant()},
 		{"semiplot_groups", "GRANT SELECT, INSERT, UPDATE, DELETE ON semiplot_groups TO semiplot"},
 		{"semiplot_pen_groups", "GRANT SELECT, INSERT, UPDATE, DELETE ON semiplot_pen_groups TO semiplot"},
 		{"semiplot_meta", "GRANT SELECT ON semiplot_meta TO semiplot"},
