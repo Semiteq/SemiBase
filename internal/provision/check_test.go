@@ -36,8 +36,8 @@ func TestPlotWriteProbesCoverTheWritableTables(t *testing.T) {
 
 func TestPlotTagsUpdateProbeWritesEverySettingsColumn(t *testing.T) {
 	want := "UPDATE semiplot_tags SET name = name, unit = unit, format = format, color = color, " +
-		"line_style = line_style, enabled_on_start = enabled_on_start, scale_min = scale_min, " +
-		"scale_max = scale_max WHERE id = -1"
+		"line_style = line_style, enabled_on_start = enabled_on_start, " +
+		"scale_min_on_start = scale_min_on_start, scale_max_on_start = scale_max_on_start WHERE id = -1"
 	probes := plotWriteProbes()
 	if got := probes[probePosition(t, probes, "semiplot_tags", "UPDATE")].statement; got != want {
 		t.Errorf("the semiplot_tags probe is %q, want %q", got, want)
@@ -92,8 +92,8 @@ func TestWriteProbeFailure(t *testing.T) {
 	}
 
 	tags := writeProbeFailure(plotWriteProbe{"semiplot_tags", "UPDATE", ""}, errors.New("permission denied"))
-	wantTags := "GRANT SELECT, UPDATE (name, unit, format, color, line_style, enabled_on_start, scale_min, " +
-		"scale_max) ON semiplot_tags TO semiplot"
+	wantTags := "GRANT SELECT, UPDATE (name, unit, format, color, line_style, enabled_on_start, " +
+		"scale_min_on_start, scale_max_on_start) ON semiplot_tags TO semiplot"
 	if !strings.Contains(tags.Error(), wantTags) {
 		t.Errorf("the semiplot_tags repair does not prescribe the column grant: %q", tags)
 	}
