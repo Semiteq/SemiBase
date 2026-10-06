@@ -183,7 +183,7 @@ saves a pen through the same connection it reads history on, and a bug in it can
 A `semiplot_tags` row is keyed by `id`, the SCADA variable number. SemiPlot owns the settings in the
 row and none of the keys: its editor changes a pen and never adds one, deletes one or moves one onto
 another variable. The grant on that table is therefore column-level,
-`GRANT SELECT, UPDATE (name, unit, format, color, line_style, enabled_on_start, scale_min, scale_max)`,
+`GRANT SELECT, UPDATE (name, unit, format, color, line_style, enabled_on_start, scale_min_on_start, scale_max_on_start)`,
 and a table-level `UPDATE` would not do: it would let `UPDATE semiplot_tags SET id = ...` re-key a
 pen. A column grant is not a table grant, so `has_table_privilege('semiplot', 'semiplot_tags',
 'UPDATE')` answers false, and no check asks it. A pen row is added only by
@@ -235,7 +235,7 @@ checks a `LANGUAGE sql` body against the relations it names when the function is
 
 | Table | Holds |
 | --- | --- |
-| `semiplot_tags` | One pen: `id` matching `trends.id`, `name`, `unit`, `format` as a .NET numeric format string the viewer applies and the server does not validate, `color` as `#RRGGBB`, `line_style` (0 interpolated, 1 stepped), `enabled_on_start`, and the `scale_min`/`scale_max` pair that bounds the pen's own Y axis. Both bounds `NULL` means autoscale |
+| `semiplot_tags` | One pen: `id` matching `trends.id`, `name`, `unit`, `format` as a .NET numeric format string the viewer applies and the server does not validate, `color` as `#RRGGBB`, `line_style` (0 interpolated, 1 stepped), `enabled_on_start`, and the `scale_min_on_start`/`scale_max_on_start` pair that bounds the pen's own Y axis. Both bounds `NULL` means autoscale. A column with the `_on_start` suffix holds a start value: what the pen opens with in a new window and what the viewer's "Restore initial scale" returns to. Editing the pen on the chart changes the current view and never a start value, and a changed start value never changes a chart already open. Every other settings column is a live setting, which a running chart applies at its next catalogue read |
 | `semiplot_groups` | A group name. `GENERATED ALWAYS AS IDENTITY` rather than `serial`, so `semiplot` needs no `USAGE` on a sequence to insert one |
 | `semiplot_pen_groups` | Membership, `(pen_id, group_id)`. A pen may sit in several groups and in none: a pen with no row here is legal and the viewer shows it ungrouped |
 | `semiplot_meta` | One row: `schema_version`. A `singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton)` admits no second row, and the value is written by one `INSERT ... ON CONFLICT (singleton) DO UPDATE`, so a failure cannot leave the table empty and a re-run cannot leave two rows |
@@ -318,7 +318,9 @@ inside the `semiplot` role's 30 s `statement_timeout` either way.
 This release writes `1`. A viewer states the minimum version it needs and refuses a database
 storing a **lower** one; a **higher** one is accepted, because the versions this repository issues
 grow by addition and a database carrying more than a viewer needs still carries what it needs.
-When `semiplot_markers` arrives it bumps the number to 2, and a viewer that reads only the pen
+The rule starts with the first installation. Until a site runs a provisioned database, a schema
+change, a column rename included, edits the `CREATE TABLE` alone, issues no `ALTER`, and leaves the
+number at `1`. When `semiplot_markers` arrives it bumps the number to 2, and a viewer that reads only the pen
 tables has to keep working against it, which an equality check would break.
 
 A removal is not signalled by this number. An older viewer meeting a dropped column gets 42703,

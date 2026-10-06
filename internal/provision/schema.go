@@ -26,8 +26,8 @@ var plotEditableTagColumns = []string{
 	"color",
 	"line_style",
 	"enabled_on_start",
-	"scale_min",
-	"scale_max",
+	"scale_min_on_start",
+	"scale_max_on_start",
 }
 
 const (
