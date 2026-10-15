@@ -16,6 +16,7 @@ func TestPlotWriteProbesCoverTheWritableTables(t *testing.T) {
 		"semiplot_tags":       {"UPDATE"},
 		"semiplot_groups":     {"INSERT", "UPDATE", "DELETE"},
 		"semiplot_pen_groups": {"INSERT", "UPDATE", "DELETE"},
+		"semiplot_markers":    {"INSERT", "UPDATE", "DELETE"},
 	}
 	exercised := map[string][]string{}
 	for _, probe := range plotWriteProbes() {
@@ -81,6 +82,27 @@ func TestPlotWriteProbeOrderSatisfiesTheForeignKeys(t *testing.T) {
 	}
 	if position("semiplot_pen_groups", "DELETE") > position("semiplot_groups", "DELETE") {
 		t.Error("the group is removed before the membership row that names it")
+	}
+}
+
+// the marker UPDATE and DELETE prove their privilege on the row the INSERT wrote, found by its label
+func TestPlotMarkerProbesFindTheRowTheyInsert(t *testing.T) {
+	probes := plotWriteProbes()
+	insert := probePosition(t, probes, "semiplot_markers", "INSERT")
+	update := probePosition(t, probes, "semiplot_markers", "UPDATE")
+	remove := probePosition(t, probes, "semiplot_markers", "DELETE")
+	if insert > update || update > remove {
+		t.Errorf("the marker probes run at %d, %d, %d; want INSERT, UPDATE, DELETE in that order",
+			insert, update, remove)
+	}
+	if want := "VALUES (now(), '" + writeProbeName + "')"; !strings.Contains(probes[insert].statement, want) {
+		t.Errorf("the marker INSERT is %q, want it to write %s", probes[insert].statement, want)
+	}
+	for _, position := range []int{update, remove} {
+		if want := "WHERE label = '" + writeProbeName + "'"; !strings.HasSuffix(probes[position].statement, want) {
+			t.Errorf("the marker %s is %q, want it to end with %s", probes[position].operation,
+				probes[position].statement, want)
+		}
 	}
 }
 

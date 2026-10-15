@@ -30,7 +30,7 @@ SemiBase — разворачиваемый PostgreSQL-сервис для ус�
 winget install --id PostgreSQL.PostgreSQL.17 --exact
 
 # конфигурация сервера, архивная база, роли `scada_writer`, `semiplot` и
-# `semiplot_registrar`, права, таблица архива, четыре таблицы SemiPlot и функция
+# `semiplot_registrar`, права, таблица архива, пять таблиц SemiPlot и функция
 # регистрации новых перьев
 .\semibase.exe site
 ```

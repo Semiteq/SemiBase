@@ -6,7 +6,7 @@ provisions and configures the instance that hosts the Simple-Scada 2 archive: th
 CLI binary, `semibase.exe`, a container image carrying its Linux build, plus the instance's
 architecture docs.
 Deployment target: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver
-`pgx/v5`, the four `sql/semiplot_*.sql` files and `sql/trends.sql` embedded via `go:embed`. Entry point:
+`pgx/v5`, the five `sql/semiplot_*.sql` files and `sql/trends.sql` embedded via `go:embed`. Entry point:
 `cmd/semibase`. The module is pure `pgx` and compiles for any GOOS; Linux builds serve the
 containerised test bench of consumers (SemiPlot runs `bench` against an ephemeral `postgres:17`
 container). All commands run from the repository root.
@@ -115,12 +115,12 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 ```
 
 `site` and `bench` differ in one thing: `site` applies the `ALTER SYSTEM` memory constants,
-`bench` does not. Both create the database, the roles, the grants, the four SemiPlot tables
-(`semiplot_tags`, `semiplot_groups`, `semiplot_pen_groups`, `semiplot_meta`), the
+`bench` does not. Both create the database, the roles, the grants, the five SemiPlot tables
+(`semiplot_tags`, `semiplot_groups`, `semiplot_pen_groups`, `semiplot_markers`, `semiplot_meta`), the
 `semiplot_register_new_pens()` function and `public.trends`, and both end by actually reading
 `public.trends` and `semiplot_meta.schema_version` as `semiplot`, actually calling
 `semiplot_register_new_pens()`, proving it ignores a temporary `trends` of its caller, and writing
-`semiplot_groups`, `semiplot_pen_groups` and the settings columns of `semiplot_tags` as `semiplot`
+`semiplot_groups`, `semiplot_pen_groups`, `semiplot_markers` and the settings columns of `semiplot_tags` as `semiplot`
 in a rolled-back transaction, requiring 42501 for `INSERT`, `DELETE` and `UPDATE ... SET id` on
 `semiplot_tags` in the same transaction, and checking that `PUBLIC` holds no `EXECUTE` on
 `semiplot_register_new_pens()`, and that `semiplot` holds no `INSERT`, `UPDATE` or `DELETE`
@@ -159,8 +159,9 @@ internal/provision/  one file per phase behind the two commands: config.go (ALTE
                      their grants, the pen-registration function's grant and its owner's
                      registrarStatements), check.go (semiplot access). provision.go
                      holds Options, Site/Bench and the connection plumbing they share
-sql/                 embedded DDL: the four semiplot_* files (ours: the tables, the
-                     pen-registration function, the version stamp) and trends (the vendor's shape)
+sql/                 embedded DDL: the five semiplot_* files (ours: the tables, the
+                     pen-registration function, the time markers, the version stamp) and trends
+                     (the vendor's shape)
 docs/                human docs in Russian (enter at docs/readme.md)
 docs/architecture/   agent-facing design docs in English
 docs/plans/          dated implementation plans

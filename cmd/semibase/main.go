@@ -25,15 +25,16 @@ Usage:
 Commands:
   site     an installation machine: apply the memory tuning (ALTER SYSTEM + reload),
            then create the archive database, the roles, the access chain, public.trends,
-           the four semiplot_* tables and semiplot_register_new_pens()
+           the five semiplot_* tables and semiplot_register_new_pens()
   bench    a throwaway container: the same, without the tuning
   version  print the build revision
 
 Both commands end by checking the semiplot role in a transaction that is rolled back:
 it reads public.trends and semiplot_meta, registers new pens through
-semiplot_register_new_pens(), updates pen settings and groups, and is refused an insert,
-a delete or a key change on semiplot_tags; it writes neither the archive nor
-semiplot_meta and holds no CREATE on schema public. A failed check is a non-zero exit.
+semiplot_register_new_pens(), updates pen settings, groups and markers, and is
+refused an insert, a delete or a key change on semiplot_tags; it writes neither the
+archive nor semiplot_meta and holds no CREATE on schema public. A failed check is a
+non-zero exit.
 
 Every step checks before it creates; re-running either command is safe. Passwords of
 existing roles change only when the corresponding flag or variable is set.

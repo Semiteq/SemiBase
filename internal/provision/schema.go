@@ -16,6 +16,7 @@ var semiplotSchemaFiles = []struct {
 	{"semiplot_tags.sql", semibase.SemiplotTagsSQL},
 	{"semiplot_register.sql", semibase.SemiplotRegisterSQL},
 	{"semiplot_groups.sql", semibase.SemiplotGroupsSQL},
+	{"semiplot_markers.sql", semibase.SemiplotMarkersSQL},
 	{"semiplot_meta.sql", semibase.SemiplotMetaSQL},
 }
 
@@ -46,6 +47,7 @@ var semiplotTables = []struct {
 	{"semiplot_tags", plotTagsGrants},
 	{"semiplot_groups", plotWriteGrants},
 	{"semiplot_pen_groups", plotWriteGrants},
+	{"semiplot_markers", plotWriteGrants},
 	{"semiplot_meta", plotReadGrants},
 }
 
