@@ -41,6 +41,12 @@ func plotWriteProbes() []plotWriteProbe {
 			"DELETE FROM semiplot_pen_groups WHERE group_id IN (%s)", probeGroup)},
 		{"semiplot_groups", "DELETE", fmt.Sprintf(
 			"DELETE FROM semiplot_groups WHERE name = '%s'", writeProbeName)},
+		{"semiplot_markers", "INSERT", fmt.Sprintf(
+			"INSERT INTO semiplot_markers (t, label) VALUES (now(), '%s')", writeProbeName)},
+		{"semiplot_markers", "UPDATE", fmt.Sprintf(
+			"UPDATE semiplot_markers SET t = t, label = label WHERE label = '%s'", writeProbeName)},
+		{"semiplot_markers", "DELETE", fmt.Sprintf(
+			"DELETE FROM semiplot_markers WHERE label = '%s'", writeProbeName)},
 	}
 }
 
@@ -287,8 +293,8 @@ func assertPlotWritesItsTables(ctx context.Context, transaction pgx.Tx) error {
 			return writeProbeFailure(probe, err)
 		}
 	}
-	ok("%s inserts, updates and deletes semiplot_groups and semiplot_pen_groups, and updates the "+
-		"settings columns of semiplot_tags", PlotRole)
+	ok("%s inserts, updates and deletes semiplot_groups, semiplot_pen_groups and semiplot_markers, and "+
+		"updates the settings columns of semiplot_tags", PlotRole)
 	return nil
 }
 

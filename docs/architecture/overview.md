@@ -16,26 +16,28 @@ its own retention setting.
 | Consumer | Role | Access |
 | --- | --- | --- |
 | Simple-Scada 2 (archives into PostgreSQL) | `scada_writer` | Owns and writes `trends`, creates its day partitions, creates and writes `messages`; executes retention |
-| SemiPlot (trend viewer) | `semiplot` | `SELECT` on `trends` and `messages`; read and edit a pen's settings in `semiplot_tags`, never its `id`, and never add or delete a pen by hand; `EXECUTE` on `semiplot_register_new_pens()`, which adds a pen for every key SCADA has written; read and write `semiplot_groups` and `semiplot_pen_groups`; `SELECT` on `semiplot_meta` — nothing else |
+| SemiPlot (trend viewer) | `semiplot` | `SELECT` on `trends` and `messages`; read and edit a pen's settings in `semiplot_tags`, never its `id`, and never add or delete a pen by hand; `EXECUTE` on `semiplot_register_new_pens()`, which adds a pen for every key SCADA has written; read and write `semiplot_groups`, `semiplot_pen_groups` and `semiplot_markers`; `SELECT` on `semiplot_meta` — nothing else |
 
 Two more roles take part. The superuser the tool connects as (`--superuser`, default `postgres`)
-owns the four `semiplot_*` tables, because it is the connection that applies their DDL.
+owns the five `semiplot_*` tables, because it is the connection that applies their DDL.
 `semiplot_registrar`, which logs in nowhere, owns `semiplot_register_new_pens()`, so the function
 runs with that role's narrow grants rather than as the superuser
 (`provisioning.md#registering-new-pens`). `semiplot` edits
-pen settings and groups and can create nothing beside the four tables, because `create` revokes `CREATE` on schema `public`
+pen settings, groups and time markers and can create nothing beside the five tables, because `create` revokes `CREATE` on schema `public`
 from `PUBLIC` and the tail check reads it back.
 
-The `semiplot` credential grants process-history reads and pen-catalogue edits, and nothing more,
-which is what makes a plaintext password in a client configuration file an acceptable risk. A bug
-in the viewer can corrupt the pen catalogue, which is recoverable; it cannot touch `trends`.
+The `semiplot` credential grants process-history reads, pen-catalogue edits and time-marker edits,
+and nothing more, which is what makes a plaintext password in a client configuration file an
+acceptable risk. A bug in the viewer can corrupt the pen catalogue or move, relabel and delete the
+time markers. Both are what operators entered, and they can enter them again; the bug cannot touch
+`trends`.
 
 ## Components
 
 | Component | Responsibility |
 | --- | --- |
-| `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning in two commands, `site` and `bench`: instance tuning (`site` only), database, roles, grants, the four SemiPlot tables, `semiplot_register_new_pens()`, `public.trends`, and the `semiplot` access checks that end every run |
-| `sql/semiplot_tags.sql`, `sql/semiplot_register.sql`, `sql/semiplot_groups.sql`, `sql/semiplot_meta.sql` | DDL for the objects we invented — the pen catalogue, the function that registers new pens, the groups and their membership, and the schema version — embedded into the binary |
+| `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning in two commands, `site` and `bench`: instance tuning (`site` only), database, roles, grants, the five SemiPlot tables, `semiplot_register_new_pens()`, `public.trends`, and the `semiplot` access checks that end every run |
+| `sql/semiplot_tags.sql`, `sql/semiplot_register.sql`, `sql/semiplot_groups.sql`, `sql/semiplot_markers.sql`, `sql/semiplot_meta.sql` | DDL for the objects we invented — the pen catalogue, the function that registers new pens, the groups and their membership, the time markers, and the schema version — embedded into the binary |
 | `sql/trends.sql` | The vendor's archive-table shape, transcribed and embedded; applied under `SET ROLE scada_writer`, so the table's owner is the writer |
 | `Dockerfile` | `ghcr.io/semiteq/semibase` — the Linux binary alone on `scratch`, for consumers that layer it into a bench image |
 | `docs/architecture/` | The instance as it is: configuration deltas, provisioning order, ownership |
@@ -53,7 +55,7 @@ The order matters, because the default privileges have to be in place before any
 
 1. Install the engine: `winget install --id PostgreSQL.PostgreSQL.17 --exact`.
 2. `semibase site` — tuning, then the archive database, the three created roles, default privileges,
-   `public.trends`, the four SemiPlot tables and `semiplot_register_new_pens()`; it ends by proving `semiplot` reads `trends`, writes
+   `public.trends`, the five SemiPlot tables and `semiplot_register_new_pens()`; it ends by proving `semiplot` reads `trends`, writes
    what it owns, cannot add, delete or re-key a pen and cannot write the archive, and warns while `shared_buffers` waits for a service
    restart.
 3. Restart the PostgreSQL service or reboot the machine, so `shared_buffers` takes effect.

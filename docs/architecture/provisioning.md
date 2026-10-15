@@ -8,8 +8,8 @@ matters, is a liability.
 The binary is self-contained: `pgx/v5` speaks the wire protocol itself, over TCP or a unix
 socket, so neither `psql.exe` nor any runtime needs to be present on the target machine.
 The SQL is embedded at build time: `sql/trends.sql` for the archive table, and
-`sql/semiplot_tags.sql`, `sql/semiplot_register.sql`, `sql/semiplot_groups.sql` and
-`sql/semiplot_meta.sql` for the SemiPlot configuration schema. Installing the PostgreSQL
+`sql/semiplot_tags.sql`, `sql/semiplot_register.sql`, `sql/semiplot_groups.sql`,
+`sql/semiplot_markers.sql` and `sql/semiplot_meta.sql` for the SemiPlot configuration schema. Installing the PostgreSQL
 engine itself is one documented `winget` line, deliberately outside the tool — OS package management
 is not database provisioning.
 
@@ -89,7 +89,7 @@ a test of what a site runs:
 | `ALTER SYSTEM` constants from `configuration.md`, applied with `pg_reload_conf()` | yes | no — the constants are sized for an installation machine and mean nothing to a container |
 | Archive database, the three created roles, grants, default privileges | yes | yes |
 | `public.trends` with the `tpdefault` partition, created as `scada_writer` | yes | yes |
-| The four SemiPlot tables and `semiplot_register_new_pens()`, after `public.trends` because the function body names it | yes | yes |
+| The five SemiPlot tables and `semiplot_register_new_pens()`, after `public.trends` because the function body names it | yes | yes |
 | The `semiplot` access checks at the tail | yes | yes |
 | Pending-restart warning at the tail | yes | yes — `bench` tunes nothing, but it runs against existing servers too, and one a `site` run tuned can still be waiting for its restart |
 
@@ -170,12 +170,12 @@ Four roles take part, and the tool creates three of them.
 
 | Role | Created by | What it holds |
 | --- | --- | --- |
-| The superuser (`--superuser`, default `postgres`) | the engine install | Every connection this tool makes. It owns the four `semiplot_*` tables, because it is the connection that applies their DDL |
+| The superuser (`--superuser`, default `postgres`) | the engine install | Every connection this tool makes. It owns the five `semiplot_*` tables, because it is the connection that applies their DDL |
 | `semiplot_registrar` | `semibase` | `NOLOGIN`. Owns `semiplot_register_new_pens()` and holds what its body needs: `SELECT` on `public.trends`, `SELECT (id)` and `INSERT (id, name, color, enabled_on_start)` on `semiplot_tags` ([Registering new pens](#registering-new-pens)) |
 | `scada_writer` | `semibase` | Owns `public.trends`, its day partitions and `messages`, and writes them. `CREATE` on schema `public`. Nothing on any `semiplot_*` table |
-| `semiplot` | `semibase` | `SELECT` on `trends` and `messages`; `SELECT` on `semiplot_tags` and `UPDATE` on its nine settings columns, never on `id`; `SELECT, INSERT, UPDATE, DELETE` on `semiplot_groups` and `semiplot_pen_groups`; `SELECT` on `semiplot_meta`; `EXECUTE` on `semiplot_register_new_pens()`. No `CREATE` on schema `public` |
+| `semiplot` | `semibase` | `SELECT` on `trends` and `messages`; `SELECT` on `semiplot_tags` and `UPDATE` on its nine settings columns, never on `id`; `SELECT, INSERT, UPDATE, DELETE` on `semiplot_groups`, `semiplot_pen_groups` and `semiplot_markers`; `SELECT` on `semiplot_meta`; `EXECUTE` on `semiplot_register_new_pens()`. No `CREATE` on schema `public` |
 
-`semiplot` edits its own pen catalogue and cannot touch the archive. Both facts are grants on
+`semiplot` edits its own pen catalogue and time markers and cannot touch the archive. Both facts are grants on
 individual tables, so the second does not weaken when the first is given: the viewer's editor
 saves a pen through the same connection it reads history on, and a bug in it cannot corrupt
 `trends`.
@@ -220,27 +220,29 @@ deleted every group. No per-function setting closes this: `SET row_security = of
 replacing the table with a view.
 
 The grants enforce one boundary: the SemiPlot operator, acting through `semiplot`, updates pen
-settings and groups and never inserts, deletes or re-keys a `semiplot_tags` row. `semiplot_registrar`
+settings, groups and time markers and never inserts, deletes or re-keys a `semiplot_tags` row. `semiplot_registrar`
 still earns its place against `scada_writer`: under a superuser owner the same view code ran as the
 superuser and reached the whole cluster; under `semiplot_registrar` it reaches `semiplot_tags`
 (`SELECT (id)` and `INSERT` on four columns) and the function the role owns.
 
 ## The SemiPlot configuration schema
 
-Four tables and one function, applied on every run after `public.trends` exists and in the order
+Five tables and one function, applied on every run after `public.trends` exists and in the order
 their references need. `semiplot_register.sql` follows `semiplot_tags.sql`, because PostgreSQL
 checks a `LANGUAGE sql` body against the relations it names when the function is created: a missing
 `trends` or `semiplot_tags` fails the statement. A membership row names a pen, so
-`semiplot_tags.sql` also runs before `semiplot_groups.sql`, and `semiplot_meta.sql` follows them.
+`semiplot_tags.sql` also runs before `semiplot_groups.sql`. `semiplot_markers.sql` names no other
+relation and runs after them, and `semiplot_meta.sql` runs last.
 
 | Table | Holds |
 | --- | --- |
 | `semiplot_tags` | One pen: `id` matching `trends.id`, `name`, `unit`, `format` as a .NET numeric format string the viewer applies and the server does not validate, `color` as `#RRGGBB`, `line_style` (0 interpolated, 1 stepped), `enabled_on_start`, the `scale_min_on_start`/`scale_max_on_start` pair that bounds the pen's own Y axis (both `NULL` means autoscale), and `log_scale_on_start`, the type of that axis: `false` is linear, `true` is log10. A column with the `_on_start` suffix holds a start value: what the pen opens with in a new window; for the scale pair and the log flag, also what the viewer's "Restore initial scale" returns to. Editing the pen on the chart changes the current view and never a start value, and a changed start value never changes a chart already open. Every other settings column is a live setting, which a running chart applies at its next catalogue read |
 | `semiplot_groups` | A group name. `GENERATED ALWAYS AS IDENTITY` rather than `serial`, so `semiplot` needs no `USAGE` on a sequence to insert one |
 | `semiplot_pen_groups` | Membership, `(pen_id, group_id)`. A pen may sit in several groups and in none: a pen with no row here is legal and the viewer shows it ungrouped |
+| `semiplot_markers` | One time marker the operator placed on the chart: `id` as `bigint GENERATED ALWAYS AS IDENTITY`, the moment `t`, and an optional `label` of 1 to 80 characters. An unlabelled marker stores `NULL`, and the `CHECK` refuses `''`. `t` is `timestamptz`, not the naive local wall-clock time of `trends.t`: the viewer places an exact UTC moment, and a naive local value is ambiguous in the autumn repeated hour. No index, because the viewer reads the whole table. Not partitioned and outside any retention, so a marker outlives the day partition it points into |
 | `semiplot_meta` | One row: `schema_version`. A `singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton)` admits no second row, and the value is written by one `INSERT ... ON CONFLICT (singleton) DO UPDATE`, so a failure cannot leave the table empty and a re-run cannot leave two rows |
 
-These four are granted table by table, not through default privileges: the superuser connection
+These five are granted table by table, not through default privileges: the superuser connection
 creates them, so no runtime owner exists whose future tables a default-privileges rule could cover,
 and one explicit `GRANT` per table says what the role holds. `semiplotTables` in
 `internal/provision` is the one list carrying both the table names and the grant each gets, from
@@ -322,8 +324,10 @@ The rule starts with the first installation. Until a site runs a provisioned dat
 change, a column rename included, edits the `CREATE TABLE` alone, issues no `ALTER`, and leaves the
 number at `1`. A database provisioned before such a change is recreated, not provisioned again:
 `CREATE TABLE IF NOT EXISTS` keeps its old table, and the column grant then fails with 42703 on the
-column that table lacks. When `semiplot_markers` arrives it bumps the number to 2, and a viewer that
-reads only the pen tables has to keep working against it, which an equality check would break.
+column that table lacks. `semiplot_markers` is such a change: it leaves the number at `1`, and a
+database provisioned without the table is recreated. After the first installation an added table
+raises the number, and a viewer that reads only the tables it already knew has to keep working
+against it, which an equality check would break.
 
 A removal is not signalled by this number. An older viewer meeting a dropped column gets 42703,
 which SemiPlot maps to an unexpected-shape failure naming the column.
@@ -425,13 +429,14 @@ promises. They are knowable at exit precisely because this tool creates `public.
    `sql/semiplot_register.sql`, the run exits 1 here; with only the `SET` changed, the qualified
    body still reads `public.trends` and the check passes (both measured on 17). The qualifiers are
    what keeps the shadow out.
-   Then `INSERT`, `UPDATE` and `DELETE` on `semiplot_groups` and `semiplot_pen_groups`, and one
-   `UPDATE` setting all nine settings columns of `semiplot_tags` to themselves (`WHERE id = -1`,
-   which matches no row), issued as the role, in the
+   Then `INSERT`, `UPDATE` and `DELETE` on `semiplot_groups`, `semiplot_pen_groups` and
+   `semiplot_markers`, and one `UPDATE` setting all nine settings columns of `semiplot_tags` to
+   themselves (`WHERE id = -1`, which matches no row), issued as the role, in the
    order the foreign keys need. The membership `INSERT` pairs the probe group with whatever pen
    exists (`INSERT ... SELECT tag.id, grp.id FROM semiplot_tags tag, semiplot_groups grp ... LIMIT
    1`): the role cannot create a pen for it, and on an empty catalogue the statement inserts no row
-   and still needs the privilege. Then, in the same transaction, `INSERT INTO semiplot_tags`,
+   and still needs the privilege. The marker `INSERT` writes `t = now()` with the probe name as its
+   label, and the marker `UPDATE` and `DELETE` find that row by the label. Then, in the same transaction, `INSERT INTO semiplot_tags`,
    `DELETE FROM semiplot_tags` and `UPDATE semiplot_tags SET id = id WHERE false`, each inside its
    own savepoint because a refused statement aborts the transaction around it; each must fail with
    42501. The whole transaction is rolled back: these are the tables an operator fills, and a probe
@@ -490,5 +495,5 @@ empty `public.trends` in it.
 
 The tool takes passwords through flags or environment variables and never stores them. The
 `semiplot` credential ends up in plaintext in client configuration files by design — it grants
-reading process history and editing the pen catalogue, and nothing more. The writer credential is
+reading process history and editing the pen catalogue and the time markers, and nothing more. The writer credential is
 recorded wherever the installation keeps its commissioning records, outside this repository.

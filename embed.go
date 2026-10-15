@@ -11,6 +11,9 @@ var SemiplotRegisterSQL string
 //go:embed sql/semiplot_groups.sql
 var SemiplotGroupsSQL string
 
+//go:embed sql/semiplot_markers.sql
+var SemiplotMarkersSQL string
+
 //go:embed sql/semiplot_meta.sql
 var SemiplotMetaSQL string
 

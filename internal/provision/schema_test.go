@@ -94,6 +94,25 @@ func TestSemiplotGroupsUseAnIdentityColumn(t *testing.T) {
 	}
 }
 
+// the viewer inserts a marker and reads its id back, so the id needs no sequence grant either
+func TestSemiplotMarkersUseAnIdentityColumn(t *testing.T) {
+	statements := sqlStatementsOf(semibase.SemiplotMarkersSQL)
+	if strings.Contains(statements, "serial") {
+		t.Error("semiplot_markers.sql uses serial; the identity column needs no sequence grant")
+	}
+	if !strings.Contains(statements, "id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY") {
+		t.Errorf("semiplot_markers.sql declares no bigint identity id: %q", statements)
+	}
+}
+
+// the viewer names these columns in its own statements, the same contract as semiplot_tags
+func TestSemiplotMarkersColumns(t *testing.T) {
+	want := []string{"id", "t", "label"}
+	if got := columnNamesOf(semibase.SemiplotMarkersSQL); !slices.Equal(got, want) {
+		t.Errorf("semiplot_markers.sql declares columns %v, want %v", got, want)
+	}
+}
+
 func TestMembershipForeignKeysCascade(t *testing.T) {
 	statements := sqlStatementsOf(semibase.SemiplotGroupsSQL)
 	for _, reference := range []string{
@@ -113,7 +132,13 @@ func TestMembershipForeignKeysCascade(t *testing.T) {
 }
 
 func TestSemiplotSchemaFileOrder(t *testing.T) {
-	want := []string{"semiplot_tags.sql", "semiplot_register.sql", "semiplot_groups.sql", "semiplot_meta.sql"}
+	want := []string{
+		"semiplot_tags.sql",
+		"semiplot_register.sql",
+		"semiplot_groups.sql",
+		"semiplot_markers.sql",
+		"semiplot_meta.sql",
+	}
 	if len(semiplotSchemaFiles) != len(want) {
 		t.Fatalf("semiplotSchemaFiles holds %d files, want %d", len(semiplotSchemaFiles), len(want))
 	}
@@ -157,6 +182,7 @@ func TestSemiplotGrantStatements(t *testing.T) {
 		{"semiplot_tags", tagsColumnGrant()},
 		{"semiplot_groups", "GRANT SELECT, INSERT, UPDATE, DELETE ON semiplot_groups TO semiplot"},
 		{"semiplot_pen_groups", "GRANT SELECT, INSERT, UPDATE, DELETE ON semiplot_pen_groups TO semiplot"},
+		{"semiplot_markers", "GRANT SELECT, INSERT, UPDATE, DELETE ON semiplot_markers TO semiplot"},
 		{"semiplot_meta", "GRANT SELECT ON semiplot_meta TO semiplot"},
 		{"semiplot_register_new_pens", "REVOKE ALL ON FUNCTION semiplot_register_new_pens() FROM PUBLIC; " +
 			"GRANT EXECUTE ON FUNCTION semiplot_register_new_pens() TO semiplot"},
