@@ -209,8 +209,6 @@ func TestEndpoint(t *testing.T) {
 	}
 }
 
-// the semiplot login check connects with the plain list and may not set a SUSET parameter;
-// the superuser list pins every parameter that would print a password statement's text
 func TestSessionSettings(t *testing.T) {
 	userParameters := []string{"standard_conforming_strings", "search_path"}
 	superuserParameters := slices.Concat(userParameters, []string{

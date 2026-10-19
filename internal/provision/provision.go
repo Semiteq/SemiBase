@@ -134,8 +134,7 @@ func sessionSettings() []string {
 }
 
 // The logging five keep the text of CREATE ROLE ... PASSWORD and ALTER ROLE ... PASSWORD out of
-// the server log. They are SUSET, and the superuser connection is the one that issues those
-// statements.
+// the server log
 func superuserSessionSettings() []string {
 	return append(sessionSettings(),
 		"SET log_statement = 'none'",

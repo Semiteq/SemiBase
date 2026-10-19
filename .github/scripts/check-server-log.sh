@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
-# Fails when a password reaches the server log of a postgres container. The log is read from
-# docker logs, so the server must not run the logging collector. The semiplot login's probe
-# (plotProbe in internal/provision/check.go) must be in it: semibase runs that statement on a
-# connection without the log guard, so a log lacking it proves nothing about the password
-# statements.
+# Fails when a password reaches the server log of a postgres container. The probe grep matches
+# plotProbe in internal/provision/check.go.
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
