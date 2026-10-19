@@ -319,3 +319,70 @@ jobs:
           cp semibase-linux image/semibase
           docker build --platform linux/amd64 -f Dockerfile -t semibase:ci image
           docker run --rm semibase:ci version
+
+  # The setup's end-to-end cases. No SEMIBASE_* variable is set at job level: a
+  # case that wants one sets it, so the first case runs with none.
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build -o semibase.exe ./cmd/semibase
+
+      - name: Cache the EDB payload
+        uses: actions/cache@v6
+        with:
+          path: Installer/payload
+          key: edb-payload-${{ hashFiles('Installer/fetch-postgresql.sh') }}
+
+      # shell: bash is Git Bash; a bare bash on the PATH may be WSL's
+      - name: Fetch the EDB payload
+        shell: bash
+        run: bash Installer/fetch-postgresql.sh
+
+      # The jrsoftware.org direct download intermittently serves a corrupted file, so winget
+      # (preinstalled on windows runners) installs it instead. Machine scope keeps the
+      # Program Files (x86) path the next step expects.
+      - name: Install Inno Setup
+        run: |
+          winget install --id JRSoftware.InnoSetup --exact --scope machine --silent `
+            --accept-source-agreements --accept-package-agreements --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build the setup
+        run: |
+          iscc /DAppVersion=0.0.0-ci /DFileVersion=0.0.0 "/DSemibaseExe=$env:GITHUB_WORKSPACE\semibase.exe" `
+            Installer\SemiBase.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # Setup is a GUI program: the call operator returns before it exits, so
+      # Start-Process waits for it. Exit 7 is what Setup returns when
+      # PrepareToInstall refuses (docs/architecture/installer.md#inno-setup).
+      - name: Refuse a run without a superuser password
+        run: |
+          $service = 'postgresql-x64-17'
+          if (Test-Path Env:SEMIBASE_SUPER_PASSWORD) {
+            Write-Host '::error::SEMIBASE_SUPER_PASSWORD is set, so this case tests nothing'
+            exit 1
+          }
+          $setup = Start-Process -FilePath "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe" `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          if ($setup.ExitCode -ne 7) {
+            Write-Host "::error::want exit 7, a refusal from PrepareToInstall, got $($setup.ExitCode)"
+            exit 1
+          }
+          if (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe") {
+            Write-Host '::error::the refused run installed semibase.exe'
+            exit 1
+          }
+          $startMode = (Get-CimInstance Win32_Service -Filter "Name='$service'").StartMode
+          if ($startMode -ne 'Disabled') {
+            Write-Host "::error::the refused run changed $service to start type '$startMode' (want Disabled)"
+            exit 1
+          }
