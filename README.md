@@ -29,6 +29,7 @@ SemiBase — разворачиваемый PostgreSQL-сервис для ус�
 # установка pgsql
 winget install --id PostgreSQL.PostgreSQL.17 --exact
 
+# дальше всё в PowerShell от имени администратора: утилита перезапускает службу PostgreSQL
 # пароли ролей: каждая строка запрашивает пароль, в историю PowerShell он не попадает
 $env:SEMIBASE_SUPER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль postgres' -AsSecureString)).Password
 $env:SEMIBASE_WRITER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль scada_writer' -AsSecureString)).Password
@@ -36,6 +37,6 @@ $env:SEMIBASE_PLOT_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Па�
 
 # конфигурация сервера, архивная база, роли `scada_writer`, `semiplot` и
 # `semiplot_registrar`, права, таблица архива, пять таблиц SemiPlot и функция
-# регистрации новых перьев
-.\semibase.exe site
+# регистрации новых перьев; перезапуск службы, если настройки его ждут
+.\semibase.exe site --restart-service postgresql-x64-17
 ```

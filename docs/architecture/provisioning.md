@@ -87,7 +87,7 @@ a test of what a site runs:
 | Step | `site` | `bench` |
 | --- | --- | --- |
 | `ALTER SYSTEM` deltas from `configuration.md`, applied with `pg_reload_conf()` | yes | no: the memory constants are sized for an installation machine and mean nothing to a container, and a loopback-only `listen_addresses` would shut out the clients that reach a bench through a published port |
-| Restarting the Windows service the deltas wait for ([The service restart](#the-service-restart)) | only with `--restart-service` | no: `Validate` refuses the flag |
+| Restarting the Windows service the deltas wait for ([The service restart](#the-service-restart)) | only with `--restart-service` | no: `bench` does not register the flag |
 | Archive database, the three created roles, grants, default privileges | yes | yes |
 | `public.trends` with the `tpdefault` partition, created as `scada_writer` | yes | yes |
 | The five SemiPlot tables and `semiplot_register_new_pens()`, after `public.trends` because the function body names it | yes | yes |
@@ -180,9 +180,11 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
 - **Cancellable execution.** Every phase honors its context: cancellation stops the
   in-flight query through pgx instead of killing the process mid-DDL. The context itself —
   `signal.NotifyContext(..., os.Interrupt)` plus the five-minute per-command timeout
-  (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`. The one exception is the
-  Start of a service restart, which ignores the command's cancellation so that the service is
-  never left stopped ([The service restart](#the-service-restart)).
+  (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`. The one exception is a
+  service restart: once the service accepts the Stop, the waits and the Start ignore the
+  command's cancellation, so that an interrupt does not leave the service stopped
+  ([The service restart](#the-service-restart)). A run that used up `phaseTimeout` says so in a
+  second error line.
 - **Pending-restart reporting.** The tuning phase applies its deltas with `pg_reload_conf()` and
   reads `pg_settings.pending_restart` back from the server; both commands read it again as the
   **last** statement of the tail, after the access checks, so a pending `shared_buffers` or
@@ -197,34 +199,51 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
 phase leaves settings waiting for a restart, then waits for the server to accept connections and
 continues. Without the flag the run reports the pending settings and changes nothing else.
 
-`Options.Validate` refuses the flag in two cases. The command is `bench`, which applies no settings,
-so nothing it does waits for a restart. The `--host` is not `localhost`, `127.0.0.1` or `::1`,
-because after the restart the server listens on the loopback interface only.
+Only `site` registers the flag: `bench` applies no settings, so nothing it does waits for a
+restart, and `bench --restart-service` fails as an undefined flag. `Options.Validate` refuses a
+`--host` other than `localhost`, `127.0.0.1` or `::1`, because after the restart the server listens
+on the loopback interface only.
 
 `config` opens the service before it connects, so a service it cannot restart fails the run with
 nothing changed. `openService` (`service_windows.go`) refuses a service that does not exist, a
 service manager or service the run may not control (the message says to run `semibase` as an
-administrator), a Disabled start type, which would leave the service stopped after the Stop, and a
-state other than Running, which means the service is not the server the run connects to. Off
-Windows, `service_other.go` refuses the flag the same way and names the platform, so the module
-stays one cross-platform build.
+administrator), and a Disabled start type, which would leave the service stopped after the Stop.
+A service in Start Pending gets up to 2 minutes to reach Running: an installer may run `site` right
+after it started the service, and an EDB service (`pg_ctl runservice ... -w`) reports Running only
+once the server accepts connections. Stopped, Stop Pending, Paused, or a start that ends in Stopped,
+is refused. The tool does not check that the service is the server behind `--port`: a wrong name
+restarts another running instance, and the run then fails with the settings still pending and a
+hint to compare the service's `-D` with `SHOW data_directory`. Off Windows, `service_other.go`
+refuses the flag the same way and names the platform, so the module stays one cross-platform
+build.
 
 The restart runs inside `config`, right after `pendingRestartSettings` returns a non-empty list, so
 `create` and `check` run against the restarted server. `applySettings` closes the phase connection
 before it returns; then:
 
-1. Stop, then wait up to 3 minutes for Stopped: a shutdown checkpoint with `max_wal_size = 8GB` can
-   be long.
-2. Start, then wait up to 2 minutes for Running.
-3. Connect to `postgres` as the superuser every second, up to 60 s. Whether an EDB service reports
-   Running before the postmaster accepts connections is unverified; when it does not, the loop
-   costs one connect. A timeout reports the last connect error.
+1. Stop, then wait up to 3 minutes from the Stop for Stopped: a shutdown checkpoint with
+   `max_wal_size = 8GB` can be long.
+2. Start, then wait up to 2 minutes from the Start for Running. Stopped after the first query fails
+   at once: the postmaster exited on the new settings.
+3. Connect to `postgres` as the superuser every second, up to 60 s. A refused connection and 57P03
+   are retried; any other server error, a wrong password for one, fails at once. A timeout
+   reports the last connect error, never the context's.
 4. Read `pending_restart` on the new connection. A non-empty list is an error naming the settings.
 
-Once the service accepts the Stop, Start is always sent. It runs on `context.WithoutCancel` with its
-own 2-minute bound, and it first waits out a stop still in progress, because a stopping service
-refuses Start. An interrupt, the five-minute command timeout or a failed stop wait therefore never
-leaves the service stopped. Every error names the service and its last observed state.
+Once the service accepts the Stop, steps 1 and 2 run on `context.WithoutCancel`, each to its own
+bound. An interrupt or the command timeout during them does not stop the sequence: the service is
+started, and the run then ends with the cancellation. Each wait error names the service and the
+last state it observed. Three cases still leave the service stopped:
+
+| Case | What the run says | Recovery |
+| --- | --- | --- |
+| The stop takes longer than 3 minutes | the service is still stopping and will stay stopped | once `Get-Service <name>` shows Stopped, `Start-Service <name>` |
+| The process ends without running its code: console window closed, logoff, shutdown, a killed process. `signal.NotifyContext` catches `os.Interrupt` only, and Windows ends a console process a few seconds after a close event, which no handler can extend | nothing | `Start-Service <name>` |
+| The postmaster refuses the new settings, for example it cannot allocate `shared_buffers = 2GB`, and the service falls back to Stopped | the service stopped again after the Start; the settings stay in `postgresql.auto.conf` | read the server log in the data directory's `log` folder, remove the offending line from `postgresql.auto.conf`, then `Start-Service <name>` |
+
+The command's five-minute `phaseTimeout` also covers the restart. A stop and a start that use
+their whole bounds leave no time for the ready wait, `create` and `check`; the run then fails with
+the service running, says it ran out of its limit, and a re-run finishes the work.
 
 Service control goes through `golang.org/x/sys/windows/svc/mgr`, not `net stop` and `net start`.
 Its errors do not depend on the Windows display language, it reads the start type, so a Disabled

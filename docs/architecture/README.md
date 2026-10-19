@@ -18,7 +18,7 @@ Declarative architecture docs (English, present tense). These describe the syste
 | --- | --- |
 | Installation | PostgreSQL via `winget`, major version pinned, automatic upgrade disabled; engine install stays outside the tool |
 | Major version | 17 for new installs, pinned latest; floor 14 (SemiPlot needs `date_bin`; Simple-Scada 2 docs require 14+) |
-| Provisioning tool | Go single binary `semibase.exe` (`pgx/v5`, embedded SQL); no runtime or `psql` on the target machine |
+| Provisioning tool | Go single binary `semibase.exe` (`pgx/v5`, `golang.org/x/sys` for the Windows service, embedded SQL); no runtime or `psql` on the target machine |
 | Instance configuration | Fixed `ALTER SYSTEM` deltas applied by `semibase site` via `pg_reload_conf()`, never by editing `postgresql.conf`; `shared_buffers` and `listen_addresses` take effect at the next service restart, reported through `pg_settings.pending_restart`; `site --restart-service <name>` performs that restart on Windows, opt-in |
 | Network | Loopback only (`listen_addresses = 'localhost'`): every client runs on the installation machine |
 | Hardware floor | Installation machines guarantee 8 GB RAM and 50 GB database disk; memory settings are fixed constants sized to that floor, identical on every machine |

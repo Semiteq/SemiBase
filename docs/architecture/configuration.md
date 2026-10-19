@@ -1,8 +1,10 @@
 # Instance configuration
 
-Every setting the `site` command writes is listed. Most differ from the PostgreSQL default;
-three (`effective_cache_size`, `checkpoint_completion_target`, `listen_addresses`) equal it and
-are pinned deliberately, so the values in force are visible here rather than implied. The workload is a
+Every setting the `site` command writes is listed. Most differ from the PostgreSQL default.
+Two (`effective_cache_size`, `checkpoint_completion_target`) equal it and are pinned
+deliberately, so the values in force are visible here rather than implied. `listen_addresses`
+equals the compiled default too, and its pin is what changes the server: it overrides the value
+the installed `postgresql.conf` sets ([Network](#network)). The workload is a
 sustained append-only insert stream from one writer plus a small number of read-heavy
 analytical queries.
 

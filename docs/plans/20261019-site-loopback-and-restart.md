@@ -47,16 +47,23 @@
 ## Acceptance Evidence
 - Linux CI, after the two `site` runs (`ci.yml:70-71`):
   `PGHOST=localhost PGUSER=postgres PGPASSWORD=ci-super psql -d postgres -tAc "SELECT pending_restart FROM pg_settings WHERE name = 'listen_addresses'"`
-  prints `t`. The container is never restarted, so the value stays pending; this proves the delta
-  is written.
+  prints `t`, and `SELECT setting FROM pg_file_settings WHERE name = 'listen_addresses' AND
+  sourcefile LIKE '%postgresql.auto.conf'` prints `localhost`. The container is never restarted,
+  so the value stays pending; this proves the delta is written.
 - Windows CI, new step against the runner's PostgreSQL 17, with `$psql = "$env:PGBIN\psql.exe"`:
   1. `semibase site --port 5432 --expected-major 17 --restart-service postgresql-x64-17` exits 0,
      and its output contains `restarting service postgresql-x64-17`.
   2. `& $psql -h 127.0.0.1 -U postgres -d postgres -tAc "SHOW listen_addresses"` prints
      `localhost`, and `SELECT count(*) FROM pg_settings WHERE pending_restart` prints `0`.
   3. A second identical run exits 0, and its output does not contain `restarting service`.
+  4. `site --restart-service` against the shipped Disabled service, and against
+     `no-such-service`, exits 1 with no `ALTER SYSTEM SET` line in its output. The restart run
+     follows `sc.exe start` with no other readiness wait, so it begins while the service may
+     still be Start Pending.
 - Unit tests: `bench --restart-service x` is a usage error; `--restart-service` with a
-  non-loopback `--host` is a usage error; `site --restart-service x` with a loopback host parses.
+  non-loopback `--host` is a usage error; `site --restart-service x` with a loopback host parses;
+  the restart sends Start after the Stop when the command context is already cancelled or
+  expired.
 
 ## Solution Overview
 - `listen_addresses` joins the `settings` list. It is postmaster-context, so it lands in
@@ -68,36 +75,50 @@
   `net stop`/`net start`: its errors do not depend on the Windows display language, it reads the
   service's start type, so a Disabled service is refused before any change, and it exposes the
   service state for bounded waits. `x/sys` is pure Go, so cross-compilation without cgo stays.
-- The flag parses on every platform. The service is opened and checked at the start of
-  `config`, before it connects: a wrong name, a missing right, a Disabled start type, or a
-  non-Windows build (`service_other.go` returns "service restart is not supported on <GOOS>")
-  fails with nothing changed. The module stays one cross-platform build: the Linux binary is what
-  the docker benches run.
-- Once Stop has been sent, Start is always sent, on a context detached from the command's
-  cancellation and timeout (`context.WithoutCancel`) with its own bound. An interrupt or a timeout
-  during the restart never leaves the service stopped.
-- After the service reports Running, the tool reconnects in a bounded loop. Whether an EDB
-  service reports Running before the postmaster accepts connections is unverified; the loop costs
-  one successful connect when it does not.
+- The flag parses on every platform, for `site` only. The service is opened and checked at the
+  start of `config`, before it connects: a wrong name, a missing right, a Disabled start type, a
+  state other than Running once a Start Pending has finished, or a non-Windows build
+  (`service_other.go` returns "service restart is not supported on <GOOS>") fails with nothing
+  changed. The module stays one cross-platform build: the Linux binary is what the docker benches
+  run.
+- Once the service accepts the Stop, the Stopped wait, the Start and the Running wait run on a
+  context detached from the command's cancellation and timeout (`context.WithoutCancel`), each
+  wait with its own bound. An interrupt or the command timeout during them does not stop the
+  sequence. Three cases still leave the service stopped, each with its recovery in
+  `docs/architecture/provisioning.md#the-service-restart`: a stop longer than its bound, a process
+  ended by the console close, logoff, shutdown or a kill, and a postmaster that refuses the new
+  settings.
+- After the service reports Running, the tool reconnects in a bounded loop. An EDB service runs
+  `pg_ctl runservice ... -w` and reports Running only once the postmaster accepts connections
+  (read with CIM on the development machine), so the loop normally costs one connect.
 
 ## Technical Details
 - `Options.RestartService string`; empty means no restart.
-- `--restart-service <name>`, accepted by `site` only. `Validate` refuses it when the command
-  is `bench` (no tuning, so nothing it does creates a pending restart) and when `--host` is not
-  `localhost`, `127.0.0.1` or `::1`: after the restart the server listens on loopback only.
-- Decision function `restartNeeded(pending []string, service string) bool`: true only when both
-  are non-empty.
+- `--restart-service <name>`, registered by `site` only: `bench` has no tuning, so nothing it
+  does creates a pending restart, and the flag is undefined for it. `Validate` refuses it when
+  `--host` is not `localhost`, `127.0.0.1` or `::1`: after the restart the server listens on
+  loopback only.
+- The restart runs when the pending list is non-empty and a service was opened; the condition
+  sits inline in `config`'s switch.
+- `openService` waits up to 2 minutes for a Start Pending service to reach Running, then refuses
+  any state other than Running.
 - Restart sequence in `config`:
   1. Close the phase connection.
-  2. `Stop`, then wait for `Stopped`, bounded by 3 minutes: a shutdown checkpoint with
-     `max_wal_size = 8GB` can be long.
-  3. `Start` on `context.WithoutCancel(ctx)`, then wait for `Running`, bounded by 2 minutes. This
-     step runs whether or not the stop wait succeeded.
-  4. The ready wait connects to `postgres` as the superuser every second, bounded by 60 s. It
-     returns the new connection, and the last connect error goes into the timeout message.
-  5. `pendingRestartSettings` runs on the new connection. A non-empty list is an error naming the
-     settings.
-- Errors name the service and its last observed state.
+  2. `Stop` on the command context. From here on, steps 3 and 4 run on
+     `context.WithoutCancel(ctx)`.
+  3. Wait for `Stopped`, bounded by 3 minutes from the Stop: a shutdown checkpoint with
+     `max_wal_size = 8GB` can be long. If the wait gives up, Start is not sent and the error says
+     the service will stay stopped and how to start it.
+  4. `Start`, then wait for `Running`, bounded by 2 minutes from the Start. Stopped from the
+     second query on fails at once and points to the server log.
+  5. The ready wait connects to `postgres` as the superuser every second, bounded by 60 s. It
+     retries network errors and 57P03 only, returns the new connection, and the last connect
+     error that is not a context error goes into the timeout message.
+  6. `pendingRestartSettings` runs on the new connection. A non-empty list is an error naming the
+     settings, with a hint that the service may belong to another server.
+- Service control goes through a three-method seam over `*mgr.Service` (`Query`, `Control`,
+  `Start`), so the sequence is unit-tested with scripted states.
+- The wait errors name the service and its last observed state.
 - Output: `step("restarting service %s: %s waiting for a restart", name, list)`, then `ok` lines
   for stopped, running, accepting connections.
 

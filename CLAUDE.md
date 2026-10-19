@@ -148,9 +148,11 @@ on the archive or on `semiplot_meta` and no `CREATE` on schema `public` (revoked
 Two of the settings, `shared_buffers` and `listen_addresses = 'localhost'`, wait for a service
 restart. Without a flag the run warns and the operator restarts. `site --restart-service <name>`
 restarts that Windows service inside the tuning phase when settings wait, so `create` and the
-tail check run against the restarted server. `bench` refuses the flag, and so does a `--host`
-other than `localhost`, `127.0.0.1` or `::1`; the service is checked before anything changes
-(`docs/architecture/provisioning.md#the-service-restart`).
+tail check run against the restarted server. Only `site` registers the flag, and it refuses a
+`--host` other than `localhost`, `127.0.0.1` or `::1`; the service is checked before anything
+changes, and once it accepts the Stop the restart runs to completion despite an interrupt
+(`docs/architecture/provisioning.md#the-service-restart`, which also lists the cases that still
+leave it stopped).
 
 The `semiplot` grant on `semiplot_tags` is column-level: `SELECT` and `UPDATE` on the nine settings
 columns, never `id`, so `has_table_privilege(..., 'UPDATE')` answers false for that table and no
@@ -187,8 +189,9 @@ superuser connection, so the table's owner is the role the SCADA writes with and
 cmd/semibase/        CLI entry point: command dispatch, flags, usage text
 internal/provision/  one file per phase behind the two commands: config.go (ALTER SYSTEM and
                      the optional service restart, whose service control lives in
-                     service_windows.go and service_other.go), create.go (db/roles/grants/trends), schema.go (the semiplot schema files,
-                     their grants, the pen-registration function's grant and its owner's
+                     service_windows.go and service_other.go), create.go
+                     (db/roles/grants/trends), schema.go (the semiplot schema files, their
+                     grants, the pen-registration function's grant and its owner's
                      registrarStatements), check.go (semiplot access). provision.go
                      holds Options, Site/Bench and the connection plumbing they share
 sql/                 embedded DDL: the five semiplot_* files (ours: the tables, the
