@@ -85,8 +85,9 @@ The Windows job then runs the `Restart the runner's PostgreSQL service through s
 only test of the service restart. It requires `site --restart-service postgresql-x64-17` to
 refuse the runner's shipped Disabled service with no `ALTER SYSTEM SET` line, sets it to Manual
 and starts it with `sc.exe start`, which returns while it is Start Pending. It then requires the
-next run, started at once, to print `restarting service postgresql-x64-17` and leave
-`listen_addresses = localhost` with no setting pending, a second run not to restart the service,
+next run, started at once, to print `restarting service postgresql-x64-17` and
+`stopped, nothing answers on localhost:5432` and leave `listen_addresses = localhost` with no
+setting pending, a second run not to restart the service,
 and `--restart-service no-such-service` to be refused with no `ALTER SYSTEM SET` line.
 The Linux job provisions a `postgres:17-alpine` service container by running `site`
 twice — the tuning path and the idempotency check in one step. The
@@ -153,7 +154,9 @@ restart. Without a flag the run warns and the operator restarts. `site --restart
 restarts that Windows service inside the tuning phase when settings wait, so `create` and the
 tail check run against the restarted server. Only `site` registers the flag, and it refuses a
 `--host` other than `localhost`, `127.0.0.1` or `::1`; the service is checked before anything
-changes, and once it accepts the Stop the restart runs to completion despite an interrupt
+changes, the Start waits until the old server's port refuses connections, since `pg_ctl`
+reports Stopped before a slow postmaster exits, and once the service accepts the Stop the restart
+runs to completion despite an interrupt
 (`docs/architecture/provisioning.md#the-service-restart`, which also lists the cases that still
 leave it stopped).
 

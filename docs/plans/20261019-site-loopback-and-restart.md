@@ -81,13 +81,21 @@
   (`service_other.go` returns "service restart is not supported on <GOOS>") fails with nothing
   changed. The module stays one cross-platform build: the Linux binary is what the docker benches
   run.
-- Once the service accepts the Stop, the Stopped wait, the Start and the Running wait run on a
+- Once the service accepts the Stop, the exit wait, the Start and the Running wait run on a
   context detached from the command's cancellation and timeout (`context.WithoutCancel`), each
   wait with its own bound. An interrupt or the command timeout during them does not stop the
-  sequence. Three cases still leave the service stopped, each with its recovery in
-  `docs/architecture/provisioning.md#the-service-restart`: a stop longer than its bound, a process
-  ended by the console close, logoff, shutdown or a kill, and a postmaster that refuses the new
-  settings.
+  sequence.
+- SCM Stopped does not prove the postmaster is gone: `pg_ctl runservice` reports Stopped after at
+  most 12 x 5 s of a stop and leaves a slower postmaster running (`pg_ctl.c`, REL_17_STABLE). So
+  the Start waits, within the stop bound, for a TCP connect to `--host:--port` to be refused; the
+  run already knows that address, while a `postmaster.pid` check would need the service's `-D`.
+- `pg_ctl -w` without `-t` gives up on a startup after 60 s and reports Stopped while the
+  postmaster keeps starting. Stopped after the Start therefore probes the port once: an answer
+  names that timeout, a refusal names a postmaster that exited during its startup.
+- Four cases still leave the service stopped, each with its recovery in
+  `docs/architecture/provisioning.md#the-service-restart`: an old postmaster still running at the
+  stop bound, a process ended by the console close, logoff, shutdown or a kill, a postmaster that
+  exits during its startup, and a startup longer than `pg_ctl`'s 60 s wait.
 - After the service reports Running, the tool reconnects in a bounded loop. An EDB service runs
   `pg_ctl runservice ... -w` and reports Running only once the postmaster accepts connections
   (read with CIM on the development machine, and printed by the Windows CI step for
@@ -108,19 +116,23 @@
   1. Close the phase connection.
   2. `Stop` on the command context. From here on, steps 3 and 4 run on
      `context.WithoutCancel(ctx)`.
-  3. Wait for `Stopped`, bounded by 3 minutes from the Stop: a shutdown checkpoint with
-     `max_wal_size = 8GB` can be long. If the wait gives up, Start is not sent and the error says
-     the service will stay stopped and how to start it.
+  3. Wait for `Stopped`, then for a refused TCP connect to `--host:--port` (`WSAECONNREFUSED`;
+     any other connect error is retried), probing once a second, both bounded by 3 minutes from
+     the Stop: a shutdown checkpoint with `max_wal_size = 8GB` can be long. If the wait gives up,
+     Start is not sent and the error says the service will stay stopped and how to start it.
   4. `Start`, then wait for `Running`, bounded by 2 minutes from the Start. Stopped from the
-     second query on fails at once and points to the server log.
+     second query on fails at once; one more probe decides the message: an answer means
+     `pg_ctl`'s 60 s startup wait ran out and the server runs outside the service, a refusal
+     means the server exited during its startup and points to the server log.
   5. The ready wait connects to `postgres` as the superuser every second, bounded by 60 s. It
      retries network errors and 57P03 only, returns the new connection, and the last connect
      error that is not a context error goes into the timeout message.
   6. `pendingRestartSettings` runs on the new connection. A non-empty list is an error naming the
      settings, with a hint that the service may belong to another server.
 - Service control goes through a three-method seam over `*mgr.Service` (`Query`, `Control`,
-  `Start`), so the sequence is unit-tested with scripted states.
-- The wait errors name the service and its last observed state.
+  `Start`), and the port probe is a function field on `managedService`, so the sequence is
+  unit-tested with scripted states and probe results.
+- A wait that runs out its bound names the service and its last observed state.
 - Output: `step("restarting service %s: %s waiting for a restart", name, list)`, then `ok` lines
   for stopped, running, accepting connections.
 

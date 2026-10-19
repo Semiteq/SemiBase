@@ -181,8 +181,8 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
   in-flight query through pgx instead of killing the process mid-DDL. The context itself —
   `signal.NotifyContext(..., os.Interrupt)` plus the five-minute per-command timeout
   (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`. The one exception is a
-  service restart: once the service accepts the Stop, the waits and the Start ignore the
-  command's cancellation, so that an interrupt does not leave the service stopped
+  service restart: once the service accepts the Stop, the waits, the port probe and the Start
+  ignore the command's cancellation, so that an interrupt does not leave the service stopped
   ([The service restart](#the-service-restart)). A run that used up `phaseTimeout` says so in a
   second error line.
 - **Pending-restart reporting.** The tuning phase applies its deltas with `pg_reload_conf()` and
@@ -222,25 +222,49 @@ The restart runs inside `config`, right after `pendingRestartSettings` returns a
 `create` and `check` run against the restarted server. `applySettings` closes the phase connection
 before it returns; then:
 
-1. Stop, then wait up to 3 minutes from the Stop for Stopped: a shutdown checkpoint with
-   `max_wal_size = 8GB` can be long.
+1. Stop, then wait for Stopped and then for a refused TCP connect to `--host:--port`, both within
+   one bound of 3 minutes from the Stop. If the bound runs out, the Start is not sent.
 2. Start, then wait up to 2 minutes from the Start for Running. Stopped after the first query fails
-   at once: the postmaster exited on the new settings.
+   at once, and one more connect to `--host:--port` names the cause (see below).
 3. Connect to `postgres` as the superuser every second, up to 60 s. A refused connection and 57P03
    are retried; any other server error, a wrong password for one, fails at once. A timeout
    reports the last connect error, never the context's.
 4. Read `pending_restart` on the new connection. A non-empty list is an error naming the settings.
 
+Stopped does not mean that the postmaster has exited. What follows was read in
+`src/bin/pg_ctl/pg_ctl.c` and `src/backend/postmaster/postmaster.c` of PostgreSQL REL_17_STABLE:
+
+- On a Stop, `pgwin32_ServiceMain` sends the postmaster SIGINT (fast shutdown) and waits for its
+  process at most 12 times 5 s. Then it reports Stopped and exits, whether the postmaster is gone
+  or not. The job object it puts the postmaster in has no `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so
+  the postmaster outlives it and finishes its shutdown checkpoint, which with
+  `max_wal_size = 8GB` can take longer than that minute.
+- A Start in that window launches a postmaster that finds the old one's live PID in
+  `postmaster.pid` and exits FATAL "lock file already exists" (`CreateLockFile` in `miscinit.c`).
+- The postmaster keeps its listening sockets until its exit callbacks close them, just before
+  they remove `postmaster.pid`. A shutting-down postmaster that no longer accepts still completes
+  the TCP handshake through the listen backlog. So a refused connect (`WSAECONNREFUSED`) means the
+  postmaster is gone, and step 1 waits for it. Any other connect error is retried.
+- Step 1 probes once a second, because each accepted connect costs the server a process. The
+  probe dials the address the run connects to. `Validate` already restricts it to loopback, so it
+  needs nothing the run does not have. A `postmaster.pid` check would need the service's `-D`.
+- The service runs `pg_ctl runservice ... -w` with no `-t`, so `wait_for_postmaster_start` gives
+  up after `DEFAULT_WAIT` = 60 s. It then reports Stopped and leaves a slower postmaster running
+  outside the service. A postmaster that exits during its startup also ends in Stopped. In step 2
+  the probe tells the two apart: an answer means the timed-out startup, a refusal means the exit.
+  Only a hung `pg_ctl` reaches the 2-minute bound.
+
 Once the service accepts the Stop, steps 1 and 2 run on `context.WithoutCancel`, each to its own
 bound. An interrupt or the command timeout during them does not stop the sequence: the service is
-started, and the run then ends with the cancellation. Each wait error names the service and the
-last state it observed. Three cases still leave the service stopped:
+started, and the run then ends with the cancellation. A wait that runs out its bound names the
+service and the last state it observed. Four cases still leave the service stopped:
 
 | Case | What the run says | Recovery |
 | --- | --- | --- |
-| The stop takes longer than 3 minutes | the service is still stopping and will stay stopped | once `Get-Service <name>` shows Stopped, `Start-Service <name>` |
+| The old postmaster still runs 3 minutes after the Stop, or `pg_ctl` itself has not reported Stopped by then | the service is stopped but the server still answers, or the service is still stopping; no Start was sent and the service stays stopped | once a connect to the port is refused (`Test-NetConnection localhost -Port <port>`) and `Get-Service <name>` shows Stopped, `Start-Service <name>` |
 | The process ends without running its code: console window closed, logoff, shutdown, a killed process. `signal.NotifyContext` catches `os.Interrupt` only, and Windows ends a console process a few seconds after a close event, which no handler can extend | nothing | `Start-Service <name>` |
-| The postmaster refuses the new settings, for example it cannot allocate `shared_buffers = 2GB`, and the service falls back to Stopped | the service stopped again after the Start; the settings stay in `postgresql.auto.conf` | read the server log in the data directory's `log` folder, remove the offending line from `postgresql.auto.conf`, then `Start-Service <name>` |
+| The postmaster exits during its startup, for example it cannot allocate `shared_buffers = 2GB` | the service stopped again after the Start and nothing answers on the port; the settings this run wrote stay in `postgresql.auto.conf` | read the server log in the data directory's `log` folder, remove the offending line from `postgresql.auto.conf`, then `Start-Service <name>` |
+| The startup takes longer than `pg_ctl`'s 60 s wait | the service stopped again after the Start but the server answers on the port: it runs outside the service | once it accepts connections, `pg_ctl stop -D <the -D in the service's PathName>`, then `Start-Service <name>` |
 
 The command's five-minute `phaseTimeout` also covers the restart. A stop and a start that use
 their whole bounds leave no time for the ready wait, `create` and `check`; the run then fails with
@@ -262,7 +286,7 @@ itself. The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and
 step first requires `site --restart-service postgresql-x64-17` to refuse the Disabled service
 with no `ALTER SYSTEM SET` line in its output. It then sets the service to Manual, starts it with
 `sc.exe start`, and runs `site` at once, while the service is Start Pending. That run must print
-`restarting service postgresql-x64-17` and leave `listen_addresses = localhost` with no setting
+`restarting service postgresql-x64-17` and `stopped, nothing answers on localhost:5432`, and leave `listen_addresses = localhost` with no setting
 pending. A second run must not restart the service, and `--restart-service no-such-service` must
 be refused with no `ALTER SYSTEM SET` line.
 
