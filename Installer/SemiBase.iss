@@ -16,10 +16,12 @@
 #define AppPublisher "Inc Semiteq"
 #define AppId        "{{5AFFFB1F-3C84-45EB-800A-67812EBAE460}"
 
-; The file name carries the version pinned in fetch-postgresql.sh; a new pin changes both
-#define PgInstaller  "postgresql-17.11-5-windows-x64.exe"
+; fetch-postgresql.sh saves the pinned build under this name and refuses a file that does not match the pin
+#define PgInstaller  "postgresql-17-windows-x64.exe"
 
 #define LogRoot      "C:\DISTR\Logs\SemiBase"
+; Every run copies semibase.exe here, so a machine where Setup never succeeded still has the recovery tool
+#define ToolRoot     "C:\DISTR\Tools\SemiBase"
 
 ; The PostgreSQL 17 install this setup creates: its registry key, service, port and data directory
 #define PgInstallation "postgresql-x64-17"
@@ -57,9 +59,6 @@ PrivilegesRequired=admin
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
-[Dirs]
-Name: "{#LogRoot}"; Flags: uninsneveruninstall
-
 [Files]
 Source: "{#SemibaseExe}"; DestDir: "{app}"; DestName: "semibase.exe"; Flags: ignoreversion
 
@@ -71,6 +70,21 @@ function SetEnvironmentVariable(lpName, lpValue: String): BOOL;
   external 'SetEnvironmentVariableW@kernel32.dll stdcall';
 function GetTickCount: Cardinal;
   external 'GetTickCount@kernel32.dll stdcall';
+
+const
+  InstallationsKey = 'SOFTWARE\PostgreSQL\Installations';
+  ServicesKey = 'SOFTWARE\PostgreSQL\Services';
+  RecoveryHint = ' See the recovery section of the SemiBase deployment guide, docs/deployment.md ' +
+    'on GitHub.';
+  PortWaitMilliseconds = 60000;
+  ErrorServiceAlreadyRunning = 1056;
+
+type
+  TEngine = record
+    ServiceName: String;
+    Port: Cardinal;
+    SuperUser: String;
+  end;
 
 function CommandLineParameter(const Name: String): String;
 var
@@ -102,8 +116,24 @@ begin
   ValueStart := Pos(Uppercase(Prefix), Uppercase(Tail)) + Length(Prefix);
   if Copy(Tail, ValueStart, Length(Value)) <> Value then
     Result := 'The /' + Name + ' value does not reach Setup as typed: Setup drops every " from ' +
-      'its command line. Put the quotes around the whole parameter, or pass the password ' +
-      'through ' + VariableName + '.';
+      'its command line. Put the quotes around the whole parameter; a password that contains " ' +
+      'reaches Setup only through ' + VariableName + '.';
+end;
+
+// An unquoted space splits a password parameter, and Setup would keep the part before it
+function StrayArgumentRefusal: String;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 1 to ParamCount do
+    if Copy(ParamStr(I), 1, 1) <> '/' then
+    begin
+      Result := 'Setup argument ' + IntToStr(I) + ' does not start with /. A space in an ' +
+        'unquoted password parameter splits it there: put the quotes around the whole ' +
+        'parameter, or pass the password through its SEMIBASE_* variable.';
+      Exit;
+    end;
 end;
 
 function ResolvePassword(const ParameterName, VariableName: String): String;
@@ -126,36 +156,34 @@ begin
     end;
 end;
 
+// The scada_writer rule holds on every run: the SCADA logs in with that password from its own
+// project settings, whose encoding of anything else nobody has measured
 function PasswordRefusal(const SuperPassword, WriterPassword: String): String;
 begin
   Result := '';
   if SuperPassword = '' then
     Result := 'No superuser password: pass /SUPERPASSWORD=<password> or set SEMIBASE_SUPER_PASSWORD.'
-  else if not IsPrintableAscii(SuperPassword) then
-    Result := 'The superuser password must be printable ASCII: the PostgreSQL installer stores it ' +
-      'in the ANSI code page, and semibase sends it in UTF-8.'
-  else if (Pos('"', SuperPassword) > 0) or (SuperPassword[Length(SuperPassword)] = '\') then
-    Result := 'The superuser password must not contain " or end in \: either one breaks the ' +
-      'PostgreSQL installer''s command line.'
   else if not IsPrintableAscii(WriterPassword) then
     Result := 'The scada_writer password (/WRITERPASSWORD or SEMIBASE_WRITER_PASSWORD) must be ' +
       'printable ASCII.';
 end;
 
-const
-  InstallationsKey = 'SOFTWARE\PostgreSQL\Installations';
-  ServicesKey = 'SOFTWARE\PostgreSQL\Services';
-  RecoveryHint = ' See the recovery section of docs/deployment.md.';
-  PortWaitMilliseconds = 60000;
-  ErrorServiceAlreadyRunning = 1056;
-
-type
-  TEngine = record
-    Fresh: Boolean;
-    ServiceName: String;
-    Port: Cardinal;
-    SuperUser: String;
-  end;
+// The PostgreSQL installer alone needs these rules, so they hold on the fresh-install row only
+function FreshPasswordRefusal(const SuperPassword: String): String;
+begin
+  Result := '';
+  if not IsPrintableAscii(SuperPassword) then
+    Result := 'The superuser password must be printable ASCII: the PostgreSQL installer stores it ' +
+      'in the ANSI code page, and semibase sends it in UTF-8.'
+  else if (Pos('"', SuperPassword) > 0) or (SuperPassword[Length(SuperPassword)] = '\') then
+    Result := 'The superuser password must not contain " or end in \: either one breaks the ' +
+      'PostgreSQL installer''s command line.'
+  else if (SuperPassword[1] = '-') or (SuperPassword[1] = ' ') or
+    (SuperPassword[Length(SuperPassword)] = ' ') then
+    Result := 'The superuser password must not start with -, or start or end with a space: the ' +
+      'PostgreSQL installer passes it as a command-line argument and reads it from a key=value ' +
+      'file, and neither is known to keep such a password.';
+end;
 
 function LogPath(const Prefix: String): String;
 begin
@@ -171,6 +199,15 @@ begin
   Lines[0] := Message;
   ForceDirectories('{#LogRoot}');
   SaveStringsToUTF8FileWithoutBOM(LogPath('setup'), Lines, True);
+end;
+
+function KeepToolRefusal: String;
+begin
+  Result := '';
+  ExtractTemporaryFile('semibase.exe');
+  if not ForceDirectories('{#ToolRoot}') or
+    not CopyFile(ExpandConstant('{tmp}\semibase.exe'), '{#ToolRoot}\semibase.exe', False) then
+    Result := 'Setup could not copy semibase.exe into {#ToolRoot}.' + RecoveryHint;
 end;
 
 // -1 when sc.exe did not run
@@ -190,15 +227,16 @@ begin
   Result := ScExitCode('query "' + Name + '"') = 0;
 end;
 
-// Pascal Script has no sockets. Returns False when the probe itself did not run.
+// Pascal Script has no sockets. The probe dials localhost, as semibase does, so ::1 and 127.0.0.1
+// both count. Returns False when the probe itself failed, a constructor PowerShell refuses included.
 function ProbePort(Port: Cardinal; var Accepts: Boolean): Boolean;
 var
   ExitCode: Integer;
 begin
   Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -NonInteractive -Command "$c = New-Object Net.Sockets.TcpClient; ' +
-    'try { $open = $c.ConnectAsync(''127.0.0.1'', ' + IntToStr(Port) + ').Wait(2000) } ' +
-    'catch { $open = $false }; $c.Close(); if ($open) { exit 0 } else { exit 2 }"',
+    '-NoProfile -NonInteractive -Command "try { ([Net.Sockets.TcpClient]::new(''localhost'', ' +
+    IntToStr(Port) + ')).Close(); exit 0 } catch { if ($_.Exception.InnerException -is ' +
+    '[Net.Sockets.SocketException]) { exit 2 }; exit 3 }"',
     '', SW_HIDE, ewWaitUntilTerminated, ExitCode) and ((ExitCode = 0) or (ExitCode = 2));
   Accepts := ExitCode = 0;
 end;
@@ -216,6 +254,12 @@ begin
     finally
       FindClose(Entry);
     end;
+end;
+
+// The cmd.exe line that runs semibase site expands % and ends its quoting at "
+function IsCmdSafe(const Value: String): Boolean;
+begin
+  Result := (Pos('"', Value) = 0) and (Pos('%', Value) = 0);
 end;
 
 // The 17 key exists: it is used only when it is a complete install with a service
@@ -252,6 +296,9 @@ begin
   if ServiceName = '' then
     Result := 'HKLM\' + Key + ' names no service. Setup does not repair an orphaned ' +
       'registration.' + RecoveryHint
+  else if not (IsCmdSafe(SuperUser) and IsCmdSafe(ServiceName)) then
+    Result := 'HKLM\' + Key + ' has a Super User or Service ID that contains " or %, which ' +
+      'the command line that runs semibase site would change.' + RecoveryHint
   else if not ServiceExists(ServiceName) then
     Result := 'HKLM\' + Key + ' names service ' + ServiceName + ', which does not exist. Setup ' +
       'does not repair an orphaned registration.' + RecoveryHint
@@ -298,15 +345,17 @@ begin
 end;
 
 // Nothing is registered: a fresh install must not meet a server or data it does not know
-function FreshInstallRefusal(const WriterPassword: String): String;
+function FreshInstallRefusal(const SuperPassword, WriterPassword: String): String;
 var
   Accepts: Boolean;
 begin
-  Result := '';
+  Result := FreshPasswordRefusal(SuperPassword);
+  if Result <> '' then
+    Exit;
   if not ProbePort({#PgPort}, Accepts) then
-    Result := 'Setup could not probe 127.0.0.1:{#PgPort} through powershell.exe.' + RecoveryHint
+    Result := 'Setup could not probe localhost:{#PgPort} through powershell.exe.' + RecoveryHint
   else if Accepts then
-    Result := 'No PostgreSQL is registered, but 127.0.0.1:{#PgPort} accepts TCP. A server the ' +
+    Result := 'No PostgreSQL is registered, but localhost:{#PgPort} accepts TCP. A server the ' +
       'registry does not know is not Setup''s to provision.' + RecoveryHint
   else if IsNonEmptyDirectory('{#PgDataDir}') then
     Result := 'No PostgreSQL is registered, but {#PgDataDir} exists and is not empty. Setup never ' +
@@ -322,17 +371,17 @@ begin
   Result := not RegKeyExists(HKLM64, InstallationsKey + '\{#PgInstallation}');
 end;
 
-// The first matching state wins. An empty result fills Engine.
-function EngineRefusal(const WriterPassword: String; var Engine: TEngine): String;
+// The first matching state wins. An empty result fills Engine, except on the fresh row.
+function EngineRefusal(Fresh: Boolean; const SuperPassword, WriterPassword: String;
+  var Engine: TEngine): String;
 begin
-  Engine.Fresh := EngineIsFresh;
-  if not Engine.Fresh then
+  if not Fresh then
     Result := RegisteredEngineRefusal(Engine)
   else
   begin
     Result := OtherMajorRefusal;
     if Result = '' then
-      Result := FreshInstallRefusal(WriterPassword);
+      Result := FreshInstallRefusal(SuperPassword, WriterPassword);
   end;
 end;
 
@@ -404,7 +453,7 @@ begin
   repeat
     if not ProbePort(Port, Accepts) then
     begin
-      Result := 'Setup could not probe 127.0.0.1:' + IntToStr(Port) + ' through powershell.exe.' +
+      Result := 'Setup could not probe localhost:' + IntToStr(Port) + ' through powershell.exe.' +
         RecoveryHint;
       Exit;
     end;
@@ -412,32 +461,34 @@ begin
       Exit;
     Sleep(1000);
   until GetTickCount - Started >= PortWaitMilliseconds;
-  Result := 'Service ' + ServiceName + ' is started, but 127.0.0.1:' + IntToStr(Port) +
+  Result := 'Service ' + ServiceName + ' is started, but localhost:' + IntToStr(Port) +
     ' accepted no TCP connection within 60 s.' + RecoveryHint;
 end;
 
-// semibase inherits the passwords from Setup's environment, so none is on a command line
+// Read back rather than trusted: an empty value may delete the variable or store it empty, and
+// semibase reads either as unset
+function SetPasswordVariable(const Name, Value: String): Boolean;
+begin
+  SetEnvironmentVariable(Name, Value);
+  Result := GetEnv(Name) = Value;
+end;
+
+// semibase inherits the passwords from Setup's environment, so none is on a command line. The
+// writer variable is set even when empty, or a value inherited from the caller would reach semibase.
 function SiteRefusal(const Engine: TEngine; const SuperPassword, WriterPassword: String): String;
 var
   SiteLog: String;
   ExitCode: Integer;
-  Failed: Boolean;
 begin
   Result := '';
-  Failed := False;
-  if not SetEnvironmentVariable('SEMIBASE_SUPER_PASSWORD', SuperPassword) then
-    Failed := True;
-  if not SetEnvironmentVariable('SEMIBASE_PLOT_PASSWORD', 'semiplot') then
-    Failed := True;
-  if WriterPassword <> '' then
-    if not SetEnvironmentVariable('SEMIBASE_WRITER_PASSWORD', WriterPassword) then
-      Failed := True;
-  if Failed then
+  if not (SetPasswordVariable('SEMIBASE_SUPER_PASSWORD', SuperPassword) and
+    SetPasswordVariable('SEMIBASE_WRITER_PASSWORD', WriterPassword) and
+    SetPasswordVariable('SEMIBASE_PLOT_PASSWORD', 'semiplot')) then
   begin
-    Result := 'Setup could not set the SEMIBASE_* password variables for semibase site.';
+    Result := 'Setup could not set the SEMIBASE_* password variables for semibase site.' +
+      RecoveryHint;
     Exit;
   end;
-  ExtractTemporaryFile('semibase.exe');
   ForceDirectories('{#LogRoot}');
   SiteLog := LogPath('site');
   if not Exec(ExpandConstant('{cmd}'), '/s /c ""' + ExpandConstant('{tmp}\semibase.exe') +
@@ -445,10 +496,10 @@ begin
     '" --expected-major 17 --restart-service "' + Engine.ServiceName + '" > "' + SiteLog +
     '" 2>&1"', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then
     Result := 'Setup could not start cmd.exe to run semibase site: ' + SysErrorMessage(ExitCode) +
-      '.'
+      '.' + RecoveryHint
   else if ExitCode <> 0 then
     Result := 'semibase site exited with code ' + IntToStr(ExitCode) + '; its log is ' + SiteLog +
-      '.';
+      '.' + RecoveryHint;
 end;
 
 var
@@ -481,10 +532,13 @@ begin
     Refusal := 'Enter the superuser password.'
   else
     Refusal := PasswordRefusal(PasswordPage.Values[0], PasswordPage.Values[1]);
-  if (Refusal = '') and (PasswordPage.Values[1] = '') and EngineIsFresh and
-    (OtherMajorRefusal = '') then
-    Refusal := 'Enter the scada_writer password: no PostgreSQL 17 is registered, so Setup ' +
-      'installs it and creates the scada_writer role.';
+  if (Refusal = '') and EngineIsFresh and (OtherMajorRefusal = '') then
+  begin
+    Refusal := FreshPasswordRefusal(PasswordPage.Values[0]);
+    if (Refusal = '') and (PasswordPage.Values[1] = '') then
+      Refusal := 'Enter the scada_writer password: no PostgreSQL 17 is registered, so Setup ' +
+        'installs it and creates the scada_writer role.';
+  end;
   if Refusal <> '' then
   begin
     MsgBox(Refusal, mbError, MB_OK);
@@ -493,34 +547,45 @@ begin
 end;
 
 // A refusal returned here comes before Inno copies a file and exits 7 under /VERYSILENT; one
-// raised later comes after the uninstaller is registered and may still exit 0.
+// raised later comes after the uninstaller is registered and may still exit 0. An exception is
+// turned into a refusal, so it reaches the setup log too.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   SuperPassword, WriterPassword: String;
+  Fresh: Boolean;
   Engine: TEngine;
 begin
   SuperPassword := PasswordPage.Values[0];
   WriterPassword := PasswordPage.Values[1];
-  Result := ParameterRefusal('SUPERPASSWORD', 'SEMIBASE_SUPER_PASSWORD');
-  if Result = '' then
-    Result := ParameterRefusal('WRITERPASSWORD', 'SEMIBASE_WRITER_PASSWORD');
-  if Result = '' then
-    Result := PasswordRefusal(SuperPassword, WriterPassword);
-  if Result = '' then
-    Result := EngineRefusal(WriterPassword, Engine);
-  // The install's own registration, read like any other, fills Engine
-  if (Result = '') and Engine.Fresh then
-  begin
-    Result := InstallEngineRefusal(SuperPassword);
+  try
+    Fresh := EngineIsFresh;
+    Result := KeepToolRefusal;
     if Result = '' then
-      Result := RegisteredEngineRefusal(Engine);
+      Result := ParameterRefusal('SUPERPASSWORD', 'SEMIBASE_SUPER_PASSWORD');
+    if Result = '' then
+      Result := ParameterRefusal('WRITERPASSWORD', 'SEMIBASE_WRITER_PASSWORD');
+    if Result = '' then
+      Result := StrayArgumentRefusal;
+    if Result = '' then
+      Result := PasswordRefusal(SuperPassword, WriterPassword);
+    if Result = '' then
+      Result := EngineRefusal(Fresh, SuperPassword, WriterPassword, Engine);
+    // The install's own registration, read like any other, fills Engine
+    if (Result = '') and Fresh then
+    begin
+      Result := InstallEngineRefusal(SuperPassword);
+      if Result = '' then
+        Result := RegisteredEngineRefusal(Engine);
+    end;
+    if Result = '' then
+      Result := StartServiceRefusal(Engine.ServiceName);
+    if Result = '' then
+      Result := PortWaitRefusal(Engine.ServiceName, Engine.Port);
+    if Result = '' then
+      Result := SiteRefusal(Engine, SuperPassword, WriterPassword);
+  except
+    Result := 'Setup stopped on an error: ' + GetExceptionMessage + '.' + RecoveryHint;
   end;
-  if Result = '' then
-    Result := StartServiceRefusal(Engine.ServiceName);
-  if Result = '' then
-    Result := PortWaitRefusal(Engine.ServiceName, Engine.Port);
-  if Result = '' then
-    Result := SiteRefusal(Engine, SuperPassword, WriterPassword);
   if Result <> '' then
     LogRefusal(Result);
 end;

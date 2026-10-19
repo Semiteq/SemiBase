@@ -321,7 +321,9 @@ jobs:
           docker run --rm semibase:ci version
 
   # The setup's end-to-end cases. No SEMIBASE_* variable is set at job level: a
-  # case that wants one sets it, so the first case runs with none.
+  # case that wants one sets it, so the first case runs with none. Each step
+  # dot-sources .github/scripts/installer-case.ps1, and a refusal is exit 7 with
+  # its reason last in the newest setup log (docs/architecture/installer.md#inno-setup).
   installer:
     runs-on: windows-latest
     steps:
@@ -334,269 +336,217 @@ jobs:
       - name: Build
         run: go build -o semibase.exe ./cmd/semibase
 
-      - name: Cache the EDB payload
-        uses: actions/cache@v6
-        with:
-          path: Installer/payload
-          key: edb-payload-${{ hashFiles('Installer/fetch-postgresql.sh') }}
-
-      # shell: bash is Git Bash; a bare bash on the PATH may be WSL's
-      - name: Fetch the EDB payload
-        shell: bash
-        run: bash Installer/fetch-postgresql.sh
-
-      # The jrsoftware.org direct download intermittently serves a corrupted file, so winget
-      # (preinstalled on windows runners) installs it instead. Machine scope keeps the
-      # Program Files (x86) path the next step expects.
-      - name: Install Inno Setup
-        run: |
-          winget install --id JRSoftware.InnoSetup --exact --scope machine --silent `
-            --accept-source-agreements --accept-package-agreements --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
       - name: Build the setup
-        run: |
-          iscc /DAppVersion=0.0.0-ci /DFileVersion=0.0.0 "/DSemibaseExe=$env:GITHUB_WORKSPACE\semibase.exe" `
-            Installer\SemiBase.iss
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+        uses: ./.github/actions/build-setup
+        with:
+          app-version: 0.0.0-ci
+          semibase-exe: ${{ github.workspace }}\semibase.exe
 
-      # Setup is a GUI program: the call operator returns before it exits, so
-      # Start-Process waits for it. Exit 7 is what Setup returns when
-      # PrepareToInstall refuses (docs/architecture/installer.md#inno-setup).
       - name: Refuse a run without a superuser password
         run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
           $service = 'postgresql-x64-17'
-          if (Test-Path Env:SEMIBASE_SUPER_PASSWORD) {
-            Write-Host '::error::SEMIBASE_SUPER_PASSWORD is set, so this case tests nothing'
-            exit 1
-          }
-          $setup = Start-Process -FilePath "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe" `
-            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
-          if ($setup.ExitCode -ne 7) {
-            Write-Host "::error::want exit 7, a refusal from PrepareToInstall, got $($setup.ExitCode)"
-            exit 1
-          }
-          $log = Get-ChildItem 'C:\DISTR\Logs\SemiBase\setup-*.log' | Sort-Object LastWriteTime | Select-Object -Last 1
-          if (-not $log -or (Get-Content -Raw $log.FullName) -notlike '*No superuser password*') {
-            Write-Host '::error::the setup log does not record the missing superuser password'
-            exit 1
-          }
-          if (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe") {
-            Write-Host '::error::the refused run installed semibase.exe'
-            exit 1
-          }
+          if (Test-Path Env:SEMIBASE_SUPER_PASSWORD) { Fail 'SEMIBASE_SUPER_PASSWORD is set, so this case tests nothing' }
+          Assert-Refused (Invoke-Setup) 'No superuser password'
+          if (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe") { Fail 'the refused run installed semibase.exe' }
+          if (-not (Test-Path $ToolExe)) { Fail "the refused run left no recovery copy at $ToolExe" }
+          & $ToolExe version
+          if ($LASTEXITCODE -ne 0) { Fail 'the recovery copy does not run' }
           $startMode = (Get-CimInstance Win32_Service -Filter "Name='$service'").StartMode
-          if ($startMode -ne 'Disabled') {
-            Write-Host "::error::the refused run changed $service to start type '$startMode' (want Disabled)"
-            exit 1
-          }
+          if ($startMode -ne 'Disabled') { Fail "the refused run changed $service to start type '$startMode' (want Disabled)" }
+
+      # Not GITHUB_ENV: an exported variable would reach every step. A case that
+      # hands a token through the environment sets it inside its own step, and
+      # RUNNER_TEMP is outside every directory the log search reads. The order is
+      # case 2's writer, then case 6's superuser and writer, then case 7's new writer.
+      - name: Generate the case passwords
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $tokens = 1..4 | ForEach-Object { New-Token }
+          $tokens | ForEach-Object { Write-Host "::add-mask::$_" }
+          Set-Content -Path $TokenFile -Value $tokens
 
       # The runner's 17 is Disabled and stopped here, and nothing has provisioned
       # it, so scada_writer does not exist and its password has to come too. The
-      # runner image sets a machine-level PGPASSWORD, which the psql check overrides.
+      # runner image sets a machine-level PGPASSWORD, which the login check overrides.
       - name: Provision the runner's existing PostgreSQL 17
         env:
           SEMIBASE_SUPER_PASSWORD: root
         run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $tokens = @(Get-Content $TokenFile)
           $service = 'postgresql-x64-17'
-          $psql = "$env:PGBIN\psql.exe"
-          $env:SEMIBASE_WRITER_PASSWORD = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char] $_ })
-          $started = Get-Date
-          $setup = Start-Process -FilePath "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe" `
-            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
-          # Both logs are password-free, so they are printed whatever the result
-          Get-ChildItem 'C:\DISTR\Logs\SemiBase\*.log' | Where-Object { $_.LastWriteTime -ge $started } |
-            Sort-Object LastWriteTime | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content -Raw $_.FullName | Write-Host }
-          if ($setup.ExitCode -ne 0) {
-            Write-Host "::error::want exit 0, got $($setup.ExitCode)"
-            exit 1
-          }
-          if (-not (Get-ChildItem 'C:\DISTR\Logs\SemiBase\site-*.log' | Where-Object { $_.LastWriteTime -ge $started })) {
-            Write-Host '::error::the run wrote no site log'
-            exit 1
-          }
-          if (-not (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe")) {
-            Write-Host '::error::the run did not install semibase.exe'
-            exit 1
-          }
+          $env:SEMIBASE_WRITER_PASSWORD = $tokens[0]
+          $run = Invoke-Setup
+          Write-Logs $run $tokens
+          if ($run.ExitCode -ne 0) { Fail "want exit 0, got $($run.ExitCode)" }
+          Get-SiteLog $run | Out-Null
+          if (-not (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe")) { Fail 'the run did not install semibase.exe' }
           $startMode = (Get-CimInstance Win32_Service -Filter "Name='$service'").StartMode
-          if ($startMode -ne 'Auto') {
-            Write-Host "::error::$service has start type '$startMode' (want Auto)"
-            exit 1
-          }
-          $env:PGPASSWORD = 'semiplot'
-          $tags = & $psql -w -h 127.0.0.1 -U semiplot -d scada_archive -tAc 'SELECT count(*) FROM semiplot_tags'
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host '::error::semiplot with password semiplot cannot read semiplot_tags'
-            exit 1
-          }
-          Write-Host "semiplot_tags rows: $tags"
-
-      # Not GITHUB_ENV: an exported variable reaches Setup, EDB and initcluster.ps1 by
-      # inheritance, and the log search would find it there. RUNNER_TEMP is outside
-      # every directory that search reads.
-      - name: Generate the case passwords
-        run: |
-          $tokens = 1..2 | ForEach-Object {
-            -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char] $_ })
-          }
-          $tokens | ForEach-Object { Write-Host "::add-mask::$_" }
-          Set-Content -Path "$env:RUNNER_TEMP\case-passwords.txt" -Value $tokens
+          if ($startMode -ne 'Auto') { Fail "$service has start type '$startMode' (want Auto)" }
+          Assert-Login semiplot semiplot
+          Assert-Login scada_writer $tokens[0]
 
       # The remaining cases need a machine with no PostgreSQL. The uninstaller exits
       # before it removes anything, and a copy of it in %TEMP% does the work
-      # (docs/architecture/installer.md#the-uninstaller).
+      # (docs/architecture/installer.md#the-uninstaller). The empty Installations and
+      # Services keys it leaves stay, as on an installation machine.
       - name: Remove the runner's PostgreSQL
         timeout-minutes: 10
         run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
           $base = (Get-ItemProperty 'HKLM:\SOFTWARE\PostgreSQL\Installations\postgresql-x64-17').'Base Directory'
           $uninstaller = Start-Process -FilePath "$base\uninstall-postgresql.exe" `
             -ArgumentList '--mode', 'unattended', '--unattendedmodeui', 'none' -Wait -PassThru
-          if ($uninstaller.ExitCode -ne 0) {
-            Write-Host "::error::uninstall-postgresql.exe exited $($uninstaller.ExitCode)"
-            exit 1
-          }
+          if ($uninstaller.ExitCode -ne 0) { Fail "uninstall-postgresql.exe exited $($uninstaller.ExitCode)" }
           $deadline = (Get-Date).AddMinutes(5)
           while (Get-CimInstance Win32_Process | Where-Object { $_.Name -like '_uninstall*.000' }) {
-            if ((Get-Date) -gt $deadline) {
-              Write-Host '::error::the uninstaller copy still runs after 5 minutes'
-              exit 1
-            }
+            if ((Get-Date) -gt $deadline) { Fail 'the uninstaller copy still runs after 5 minutes' }
             Start-Sleep -Seconds 1
           }
           $last = Get-Content "$env:TEMP\uninstall-postgresql.log" | Where-Object { $_.Trim() } | Select-Object -Last 1
-          if ("$last" -notlike '*Exiting with code 0*') {
-            Write-Host "::error::the uninstall log ends with '$last' (want Exiting with code 0)"
-            exit 1
-          }
-          foreach ($path in 'C:\PostgreSQL\17\data', 'C:\Program Files\PostgreSQL', 'HKLM:\SOFTWARE\PostgreSQL') {
+          if ("$last" -notlike '*Exiting with code 0*') { Fail "the uninstall log ends with '$last' (want Exiting with code 0)" }
+          foreach ($path in 'C:\PostgreSQL\17\data', 'C:\Program Files\PostgreSQL') {
             if (Test-Path $path) { Remove-Item -Recurse -Force $path }
           }
+          reg.exe query HKLM\SOFTWARE\PostgreSQL /s
+          Assert-NothingRegistered
           $services = @(Get-Service postgresql* -ErrorAction SilentlyContinue)
-          $registered = Test-Path 'HKLM:\SOFTWARE\PostgreSQL'
-          if ($services.Count -ne 0 -or $registered) {
-            Write-Host "::error::left behind: $($services.Count) postgresql* services, HKLM\SOFTWARE\PostgreSQL present: $registered"
-            exit 1
-          }
+          if ($services.Count -ne 0) { Fail "left behind: $($services.Count) postgresql* services" }
           $client = [Net.Sockets.TcpClient]::new()
           try { $open = $client.ConnectAsync('127.0.0.1', 5432).Wait(2000) } catch { $open = $false } finally { $client.Close() }
-          if ($open) {
-            Write-Host '::error::127.0.0.1:5432 still accepts TCP'
-            exit 1
-          }
+          if ($open) { Fail '127.0.0.1:5432 still accepts TCP' }
+          exit 0
 
       - name: Refuse a registered major other than 17
         run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          Assert-NothingRegistered
           $fake = New-Item -Path 'HKLM:\SOFTWARE\PostgreSQL\Installations\postgresql-x64-14' -Force
           New-ItemProperty -Path $fake.PSPath -Name 'Version' -Value '14.20-1' | Out-Null
           New-ItemProperty -Path $fake.PSPath -Name 'Service ID' -Value 'postgresql-x64-14' | Out-Null
           $fakeService = New-Item -Path 'HKLM:\SOFTWARE\PostgreSQL\Services\postgresql-x64-14' -Force
           New-ItemProperty -Path $fakeService.PSPath -Name 'Port' -PropertyType DWord -Value 15432 | Out-Null
-
-          $token = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char] $_ })
+          $token = New-Token
           $env:SEMIBASE_SUPER_PASSWORD = $token
-          $started = Get-Date
-          $setup = Start-Process -FilePath "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe" `
-            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
-          # The machine had no PostgreSQL key before the fake one
-          Remove-Item -Recurse -Force 'HKLM:\SOFTWARE\PostgreSQL'
-          if ($setup.ExitCode -ne 7) {
-            Write-Host "::error::want exit 7, a refusal from PrepareToInstall, got $($setup.ExitCode)"
-            exit 1
-          }
-          $log = Get-ChildItem 'C:\DISTR\Logs\SemiBase\setup-*.log' | Where-Object { $_.LastWriteTime -ge $started } |
-            Sort-Object LastWriteTime | Select-Object -Last 1
-          if (-not $log) {
-            Write-Host '::error::the refused run wrote no setup log'
-            exit 1
-          }
-          $text = Get-Content -Raw $log.FullName
-          Write-Host $text
-          $want = 'Installations\postgresql-x64-14 (version 14.20-1, service postgresql-x64-14, port 15432)'
-          if (-not $text.Contains($want)) {
-            Write-Host "::error::the setup log does not name '$want'"
-            exit 1
-          }
-          if ($text.Contains($token)) {
-            Write-Host '::error::the setup log contains the superuser password'
-            exit 1
-          }
+          $run = Invoke-Setup
+          Remove-Item -Recurse -Force $fake.PSPath, $fakeService.PSPath
+          Assert-Refused $run 'Installations\postgresql-x64-14 (version 14.20-1, service postgresql-x64-14, port 15432)'
+          $text = ($run.Logs | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n"
+          if ($text.Contains($token)) { Fail 'the setup log contains the superuser password' }
 
-      # Start-Process would rebuild the argument string; ProcessStartInfo passes it as
-      # written, so the " reaches Setup. The password parameter comes last, so an
-      # unbalanced " swallows no other parameter. LogRefusal appends to a log of the
-      # same second, so each run reads the last line.
+      # The superuser rules hold on the fresh-install row, which a clean machine takes. The
+      # password parameter comes last, so an unbalanced " swallows no other parameter.
       - name: Refuse a non-ASCII password and a password with a quote
         run: |
-          function Invoke-Refused([string] $arguments, [string] $want) {
-            $start = [Diagnostics.ProcessStartInfo]::new(
-              "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe",
-              "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART $arguments")
-            $start.UseShellExecute = $false
-            $started = Get-Date
-            $setup = [Diagnostics.Process]::Start($start)
-            $setup.WaitForExit()
-            if ($setup.ExitCode -ne 7) {
-              Write-Host "::error::want exit 7 with '$want', got $($setup.ExitCode)"
-              exit 1
-            }
-            $log = Get-ChildItem 'C:\DISTR\Logs\SemiBase\setup-*.log' | Where-Object { $_.LastWriteTime -ge $started } |
-              Sort-Object LastWriteTime | Select-Object -Last 1
-            $last = if ($log) { Get-Content $log.FullName | Select-Object -Last 1 }
-            Write-Host "refusal: $last"
-            if (-not "$last".Contains($want)) {
-              Write-Host "::error::the setup log does not end with '$want'"
-              exit 1
-            }
-          }
-
-          Invoke-Refused "/SUPERPASSWORD=Aa1$([char] 0x0436)z" 'The superuser password must be printable ASCII'
-          Invoke-Refused '/SUPERPASSWORD=Aa1"z' 'does not reach Setup as typed'
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $nonAscii = [char] 0x0436
+          Assert-Refused (Invoke-Setup "/SUPERPASSWORD=Aa1${nonAscii}z") 'The superuser password must be printable ASCII'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1"z') 'The /SUPERPASSWORD value does not reach Setup as typed'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z\') 'must not contain " or end in \'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=-Aa1z') 'must not start with -, or start or end with a space'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z Aa2z') 'does not start with /'
+          Assert-Refused (Invoke-Setup "/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1${nonAscii}z") 'The scada_writer password (/WRITERPASSWORD or SEMIBASE_WRITER_PASSWORD) must be printable ASCII'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1"z') 'The /WRITERPASSWORD value does not reach Setup as typed'
           $env:SEMIBASE_SUPER_PASSWORD = 'Aa1"z'
-          Invoke-Refused '' 'The superuser password must not contain "'
-          Remove-Item Env:SEMIBASE_SUPER_PASSWORD
+          Assert-Refused (Invoke-Setup) 'The superuser password must not contain "'
+          $env:SEMIBASE_SUPER_PASSWORD = ' Aa1z'
+          Assert-Refused (Invoke-Setup) 'must not start with -, or start or end with a space'
+          Assert-NoPostgresService
 
-          if (Get-Service postgresql* -ErrorAction SilentlyContinue) {
-            Write-Host '::error::a refused run left a postgresql* service'
-            exit 1
-          }
+      - name: Refuse an incomplete PostgreSQL 17 registration
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $fake = New-Item -Path 'HKLM:\SOFTWARE\PostgreSQL\Installations\postgresql-x64-17' -Force
+          New-ItemProperty -Path $fake.PSPath -Name 'Version' -Value '17.11-5' | Out-Null
+          New-ItemProperty -Path $fake.PSPath -Name 'Base Directory' -Value 'C:\Program Files\PostgreSQL\17' | Out-Null
+          $run = Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w'
+          Remove-Item -Recurse -Force $fake.PSPath
+          Assert-Refused $run 'is not a complete PostgreSQL 17 installation: it has no Super User. A failed PostgreSQL install leaves this; remove it with C:\Program Files\PostgreSQL\17\uninstall-postgresql.exe'
+          Assert-NoPostgresService
 
-      # The first run of the install path: Setup extracts EDB, installs it through the
-      # option file, then provisions the new service. The runner image sets a
-      # machine-level PGPASSWORD, which every psql call here overrides.
+      - name: Refuse an orphaned PostgreSQL 17 registration
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $data = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\orphaned-data" -Force
+          Set-Content -Path "$data\PG_VERSION" -Value 17
+          $fake = New-Item -Path 'HKLM:\SOFTWARE\PostgreSQL\Installations\postgresql-x64-17' -Force
+          New-ItemProperty -Path $fake.PSPath -Name 'Version' -Value '17.11-5' | Out-Null
+          New-ItemProperty -Path $fake.PSPath -Name 'Super User' -Value 'postgres' | Out-Null
+          New-ItemProperty -Path $fake.PSPath -Name 'Data Directory' -Value $data.FullName | Out-Null
+          New-ItemProperty -Path $fake.PSPath -Name 'Service ID' -Value 'no-such-service' | Out-Null
+          $run = Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w'
+          Remove-Item -Recurse -Force $fake.PSPath, $data
+          Assert-Refused $run 'names service no-such-service, which does not exist'
+          Assert-NoPostgresService
+
+      - name: Refuse a busy port 5432 with nothing registered
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 5432)
+          $listener.Start()
+          try { $run = Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w' } finally { $listener.Stop() }
+          Assert-Refused $run 'No PostgreSQL is registered, but localhost:5432 accepts TCP'
+          Assert-NoPostgresService
+
+      - name: Refuse a non-empty default data directory
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          if (Test-Path 'C:\Program Files\PostgreSQL') { Fail 'C:\Program Files\PostgreSQL exists before the case' }
+          New-Item -ItemType Directory -Path 'C:\Program Files\PostgreSQL\17\data' -Force | Out-Null
+          Set-Content -Path 'C:\Program Files\PostgreSQL\17\data\left-behind.txt' -Value 'data'
+          $run = Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w'
+          Remove-Item -Recurse -Force 'C:\Program Files\PostgreSQL'
+          Assert-Refused $run 'No PostgreSQL is registered, but C:\Program Files\PostgreSQL\17\data exists and is not empty'
+          Assert-NoPostgresService
+
+      - name: Refuse a fresh install without a scada_writer password
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z') 'No scada_writer password'
+          Assert-NoPostgresService
+
+      # The first run of the install path, through the documented variable channel: EDB
+      # and initcluster.ps1 inherit SEMIBASE_* from Setup, so the log search has a real
+      # target. A job watches Setup's {tmp} while it runs: Inno removes {tmp} at exit,
+      # so only a watch during the run can see the option file come and go.
       - name: Install and provision PostgreSQL 17 on a clean machine
         timeout-minutes: 15
         run: |
-          $super, $writer = Get-Content "$env:RUNNER_TEMP\case-passwords.txt"
-          $psql = "$env:PGBIN\psql.exe"
-          $started = Get-Date
-          $setup = Start-Process -FilePath "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe" `
-            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/SUPERPASSWORD=$super", "/WRITERPASSWORD=$writer" `
-            -Wait -PassThru
-          $logs = @(Get-ChildItem 'C:\DISTR\Logs\SemiBase\*.log' | Where-Object { $_.LastWriteTime -ge $started } |
-            Sort-Object LastWriteTime)
-          $logs | ForEach-Object {
-            Write-Host "--- $($_.Name)"
-            "$(Get-Content -Raw $_.FullName)".Replace($super, '<SUPER>').Replace($writer, '<WRITER>') | Write-Host
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $tokens = @(Get-Content $TokenFile)
+          $super, $writer = $tokens[1], $tokens[2]
+          $env:SEMIBASE_SUPER_PASSWORD = $super
+          $env:SEMIBASE_WRITER_PASSWORD = $writer
+          $since = Get-Date
+          # The site log is read first, so an option file seen after it was really there then
+          $watch = Start-Job -ArgumentList $env:TEMP, $LogDir, $since -ScriptBlock {
+            param($temp, $logDir, $since)
+            $seen = $false
+            while ($true) {
+              $site = @(Get-ChildItem "$logDir\site-*.log" -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $since })
+              $option = @(Get-ChildItem "$temp\is-*.tmp\postgresql-options.txt" -Force -ErrorAction SilentlyContinue)
+              if ($option.Count -ne 0) { $seen = $true }
+              if ($site.Count -ne 0) { return [pscustomobject]@{ Seen = $seen; PresentWithSiteLog = $option.Count -ne 0 } }
+              Start-Sleep -Milliseconds 200
+            }
           }
-          if ($setup.ExitCode -ne 0) {
-            Write-Host "::error::want exit 0, got $($setup.ExitCode)"
-            exit 1
-          }
-          $site = $logs | Where-Object { $_.Name -like 'site-*' } | Select-Object -Last 1
-          if (-not $site -or -not "$(Get-Content -Raw $site.FullName)".Contains('restarting service postgresql-x64-17')) {
-            Write-Host '::error::the site log does not record restarting service postgresql-x64-17'
-            exit 1
+          $run = Invoke-Setup
+          $watched = $watch | Wait-Job -Timeout 30 | Receive-Job
+          $watch | Remove-Job -Force
+          Write-Logs $run $tokens
+          if ($run.ExitCode -ne 0) { Fail "want exit 0, got $($run.ExitCode)" }
+          if (-not $watched) { Fail 'the option-file watch saw no site log' }
+          if (-not $watched.Seen) { Fail 'the watch never saw the option file, so it watched the wrong place' }
+          if ($watched.PresentWithSiteLog) { Fail 'the option file was still there when the site log appeared' }
+          if (-not (Get-SiteLog $run).Contains('restarting service postgresql-x64-17')) {
+            Fail 'the site log does not record restarting service postgresql-x64-17'
           }
 
           $env:PGPASSWORD = $super
           function Invoke-Super([string] $sql) {
-            $out = & $psql -w -h 127.0.0.1 -U postgres -d postgres -tAc $sql
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "::error::psql as postgres failed on: $sql"
-              exit 1
-            }
+            $out = & "$env:PGBIN\psql.exe" -w -h 127.0.0.1 -U postgres -d postgres -tAc $sql
+            if ($LASTEXITCODE -ne 0) { Fail "psql as postgres failed on: $sql" }
             "$out".Trim()
           }
           $pending = Invoke-Super 'SELECT count(*) FROM pg_settings WHERE pending_restart'
@@ -606,125 +556,110 @@ jobs:
             "WHERE datname IN ('template1', 'scada_archive')")
           $wantDatabases = 'scada_archive|C|C|UTF8,template1|C|C|UTF8'
           if ($pending -ne '0' -or $listen -ne 'localhost' -or $databases -ne $wantDatabases) {
-            Write-Host "::error::pending_restart count '$pending' (want 0), listen_addresses '$listen' (want localhost), databases '$databases' (want '$wantDatabases')"
-            exit 1
+            Fail "pending_restart count '$pending' (want 0), listen_addresses '$listen' (want localhost), databases '$databases' (want '$wantDatabases')"
           }
-          $env:PGPASSWORD = 'semiplot'
-          & $psql -w -h 127.0.0.1 -U semiplot -d scada_archive -tAc 'SELECT count(*) FROM semiplot_tags'
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host '::error::semiplot with password semiplot cannot log in'
-            exit 1
-          }
+          Assert-Login semiplot semiplot
 
+      # The production re-run: the superuser password alone, as a parameter this time.
+      # Statement logging goes on first, so the log search in the password case below
+      # reads a server log that would carry a leaked password statement.
       - name: Run the same setup again
         timeout-minutes: 15
         run: |
-          $super, $writer = Get-Content "$env:RUNNER_TEMP\case-passwords.txt"
-          $started = Get-Date
-          $setup = Start-Process -FilePath "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe" `
-            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/SUPERPASSWORD=$super", "/WRITERPASSWORD=$writer" `
-            -Wait -PassThru
-          $logs = @(Get-ChildItem 'C:\DISTR\Logs\SemiBase\*.log' | Where-Object { $_.LastWriteTime -ge $started } |
-            Sort-Object LastWriteTime)
-          $logs | ForEach-Object {
-            Write-Host "--- $($_.Name)"
-            "$(Get-Content -Raw $_.FullName)".Replace($super, '<SUPER>').Replace($writer, '<WRITER>') | Write-Host
-          }
-          if ($setup.ExitCode -ne 0) {
-            Write-Host "::error::want exit 0, got $($setup.ExitCode)"
-            exit 1
-          }
-          $site = $logs | Where-Object { $_.Name -like 'site-*' } | Select-Object -Last 1
-          if (-not $site) {
-            Write-Host '::error::the run wrote no site log'
-            exit 1
-          }
-          if ("$(Get-Content -Raw $site.FullName)".Contains('restarting service')) {
-            Write-Host '::error::the second run restarted the service with nothing pending'
-            exit 1
-          }
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $tokens = @(Get-Content $TokenFile)
+          $super, $writer = $tokens[1], $tokens[2]
+          $env:PGPASSWORD = $super
+          & "$env:PGBIN\psql.exe" -w -h 127.0.0.1 -U postgres -d postgres -qtAc "ALTER SYSTEM SET log_statement = 'all'"
+          if ($LASTEXITCODE -ne 0) { Fail 'could not set log_statement' }
+          & "$env:PGBIN\psql.exe" -w -h 127.0.0.1 -U postgres -d postgres -qtAc 'SELECT pg_reload_conf()'
+          if ($LASTEXITCODE -ne 0) { Fail 'could not reload the configuration' }
+          $run = Invoke-Setup "/SUPERPASSWORD=$super"
+          Write-Logs $run $tokens
+          if ($run.ExitCode -ne 0) { Fail "want exit 0, got $($run.ExitCode)" }
+          if ((Get-SiteLog $run).Contains('restarting service')) { Fail 'the second run restarted the service with nothing pending' }
+          Assert-Login scada_writer $writer
+
+      - name: Change the scada_writer password on a re-run
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $tokens = @(Get-Content $TokenFile)
+          $env:SEMIBASE_WRITER_PASSWORD = $tokens[3]
+          $run = Invoke-Setup "/SUPERPASSWORD=$($tokens[1])"
+          Write-Logs $run $tokens
+          if ($run.ExitCode -ne 0) { Fail "want exit 0, got $($run.ExitCode)" }
+          Assert-Login scada_writer $tokens[3]
+
+      # Every cluster in the other cases sits on 5432, so only a wrong registered
+      # port shows that Setup waits on the port the registry names
+      - name: Refuse a registered port nothing answers on
+        timeout-minutes: 5
+        run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $tokens = @(Get-Content $TokenFile)
+          $key = 'HKLM:\SOFTWARE\PostgreSQL\Services\postgresql-x64-17'
+          Set-ItemProperty -Path $key -Name Port -Value 15433 -Type DWord
+          try { $run = Invoke-Setup "/SUPERPASSWORD=$($tokens[1])" } finally { Set-ItemProperty -Path $key -Name Port -Value 5432 -Type DWord }
+          Assert-Refused $run 'Service postgresql-x64-17 is started, but localhost:15433 accepted no TCP connection within 60 s'
 
       - name: Refuse a wrong superuser password
         run: |
-          $started = Get-Date
-          $setup = Start-Process -FilePath "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe" `
-            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SUPERPASSWORD=wrong' -Wait -PassThru
-          $logs = @(Get-ChildItem 'C:\DISTR\Logs\SemiBase\*.log' | Where-Object { $_.LastWriteTime -ge $started } |
-            Sort-Object LastWriteTime)
-          $logs | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content -Raw $_.FullName | Write-Host }
-          if ($setup.ExitCode -ne 7) {
-            Write-Host "::error::want exit 7, a refusal from PrepareToInstall, got $($setup.ExitCode)"
-            exit 1
-          }
-          $site = $logs | Where-Object { $_.Name -like 'site-*' } | Select-Object -Last 1
-          if (-not $site -or -not "$(Get-Content -Raw $site.FullName)".Contains('password authentication failed')) {
-            Write-Host '::error::the site log does not name the failed superuser connection'
-            exit 1
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $run = Invoke-Setup '/SUPERPASSWORD=wrong'
+          Write-Logs $run
+          Assert-Refused $run 'semibase site exited with code'
+          if (-not (Get-SiteLog $run).Contains('password authentication failed')) {
+            Fail 'the site log does not name the failed superuser connection'
           }
 
       # No case passes /LOG: Inno's own log records Setup's command line, passwords
       # included. The search prints file names and hit counts, never a matched line.
+      # Setup's {tmp} is not searched: Inno removes it at exit, and case 6 watched it.
       - name: Find no password in the logs
         run: |
-          $super, $writer = Get-Content "$env:RUNNER_TEMP\case-passwords.txt"
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $tokens = @(Get-Content $TokenFile)
           $edbLog = "$env:TEMP\install-postgresql.log"
           $temp = Get-ChildItem -LiteralPath $env:TEMP -Force | Where-Object {
-            $_.Name -like '*postgres*' -or $_.Name -like 'installbuilder*' -or $_.Name -like 'bitrock*' -or $_.Name -like 'is-*.tmp'
+            $_.Name -like '*postgres*' -or $_.Name -like 'installbuilder*' -or $_.Name -like 'bitrock*'
           }
-          $semibaseLogs = @(Get-ChildItem 'C:\DISTR\Logs\SemiBase\*.log')
+          $semibaseLogs = @(Get-ChildItem "$LogDir\*.log")
           $serverLogs = @(Get-ChildItem 'C:\Program Files\PostgreSQL\17\data\log' -File -Force)
           if (-not (Test-Path $edbLog) -or $semibaseLogs.Count -eq 0 -or $serverLogs.Count -eq 0) {
-            Write-Host "::error::nothing to search: $edbLog present $(Test-Path $edbLog), $($semibaseLogs.Count) SemiBase logs, $($serverLogs.Count) server logs"
-            exit 1
+            Fail "nothing to search: $edbLog present $(Test-Path $edbLog), $($semibaseLogs.Count) SemiBase logs, $($serverLogs.Count) server logs"
+          }
+          # check.go's plotProbe, which reaches the server log only under log_statement = 'all'
+          if (-not (Select-String -LiteralPath $serverLogs.FullName -SimpleMatch -Pattern 'FROM public.trends LIMIT 1) probe' -Quiet)) {
+            Fail 'the server log lacks the semiplot probe, so statement logging was off and the search has no teeth'
           }
           $files = @($temp | Where-Object { -not $_.PSIsContainer }) +
             @($temp | Where-Object { $_.PSIsContainer } | Get-ChildItem -Recurse -File -Force) +
             $semibaseLogs + $serverLogs
           $files | ForEach-Object { Write-Host "searched: $($_.FullName)" }
-          $hits = @(Select-String -LiteralPath $files.FullName -SimpleMatch -Pattern $super, $writer)
+          $hits = @(Select-String -LiteralPath $files.FullName -SimpleMatch -Pattern $tokens)
           if ($hits.Count -ne 0) {
             $hits | ForEach-Object { Write-Host "password found in $($_.Path):$($_.LineNumber)" }
-            Write-Host "::error::$($hits.Count) password hits"
-            exit 1
+            Fail "$($hits.Count) password hits"
           }
-          $optionFiles = @(Get-ChildItem -LiteralPath $env:TEMP -Recurse -Force -Filter 'postgresql-options.txt' -ErrorAction SilentlyContinue)
-          if ($optionFiles.Count -ne 0) {
-            Write-Host "::error::option file left: $($optionFiles.FullName -join ', ')"
-            exit 1
-          }
-          # Case 6 passes parameters, so this tells whether EDB's log would carry an
-          # inherited SEMIBASE_* variable at all
-          Write-Host "install-postgresql.log records the environment: $(Select-String -LiteralPath $edbLog -SimpleMatch -Pattern 'RUNNER_TEMP' -Quiet)"
 
       # Inno's uninstaller re-runs itself from %TEMP%, so semibase.exe may outlive
       # the process Start-Process waited for.
       - name: Uninstall SemiBase and keep PostgreSQL
         run: |
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
           $app = "$env:ProgramFiles\SemiBase"
           $uninstall = Start-Process -FilePath "$app\unins000.exe" `
             -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0) {
-            Write-Host "::error::want exit 0, got $($uninstall.ExitCode)"
-            exit 1
-          }
+          if ($uninstall.ExitCode -ne 0) { Fail "want exit 0, got $($uninstall.ExitCode)" }
           $deadline = (Get-Date).AddSeconds(60)
           while (Test-Path "$app\semibase.exe") {
-            if ((Get-Date) -gt $deadline) {
-              Write-Host '::error::semibase.exe is still there 60 s after the uninstaller exited'
-              exit 1
-            }
+            if ((Get-Date) -gt $deadline) { Fail 'semibase.exe is still there 60 s after the uninstaller exited' }
             Start-Sleep -Seconds 1
           }
-          if (-not (Get-Service postgresql-x64-17 -ErrorAction SilentlyContinue)) {
-            Write-Host '::error::the uninstall removed postgresql-x64-17'
-            exit 1
-          }
-          $env:PGPASSWORD = 'semiplot'
-          & "$env:PGBIN\psql.exe" -w -h 127.0.0.1 -U semiplot -d scada_archive -tAc 'SELECT count(*) FROM semiplot_tags'
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host '::error::semiplot with password semiplot cannot log in after the uninstall'
-            exit 1
-          }
+          if (-not (Get-Service postgresql-x64-17 -ErrorAction SilentlyContinue)) { Fail 'the uninstall removed postgresql-x64-17' }
+          if (@(Get-ChildItem "$LogDir\*.log" -ErrorAction SilentlyContinue).Count -eq 0) { Fail "the uninstall removed the logs in $LogDir" }
+          if (-not (Test-Path $ToolExe)) { Fail "the uninstall removed the recovery copy $ToolExe" }
+          Assert-Login semiplot semiplot
 
       # Everything printed here passes the redaction first: the EDB log masks the
       # superuser password itself, and the setup and site logs carry none by design.

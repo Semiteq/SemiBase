@@ -7,7 +7,8 @@ readonly VERSION=17.11-5
 readonly URL="https://get.enterprisedb.com/postgresql/postgresql-${VERSION}-windows-x64.exe"
 readonly SHA256=612c7f5400a003aaffa0372cb273eed52278f93c680ab911eb9cb2229e329072
 
-readonly FILE_NAME="${URL##*/}"
+# A fixed name, so the pin lives here alone; Installer/SemiBase.iss names the same file
+readonly FILE_NAME=postgresql-17-windows-x64.exe
 PAYLOAD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/payload"
 readonly PAYLOAD_DIR
 readonly PART_NAME="${FILE_NAME}.part"
