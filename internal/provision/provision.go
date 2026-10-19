@@ -2,6 +2,7 @@ package provision
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -107,30 +109,35 @@ func (o Options) endpoint(database string) string {
 	return fmt.Sprintf("%s:%d/%s", o.Host, o.Port, database)
 }
 
-func (o Options) connect(ctx context.Context, database, user, password string) (*pgx.Conn, error) {
-	conn, err := pgx.Connect(ctx, o.connectionString(database, user, password))
+func (o Options) connectSuperuser(ctx context.Context, database string) (*pgx.Conn, error) {
+	return o.connect(ctx, database, o.SuperUser, o.SuperPassword, superuserSessionSettings())
+}
+
+func (o Options) connect(ctx context.Context, database, role, password string, settings []string) (*pgx.Conn, error) {
+	conn, err := pgx.Connect(ctx, o.connectionString(database, role, password))
 	if err != nil {
-		return nil, fmt.Errorf("connecting to %s as %s: %w", o.endpoint(database), user, err)
+		return nil, fmt.Errorf("connecting to %s as %s: %w", o.endpoint(database), role, err)
 	}
-	for _, setting := range o.sessionSettings(user) {
+	for _, setting := range settings {
 		if _, err := conn.Exec(ctx, setting); err != nil {
 			_ = conn.Close(ctx)
-			return nil, sessionSettingFailure(setting, user, err)
+			return nil, sessionSettingFailure(setting, role, err)
 		}
 	}
 	return conn, nil
 }
 
-// The first two are USERSET: escapeLiteral relies on standard_conforming_strings, and
-// search_path pins where an unqualified semiplot_* name resolves. The logging five are SUSET
-// and keep the text of CREATE ROLE ... PASSWORD and ALTER ROLE ... PASSWORD out of the server
-// log; only a superuser connection may set them, and only it issues those statements.
-func (o Options) sessionSettings(user string) []string {
-	settings := []string{"SET standard_conforming_strings = on", "SET search_path = public"}
-	if user != o.SuperUser {
-		return settings
-	}
-	return append(settings,
+// USERSET, so any role may set them: escapeLiteral relies on standard_conforming_strings, and
+// search_path pins where an unqualified semiplot_* name resolves
+func sessionSettings() []string {
+	return []string{"SET standard_conforming_strings = on", "SET search_path = public"}
+}
+
+// The logging five keep the text of CREATE ROLE ... PASSWORD and ALTER ROLE ... PASSWORD out of
+// the server log. They are SUSET, and the superuser connection is the one that issues those
+// statements.
+func superuserSessionSettings() []string {
+	return append(sessionSettings(),
 		"SET log_statement = 'none'",
 		"SET log_min_error_statement = 'panic'",
 		"SET log_min_duration_statement = -1",
@@ -139,13 +146,21 @@ func (o Options) sessionSettings(user string) []string {
 	)
 }
 
-// only the SUSET logging settings can be refused, and only a role without rolsuper is refused them
-func sessionSettingFailure(setting, user string, err error) error {
+// only the SUSET logging settings can be refused, and only to a role without rolsuper
+func sessionSettingFailure(setting, role string, err error) error {
 	if hasSQLState(err, insufficientPrivilege) {
-		return fmt.Errorf("%s: %w. The --superuser role %s must be a superuser: only a superuser may "+
-			"keep the password statements out of the server log", setting, err, user)
+		return fmt.Errorf("%s: %w. The role %s that semibase connects as must be a superuser, so that "+
+			"the password statements stay out of the server log. Repair with ALTER ROLE %s SUPERUSER, "+
+			"or connect as a superuser; then re-run this command", setting, err, role, role)
 	}
 	return fmt.Errorf("%s: %w", setting, err)
+}
+
+const insufficientPrivilege = "42501"
+
+func hasSQLState(err error, code string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == code
 }
 
 // quote doubling alone is safe only because connect sets standard_conforming_strings = on,

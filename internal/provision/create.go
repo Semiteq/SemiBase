@@ -38,7 +38,7 @@ func (o Options) create(ctx context.Context) error {
 	}
 	step("Phase create: database %s, roles, access chain, archive table", o.Database)
 
-	super, err := o.connect(ctx, "postgres", o.SuperUser, o.SuperPassword)
+	super, err := o.connectSuperuser(ctx, "postgres")
 	if err != nil {
 		return err
 	}
@@ -85,7 +85,7 @@ func (o Options) create(ctx context.Context) error {
 	}
 	ok("%s timeouts set (statement 30s, idle-in-transaction 60s)", PlotRole)
 
-	archive, err := o.connect(ctx, o.Database, o.SuperUser, o.SuperPassword)
+	archive, err := o.connectSuperuser(ctx, o.Database)
 	if err != nil {
 		return err
 	}

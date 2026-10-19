@@ -40,21 +40,22 @@
 - `grep -rnE 'dotEnv|\.env\b' cmd/ internal/` prints nothing; `.env.example` does not exist.
 - Linux CI, new step after the `site` runs: `ALTER SYSTEM SET log_statement = 'all'`, reload,
   run `semibase site` with `SEMIBASE_PLOT_PASSWORD` set to a random token, then require
-  `logging_collector = off`, the `semiplot` login's probe statement in `docker logs`, and no
-  token in it.
+  `logging_collector = off`, the `semiplot` login's probe statement in `docker logs`, and neither
+  the token nor the writer password in it.
 - Linux CI, the PostgreSQL 14 step: the server starts with all five statement-logging settings
-  on, `bench` creates the roles, and the same script finds neither role password in `docker logs`.
+  on and `bench` creates the roles; the step after it runs the same script, which finds neither
+  role password in `docker logs`.
 
 ## Solution Overview
 - Delete the reader outright; no flag or fallback replaces it. A hand run sets the variables in
-  its shell, as `docs/deployment.md`'s recovery section shows.
+  its shell, as step 2 of "Порядок ввода в эксплуатацию" in `docs/deployment.md` shows.
 - `connect` appends `SET log_statement = 'none'`, `SET log_min_error_statement = 'panic'`,
   `SET log_min_duration_statement = -1`, `SET log_min_duration_sample = -1` and
   `SET log_transaction_sample_rate = 0` to its session settings. All five are
   superuser-settable; every `semibase` connection that issues a password statement is a
-  superuser connection. The `semiplot` login check also goes through `connect` (`check.go:408`),
-  as `semiplot`, which may not set any of them and issues no password statement: the five
-  settings apply to superuser connections only.
+  superuser connection, opened by `connectSuperuser`. The `semiplot` login check
+  (`check.go:408`) connects with the two USERSET settings only: `semiplot` may not set the
+  five and issues no password statement.
 
 ## Implementation Steps
 

@@ -155,34 +155,27 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
   `semiplot_*` objects are named unqualified in the embedded DDL and in the tail check's
   `has_table_privilege` arguments, so without the setting a `semiplot_tags` in another schema on
   the superuser's `search_path` would take the grants and the probes.
-- **Password statements stay out of the server log.** On a superuser connection `connect` also
-  issues `SET log_statement = 'none'`, `SET log_min_error_statement = 'panic'`,
+- **Password statements stay out of the server log.** `connectSuperuser` adds
+  `SET log_statement = 'none'`, `SET log_min_error_statement = 'panic'`,
   `SET log_min_duration_statement = -1`, `SET log_min_duration_sample = -1` and
-  `SET log_transaction_sample_rate = 0`. `CREATE ROLE ... PASSWORD` and `ALTER ROLE ... PASSWORD`
-  carry the password as a literal, and the server's log settings print a statement's text in five
-  cases, one per setting: every statement under `log_statement = 'all'`, which an operator sets
-  for the SCADA's first start ([the SCADA assumption](#assumption-the-scada-meeting-an-existing-trends));
+  `SET log_transaction_sample_rate = 0` to the session settings. `CREATE ROLE ... PASSWORD` and
+  `ALTER ROLE ... PASSWORD` carry the password as a literal, and each setting otherwise prints a
+  statement's text in one case: every statement under `log_statement = 'all'`, which an operator
+  sets for the SCADA's first start ([the SCADA assumption](#assumption-the-scada-meeting-an-existing-trends));
   a failing statement under the default `log_min_error_statement = error`; a statement slower than
   `log_min_duration_statement`, which `config` sets to 1000 ms; a sampled statement slower than
-  `log_min_duration_sample`; and every statement of a transaction that
-  `log_transaction_sample_rate` samples. The second has a cost: a failing statement on a
-  superuser connection, a broken `sql/semiplot_*.sql` included, leaves its error in the server
-  log without its text, and the run's own output names what failed. Extensions that keep
-  statement text, such as `pg_stat_statements` with `track_utility`, are outside this guard;
-  `semibase` installs none. All five are superuser-only parameters, so `--superuser` must name a
-  role with `rolsuper`: any other role is refused the first of them with 42501, and `connect`
-  says that the role must be a superuser. The one connection `connect` opens as another role,
-  the `semiplot` login of check 8, sets none of them; it issues no password statement.
-  `sessionSettings` builds the list, and `TestSessionSettings` pins the parameters it sets for
-  the superuser and for `semiplot`. Two CI steps read the server log through
-  `.github/scripts/check-server-log.sh`. The `Keep the password statements out of the server log`
-  step sets `log_statement = 'all'` on the service container and runs `site` with a random
-  `semiplot` password: the `ALTER ROLE` path. The
-  `Provision a PostgreSQL 14 container, where the REVOKE bites` step starts its server with all
-  five parameters logging and runs `bench`, which creates the roles: the `CREATE ROLE` path. The
-  script requires `logging_collector = off`, so `docker logs` holds the whole server log, then
-  requires the `semiplot` login's probe statement in that log, the one statement `semibase` runs
-  without the guard, and finally requires no given password in it.
+  `log_min_duration_sample`; every statement of a transaction `log_transaction_sample_rate`
+  samples. The second has a cost: a failing superuser statement, a broken `sql/semiplot_*.sql`
+  included, leaves its error in the server log without its text, and the run's own output names
+  what failed. Extensions that keep statement text, such as `pg_stat_statements` with
+  `track_utility`, are outside this guard; `semibase` installs none. The five are SUSET, and the
+  project requires the role `semibase` connects as to be a superuser; when the server refuses one
+  with 42501, the error names the role and the repair. The `semiplot` login of
+  [check 8](#what-the-tail-checks-prove) sets none of them and issues no password statement.
+  `TestSessionSettings` pins both lists. CI reads the server log through
+  `.github/scripts/check-server-log.sh` in the `Keep the password statements out of the server log`
+  step (the `ALTER ROLE` path) and the
+  `Keep the CREATE ROLE password statements out of the PostgreSQL 14 log` step.
 - **Cancellable execution.** Every phase honors its context: cancellation stops the
   in-flight query through pgx instead of killing the process mid-DDL. The context itself —
   `signal.NotifyContext(..., os.Interrupt)` plus the five-minute per-command timeout

@@ -95,14 +95,16 @@ inverted bounds (23514) and the log flag to refuse `NULL` (23502). The
 `Keep the password statements out of the server log` step follows it: it sets
 `log_statement = 'all'` on the service container and runs `site` again with a random `semiplot`
 password. The 14 step starts its server with all five statement-logging parameters on before
-`bench` creates the roles. Both then run `.github/scripts/check-server-log.sh`, which requires
-`logging_collector = off`, so `docker logs` is the whole server log, requires the `semiplot`
-login's probe statement in it, and requires the passwords absent. The pens and the log steps need
-`psql` on the runner; to run them locally, point `psql` at a container.
+`bench` creates the roles, and the
+`Keep the CREATE ROLE password statements out of the PostgreSQL 14 log` step reads that log. Both
+log steps run `.github/scripts/check-server-log.sh`, which requires `logging_collector = off`, so
+`docker logs` is the whole server log, requires the `semiplot` login's probe statement in it, and
+requires the passwords absent. The pens and the 17 log steps need `psql` on the runner; to run
+them locally, point `psql` at a container.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests in the repository; the integration checks are
-the `semiplot` access check both commands run at the tail and the five CI database steps above,
+the `semiplot` access check both commands run at the tail and the six CI database steps above,
 against a live server.
 
 ## Format

@@ -138,7 +138,8 @@ jobs:
           as_super 'SELECT pg_sleep(0.5)'
           token="log-token-$(openssl rand -hex 16)"
           SEMIBASE_PLOT_PASSWORD="$token" ./semibase site --database semiplot_dev --expected-major 17
-          bash .github/scripts/check-server-log.sh "${{ job.services.postgres.id }}" "$token"
+          bash .github/scripts/check-server-log.sh "${{ job.services.postgres.id }}" \
+            "$token" ci-writer
 
       # The server starts with every statement-logging parameter on, so the
       # CREATE ROLE ... PASSWORD path runs under all five that semibase turns off.
@@ -149,12 +150,15 @@ jobs:
           set -euo pipefail
           docker run -d --name semibase-pg14 -e POSTGRES_PASSWORD=ci-super \
             -p 15434:5432 postgres:14-alpine \
-            -c log_statement=all -c log_min_duration_statement=0 \
-            -c log_min_duration_sample=0 -c log_transaction_sample_rate=1
+            -c log_statement=all -c log_min_error_statement=error \
+            -c log_min_duration_statement=0 -c log_min_duration_sample=0 \
+            -c log_transaction_sample_rate=1
           bash .github/scripts/wait-for-postgres.sh semibase-pg14
           # ./semibase is the binary the service-container step built
           ./semibase bench --host 127.0.0.1 --port 15434 --database semiplot_dev --expected-major 14
-          bash .github/scripts/check-server-log.sh semibase-pg14 ci-writer ci-plot
+
+      - name: Keep the CREATE ROLE password statements out of the PostgreSQL 14 log
+        run: bash .github/scripts/check-server-log.sh semibase-pg14 ci-writer ci-plot
 
       # The socket path, which nothing else covers: the same binary, run the way
       # the official image runs an init script. During init the server has

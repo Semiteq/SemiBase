@@ -33,7 +33,7 @@ func (o Options) config(ctx context.Context) error {
 	}
 	step("Phase config: ALTER SYSTEM deltas")
 
-	conn, err := o.connect(ctx, "postgres", o.SuperUser, o.SuperPassword)
+	conn, err := o.connectSuperuser(ctx, "postgres")
 	if err != nil {
 		return err
 	}

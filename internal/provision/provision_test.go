@@ -209,7 +209,7 @@ func TestEndpoint(t *testing.T) {
 	}
 }
 
-// the semiplot login check connects through the same function and may not set a SUSET parameter;
+// the semiplot login check connects with the plain list and may not set a SUSET parameter;
 // the superuser list pins every parameter that would print a password statement's text
 func TestSessionSettings(t *testing.T) {
 	userParameters := []string{"standard_conforming_strings", "search_path"}
@@ -221,21 +221,17 @@ func TestSessionSettings(t *testing.T) {
 		"log_transaction_sample_rate",
 	})
 	tests := []struct {
-		name      string
-		superUser string
-		user      string
-		want      []string
+		name     string
+		settings []string
+		want     []string
 	}{
-		{"default superuser", "postgres", "postgres", superuserParameters},
-		{"renamed superuser", "dbadmin", "dbadmin", superuserParameters},
-		{"plot role", "postgres", PlotRole, userParameters},
-		{"default name when the superuser is renamed", "dbadmin", "postgres", userParameters},
+		{"semiplot", sessionSettings(), userParameters},
+		{"superuser", superuserSessionSettings(), superuserParameters},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			settings := Options{SuperUser: tt.superUser}.sessionSettings(tt.user)
-			if got := settingParameters(t, settings); !slices.Equal(got, tt.want) {
-				t.Errorf("sessionSettings(%q) with superuser %q sets %q, want %q", tt.user, tt.superUser, got, tt.want)
+			if got := settingParameters(t, tt.settings); !slices.Equal(got, tt.want) {
+				t.Errorf("the %s connection sets %q, want %q", tt.name, got, tt.want)
 			}
 		})
 	}
@@ -269,7 +265,7 @@ func TestSessionSettingFailure(t *testing.T) {
 			if !errors.Is(got, tt.err) {
 				t.Errorf("sessionSettingFailure() = %v, does not wrap %v", got, tt.err)
 			}
-			if hasHint := strings.Contains(got.Error(), "dbadmin must be a superuser"); hasHint != tt.wantHint {
+			if hasHint := strings.Contains(got.Error(), "Repair with ALTER ROLE dbadmin SUPERUSER"); hasHint != tt.wantHint {
 				t.Errorf("sessionSettingFailure() = %q, superuser hint %v, want %v", got, hasHint, tt.wantHint)
 			}
 		})

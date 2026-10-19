@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Fails when a password reaches the server log of a postgres container. The log is read from
-# docker logs, so the server must not run the logging collector. The semiplot login's probe must
-# be in it: semibase runs that statement on a connection without the log guard, so a log lacking
-# it proves nothing about the password statements.
+# docker logs, so the server must not run the logging collector. The semiplot login's probe
+# (plotProbe in internal/provision/check.go) must be in it: semibase runs that statement on a
+# connection without the log guard, so a log lacking it proves nothing about the password
+# statements.
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
@@ -14,7 +15,8 @@ shift
 
 collector=$(docker exec "$container" psql -U postgres -qtAc 'SHOW logging_collector')
 if [ "$collector" != off ]; then
-  echo "::error::logging_collector is '$collector' in $container, so docker logs is not the whole server log"
+  echo "::error::logging_collector is '$collector' in $container," \
+    "so docker logs is not the whole server log"
   exit 1
 fi
 
@@ -24,7 +26,9 @@ trap 'rm -f "$log"' EXIT
 docker logs "$container" > "$log" 2>&1
 
 if ! grep -qF -- 'FROM public.trends LIMIT 1) probe' "$log"; then
-  echo "::error::the server log of $container lacks the semiplot login's probe, so statements are not logged"
+  echo "::error::the server log of $container lacks the semiplot login's probe:" \
+    "either the server does not log statements, or semibase skipped the login check" \
+    "(no SEMIBASE_PLOT_PASSWORD, or a socket host)"
   exit 1
 fi
 for password in "$@"; do
