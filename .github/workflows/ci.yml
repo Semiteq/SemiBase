@@ -99,6 +99,8 @@ jobs:
           }
 
           Assert-Refused (Invoke-Site 'no-such-service') 'service no-such-service does not exist'
+          # the runner exits with the last native exit code, which the refusal left at 1
+          exit 0
 
   linux:
     runs-on: ubuntu-latest
