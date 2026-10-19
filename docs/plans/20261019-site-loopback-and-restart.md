@@ -142,16 +142,16 @@
 - Create: `internal/provision/config_test.go`
 - Modify: `go.mod`, `go.sum`
 
-- [ ] add `golang.org/x/sys`; in `service_windows.go` implement opening and checking the service
+- [x] add `golang.org/x/sys`; in `service_windows.go` implement opening and checking the service
       (exists, access, not Disabled) and the stop-start sequence with the bounds above
-- [ ] `service_other.go` returns an error naming the platform from the same check function
-- [ ] in `config`: check the service before connecting; after
+- [x] `service_other.go` returns an error naming the platform from the same check function
+- [x] in `config`: check the service before connecting; after
       `pendingRestartSettings` (`config.go:60`) call `restartNeeded`, run the sequence, re-read
       on the new connection
-- [ ] extract the ready wait over an injected `func(ctx) (*pgx.Conn, error)` dialer
-- [ ] write tests: `restartNeeded` table; ready wait succeeds at once, succeeds after N failures,
+- [x] extract the ready wait over an injected `func(ctx) (*pgx.Conn, error)` dialer
+- [x] write tests: `restartNeeded` table; ready wait succeeds at once, succeeds after N failures,
       times out with the last error, stops on context cancellation
-- [ ] run `go test ./...`, `go vet ./...`, `golangci-lint run`; `GOOS=linux go build ./...` -
+- [x] run `go test ./...`, `go vet ./...`, `golangci-lint run`; `GOOS=linux go build ./...` -
       must pass before task 4
 
 ### Task 4: Exercise the restart on the Windows runner
