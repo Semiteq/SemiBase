@@ -7,7 +7,8 @@ CLI binary, `semibase.exe`, a container image carrying its Linux build, plus the
 architecture docs.
 Deployment target: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver
 `pgx/v5`, the five `sql/semiplot_*.sql` files and `sql/trends.sql` embedded via `go:embed`. Entry point:
-`cmd/semibase`. The module is pure `pgx` and compiles for any GOOS; Linux builds serve the
+`cmd/semibase`. The module is pure Go (`pgx/v5`, plus `golang.org/x/sys` for the Windows service
+restart) and compiles for any GOOS; Linux builds serve the
 containerised test bench of consumers (SemiPlot runs `bench` against an ephemeral `postgres:17`
 container). All commands run from the repository root.
 
@@ -24,7 +25,7 @@ Without ldflags, `version` falls back to the VCS revision recorded by the Go too
 
 `.github/workflows/release.yml` fires on a `v*` tag push. One `ubuntu-latest` job
 cross-compiles `windows/amd64` and `linux/amd64` with `CGO_ENABLED=0` — the module is pure
-`pgx`, so native runners are CI's job, not the release's — and attaches
+Go, so native runners are CI's job, not the release's — and attaches
 `semibase_<version>_<goos>_amd64[.exe]` to the GitHub release — no extension on the Linux
 artifact, an ELF is executable by its mode bit. `-X main.revision=<tag>` is embedded, so
 `semibase version` prints the tag.
@@ -79,10 +80,17 @@ golangci-lint run
 
 golangci-lint is pinned to 2.12.2 (`winget install GolangCI.golangci-lint --version 2.12.2`);
 config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build`, `go test -race`,
-and the same lint on `windows-latest` and `ubuntu-latest` for every push and pull request;
-the Linux job also provisions a `postgres:17-alpine` service container by running `site`
-twice — the tuning path and the idempotency check in one step.
-It then runs `bench` against a `postgres:14-alpine` container — the version floor, and the only
+and the same lint on `windows-latest` and `ubuntu-latest` for every push and pull request.
+The Windows job then runs the `Restart the runner's PostgreSQL service through site` step, the
+only test of the service restart: it sets the runner's Stopped and Disabled `postgresql-x64-17`
+to Manual and starts it, requires the first `site --restart-service postgresql-x64-17` run to
+print `restarting service postgresql-x64-17` and leave `listen_addresses = localhost` with no
+setting pending, and requires a second run not to restart the service.
+The Linux job provisions a `postgres:17-alpine` service container by running `site`
+twice — the tuning path and the idempotency check in one step. The
+`Require the listen_addresses delta` step then requires `listen_addresses` still pending: the
+container is never restarted, so a pending value proves `site` wrote the delta.
+The job then runs `bench` against a `postgres:14-alpine` container — the version floor, and the only
 place `REVOKE CREATE ON SCHEMA public FROM PUBLIC` bites, because 15 and later withhold that grant
 by engine default — provisions a third container with `bench` as a `postgres` image init script
 over the unix socket, and builds the container image, so a broken `Dockerfile` fails on the pull
@@ -99,12 +107,13 @@ password. The 14 step starts its server with all five statement-logging paramete
 `Keep the CREATE ROLE password statements out of the PostgreSQL 14 log` step reads that log. Both
 log steps run `.github/scripts/check-server-log.sh`, which requires `logging_collector = off`, so
 `docker logs` is the whole server log, requires the `semiplot` login's probe statement in it, and
-requires the passwords absent. The pens and the 17 log steps need `psql` on the runner; to run
-them locally, point `psql` at a container.
+requires the passwords absent. The `listen_addresses`, the pens and the 17 log steps need `psql`
+on the runner; to run them locally, point `psql` at a container. The Windows step uses the
+runner's own `$env:PGBIN\psql.exe`.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests in the repository; the integration checks are
-the `semiplot` access check both commands run at the tail and the six CI database steps above,
+the `semiplot` access check both commands run at the tail and the eight CI database steps above,
 against a live server.
 
 ## Format
@@ -118,11 +127,12 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 ```powershell
 .\semibase.exe --help                     # commands: site | bench | version
 .\semibase.exe site                       # an installation machine: tuning, then everything else
+.\semibase.exe site --restart-service postgresql-x64-17   # also restart the service when settings wait
 .\semibase.exe bench --port 15432 --database semiplot_dev --expected-major 17
 .\semibase.exe version                    # print the build revision
 ```
 
-`site` and `bench` differ in one thing: `site` applies the `ALTER SYSTEM` memory constants,
+`site` and `bench` differ in one thing: `site` applies the `ALTER SYSTEM` server settings,
 `bench` does not. Both create the database, the roles, the grants, the five SemiPlot tables
 (`semiplot_tags`, `semiplot_groups`, `semiplot_pen_groups`, `semiplot_markers`, `semiplot_meta`), the
 `semiplot_register_new_pens()` function and `public.trends`, and both end by actually reading
@@ -134,6 +144,13 @@ in a rolled-back transaction, requiring 42501 for `INSERT`, `DELETE` and `UPDATE
 `semiplot_register_new_pens()`, and that `semiplot` holds no `INSERT`, `UPDATE` or `DELETE`
 on the archive or on `semiplot_meta` and no `CREATE` on schema `public` (revoked from `PUBLIC` by
 `create`, since 14 still grants it). A failed check is a non-zero exit.
+
+Two of the settings, `shared_buffers` and `listen_addresses = 'localhost'`, wait for a service
+restart. Without a flag the run warns and the operator restarts. `site --restart-service <name>`
+restarts that Windows service inside the tuning phase when settings wait, so `create` and the
+tail check run against the restarted server. `bench` refuses the flag, and so does a `--host`
+other than `localhost`, `127.0.0.1` or `::1`; the service is checked before anything changes
+(`docs/architecture/provisioning.md#the-service-restart`).
 
 The `semiplot` grant on `semiplot_tags` is column-level: `SELECT` and `UPDATE` on the nine settings
 columns, never `id`, so `has_table_privilege(..., 'UPDATE')` answers false for that table and no
@@ -168,8 +185,9 @@ superuser connection, so the table's owner is the role the SCADA writes with and
 
 ```
 cmd/semibase/        CLI entry point: command dispatch, flags, usage text
-internal/provision/  one file per phase behind the two commands: config.go (ALTER SYSTEM),
-                     create.go (db/roles/grants/trends), schema.go (the semiplot schema files,
+internal/provision/  one file per phase behind the two commands: config.go (ALTER SYSTEM and
+                     the optional service restart, whose service control lives in
+                     service_windows.go and service_other.go), create.go (db/roles/grants/trends), schema.go (the semiplot schema files,
                      their grants, the pen-registration function's grant and its owner's
                      registrarStatements), check.go (semiplot access). provision.go
                      holds Options, Site/Bench and the connection plumbing they share

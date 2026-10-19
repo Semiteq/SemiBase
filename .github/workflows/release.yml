@@ -121,7 +121,7 @@ jobs:
             echo "$DELIMITER"
           } >> "$GITHUB_OUTPUT"
 
-      # The module is pure pgx with no cgo, so one runner cross-compiles both
+      # The module is pure Go with no cgo, so one runner cross-compiles both
       # targets. Native-platform coverage is CI's job, not the release's.
       - name: Build
         env:

@@ -177,21 +177,24 @@
       it; both CI jobs run `go test -race ./...` green; `GOOS=linux go vet ./...` clean)
 
 ### Task 6: [Final] Update documentation
-- [ ] `docs/architecture/provisioning.md:160-165`: the opt-in restart, where it runs, the
+- [x] `docs/architecture/provisioning.md:160-165`: the opt-in restart, where it runs, the
       Start guarantee, why CI's Linux job does not use it; `provisioning.md:94` follows
-- [ ] `docs/architecture/configuration.md`: `listen_addresses` in the deltas table;
+      (the bullet now at `:183`, plus a new "The service restart" section and a table row)
+- [x] `docs/architecture/configuration.md`: `listen_addresses` in the deltas table;
       `configuration.md:15-16` and `:29` stop calling `shared_buffers` the only restart setting;
       `configuration.md:57-58` becomes loopback only, single machine, and notes that
       `postgresql.auto.conf` overrides `postgresql.conf`
-- [ ] `docs/architecture/README.md:22` and `docs/architecture/overview.md:61` (provisioning
+- [x] `docs/architecture/README.md:22` and `docs/architecture/overview.md:61` (provisioning
       step 3) name the flag
-- [ ] `docs/deployment.md`, in Russian: the flags table gets `--restart-service`; step 4 says the
+- [x] `docs/deployment.md`, in Russian: the flags table gets `--restart-service`; step 4 says the
       flag does the restart; one sentence that a restart drops the SCADA's connections, so the
       SCADA is stopped before a re-run on a working site
-- [ ] "memory constants" and "memory tuning" become "server settings" in `CLAUDE.md`,
+- [x] "memory constants" and "memory tuning" become "server settings" in `CLAUDE.md`,
       `main.go:26`; "pure `pgx`" becomes "pure Go" in `CLAUDE.md`, `release.yml:124` and
-      `Dockerfile:3-4`; the Run section of `CLAUDE.md` mentions the flag
-- [ ] move this plan to `docs/plans/completed/`
+      `Dockerfile:3-4`; the Run section of `CLAUDE.md` mentions the flag (also the same phrases
+      in `provision.go:65,77`, `README.md:25` and `provisioning.md:81`; the CLAUDE.md Test
+      section gains both new CI steps and counts eight database steps)
+- [ ] move this plan to `docs/plans/completed/` (left for the delivery step)
 
 ## Post-Completion
 - On an installation machine, confirm the Simple-Scada project connects to `localhost` or

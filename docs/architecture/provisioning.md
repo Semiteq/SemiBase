@@ -78,7 +78,7 @@ situations it is run in, not the phases it runs through.
 
 | Command | What it does | When |
 | --- | --- | --- |
-| `site` | The memory tuning, then everything else | An installation machine |
+| `site` | The server settings, then everything else | An installation machine |
 | `bench` | Everything else, without the tuning | A throwaway container: a consumer's test bench or a development database |
 
 The two differ in exactly one thing, the tuning. The rest is identical, which is what makes a bench
@@ -86,12 +86,13 @@ a test of what a site runs:
 
 | Step | `site` | `bench` |
 | --- | --- | --- |
-| `ALTER SYSTEM` constants from `configuration.md`, applied with `pg_reload_conf()` | yes | no — the constants are sized for an installation machine and mean nothing to a container |
+| `ALTER SYSTEM` deltas from `configuration.md`, applied with `pg_reload_conf()` | yes | no: the memory constants are sized for an installation machine and mean nothing to a container, and a loopback-only `listen_addresses` would shut out the clients that reach a bench through a published port |
+| Restarting the Windows service the deltas wait for ([The service restart](#the-service-restart)) | only with `--restart-service` | no: `Validate` refuses the flag |
 | Archive database, the three created roles, grants, default privileges | yes | yes |
 | `public.trends` with the `tpdefault` partition, created as `scada_writer` | yes | yes |
 | The five SemiPlot tables and `semiplot_register_new_pens()`, after `public.trends` because the function body names it | yes | yes |
 | The `semiplot` access checks at the tail | yes | yes |
-| Pending-restart warning at the tail | yes | yes — `bench` tunes nothing, but it runs against existing servers too, and one a `site` run tuned can still be waiting for its restart |
+| Pending-restart warning at the tail | yes, and after a `--restart-service` restart the list is empty | yes — `bench` tunes nothing, but it runs against existing servers too, and one a `site` run tuned can still be waiting for its restart |
 
 `version` (or `--version`) prints the build revision: the ldflags value
 (`-X main.revision=...`) when a release sets it, otherwise the VCS revision from
@@ -179,13 +180,68 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
 - **Cancellable execution.** Every phase honors its context: cancellation stops the
   in-flight query through pgx instead of killing the process mid-DDL. The context itself —
   `signal.NotifyContext(..., os.Interrupt)` plus the five-minute per-command timeout
-  (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`.
-- **Pending-restart reporting.** The tool never touches the service manager. The tuning phase
-  applies its deltas with `pg_reload_conf()` and reads `pg_settings.pending_restart` back from
-  the server; both commands read it again as the **last** statement of the tail, after the
-  access checks, so a pending `shared_buffers` is named in the run's last line. The operator
-  restarts the service or reboots the machine — the one manual step, and the tool says so
-  instead of doing it.
+  (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`. The one exception is the
+  Start of a service restart, which ignores the command's cancellation so that the service is
+  never left stopped ([The service restart](#the-service-restart)).
+- **Pending-restart reporting.** The tuning phase applies its deltas with `pg_reload_conf()` and
+  reads `pg_settings.pending_restart` back from the server; both commands read it again as the
+  **last** statement of the tail, after the access checks, so a pending `shared_buffers` or
+  `listen_addresses` is named in the run's last line. Without `--restart-service` the tool never
+  touches the service manager: the operator restarts the service or reboots the machine, and the
+  tool says so instead of doing it. With the flag, `site` restarts the named Windows service
+  itself, and the tail reads an empty list.
+
+## The service restart
+
+`site --restart-service <name>` restarts that Windows service when, and only when, the tuning
+phase leaves settings waiting for a restart, then waits for the server to accept connections and
+continues. Without the flag the run reports the pending settings and changes nothing else.
+
+`Options.Validate` refuses the flag in two cases. The command is `bench`, which applies no settings,
+so nothing it does waits for a restart. The `--host` is not `localhost`, `127.0.0.1` or `::1`,
+because after the restart the server listens on the loopback interface only.
+
+`config` opens the service before it connects, so a service it cannot restart fails the run with
+nothing changed. `openService` (`service_windows.go`) refuses a service that does not exist, a
+service manager or service the run may not control (the message says to run `semibase` as an
+administrator), a Disabled start type, which would leave the service stopped after the Stop, and a
+state other than Running, which means the service is not the server the run connects to. Off
+Windows, `service_other.go` refuses the flag the same way and names the platform, so the module
+stays one cross-platform build.
+
+The restart runs inside `config`, right after `pendingRestartSettings` returns a non-empty list, so
+`create` and `check` run against the restarted server. `applySettings` closes the phase connection
+before it returns; then:
+
+1. Stop, then wait up to 3 minutes for Stopped: a shutdown checkpoint with `max_wal_size = 8GB` can
+   be long.
+2. Start, then wait up to 2 minutes for Running.
+3. Connect to `postgres` as the superuser every second, up to 60 s. Whether an EDB service reports
+   Running before the postmaster accepts connections is unverified; when it does not, the loop
+   costs one connect. A timeout reports the last connect error.
+4. Read `pending_restart` on the new connection. A non-empty list is an error naming the settings.
+
+Once the service accepts the Stop, Start is always sent. It runs on `context.WithoutCancel` with its
+own 2-minute bound, and it first waits out a stop still in progress, because a stopping service
+refuses Start. An interrupt, the five-minute command timeout or a failed stop wait therefore never
+leaves the service stopped. Every error names the service and its last observed state.
+
+Service control goes through `golang.org/x/sys/windows/svc/mgr`, not `net stop` and `net start`.
+Its errors do not depend on the Windows display language, it reads the start type, so a Disabled
+service is refused before any change, and it reports the service state for the bounded waits.
+`x/sys` is pure Go, so the release still cross-compiles with `CGO_ENABLED=0`.
+
+A restart drops every open connection to the server, the SCADA's included.
+
+CI's Linux job runs `site` without the flag: its server is a GitHub Actions service container, not
+a Windows service, and nothing in the job restarts it. The `Require the listen_addresses delta`
+step then reads `listen_addresses` still pending, which proves `site` wrote the delta. The Windows
+job's `Restart the runner's PostgreSQL service through site` step is the one test of the restart
+itself. The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and Disabled, so the
+step sets it to Manual and starts it. It then requires the first
+`site --restart-service postgresql-x64-17` run to print `restarting service postgresql-x64-17`
+and to leave `listen_addresses = localhost` with no setting pending, and a second run not to
+restart the service.
 
 ## The roles
 
@@ -492,8 +548,9 @@ promises. They are knowable at exit precisely because this tool creates `public.
    was given, and on a socket host — `peer` is the platform default there and no consumer reads
    over the socket.
 9. No setting waits for a service restart (`pg_settings.pending_restart`) — a warning, not a
-   failure, so a pending `shared_buffers` never blocks the access checks. Both commands read it,
-   last, after the access checks.
+   failure, so a pending `shared_buffers` or `listen_addresses` never blocks the access checks.
+   Both commands read it, last, after the access checks. After a `--restart-service` restart it
+   reads an empty list.
 
 ## Development benches
 

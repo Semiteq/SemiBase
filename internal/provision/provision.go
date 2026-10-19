@@ -62,7 +62,7 @@ func (o Options) Validate() error {
 	return nil
 }
 
-// Site brings an installation machine to its commissioned state: memory tuning, then
+// Site brings an installation machine to its commissioned state: server settings, then
 // everything the archive needs.
 func (o Options) Site(ctx context.Context) error {
 	if err := o.config(ctx); err != nil {
@@ -74,8 +74,8 @@ func (o Options) Site(ctx context.Context) error {
 	return o.check(ctx)
 }
 
-// Bench brings a throwaway container to the same state minus the tuning: its memory
-// constants are sized for an installation machine and mean nothing to a container.
+// Bench brings a throwaway container to the same state minus the server settings: they are
+// sized for an installation machine, and a loopback-only listener would shut out its clients.
 func (o Options) Bench(ctx context.Context) error {
 	if err := o.create(ctx); err != nil {
 		return err

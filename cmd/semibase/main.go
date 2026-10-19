@@ -20,7 +20,7 @@ Usage:
   semibase <command> [flags]
 
 Commands:
-  site     an installation machine: apply the memory tuning (ALTER SYSTEM + reload),
+  site     an installation machine: apply the server settings (ALTER SYSTEM + reload),
            then create the archive database, the roles, the access chain, public.trends,
            the five semiplot_* tables and semiplot_register_new_pens()
   bench    a throwaway container: the same, without the tuning
