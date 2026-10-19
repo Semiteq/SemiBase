@@ -159,11 +159,11 @@
 **Files:**
 - Modify: `.github/workflows/ci.yml`
 
-- [ ] add a step to the Windows job: `Set-Service postgresql-x64-17 -StartupType Manual`,
+- [x] add a step to the Windows job: `Set-Service postgresql-x64-17 -StartupType Manual`,
       `Start-Service postgresql-x64-17`
-- [ ] run `semibase site` with `SEMIBASE_SUPER_PASSWORD=root`, writer and plot passwords set
+- [x] run `semibase site` with `SEMIBASE_SUPER_PASSWORD=root`, writer and plot passwords set
       (the first run creates those roles), and the flags from Acceptance Evidence
-- [ ] run the three Windows checks from Acceptance Evidence; this step is the only test of the
+- [x] run the three Windows checks from Acceptance Evidence; this step is the only test of the
       service sequence itself
 - [ ] push the branch and read the CI run - both jobs green before task 5
 

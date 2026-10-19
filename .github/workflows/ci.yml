@@ -28,6 +28,63 @@ jobs:
         with:
           version: v2.12.2
 
+      # The only test of the service restart itself. The runner image ships
+      # PostgreSQL 17 as service postgresql-x64-17, Stopped and Disabled, and
+      # openService refuses both, so the step enables and starts it first. The
+      # first site run finds settings pending and restarts the service; the
+      # second finds nothing pending and must not restart it.
+      - name: Restart the runner's PostgreSQL service through site
+        env:
+          SEMIBASE_SUPER_PASSWORD: root
+          SEMIBASE_WRITER_PASSWORD: ci-writer
+          SEMIBASE_PLOT_PASSWORD: ci-plot
+          PGPASSWORD: root
+        run: |
+          $service = 'postgresql-x64-17'
+          $psql = "$env:PGBIN\psql.exe"
+          Get-Service $service | Select-Object Name, Status, StartType | Format-List
+          Write-Host "PGBIN=$env:PGBIN"
+          Set-Service $service -StartupType Manual
+          Start-Service $service
+          # the first site connect does not retry, and Running may precede the postmaster
+          $ready = $false
+          foreach ($attempt in 1..30) {
+            & "$env:PGBIN\pg_isready.exe" -h 127.0.0.1 -p 5432
+            if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $ready) { Write-Host "::error::$service accepted no connection after Start-Service"; exit 1 }
+
+          go build -o semibase.exe ./cmd/semibase
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          .\semibase.exe site --port 5432 --expected-major 17 --restart-service $service |
+            Tee-Object -Variable first
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::the first site run exited $LASTEXITCODE"; exit 1 }
+          # joined: -like over an array filters elements instead of answering yes or no
+          if (($first -join "`n") -notlike "*restarting service $service*") {
+            Write-Host "::error::the first site run did not restart $service"
+            exit 1
+          }
+
+          $listen = & $psql -h 127.0.0.1 -U postgres -d postgres -tAc 'SHOW listen_addresses'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $pending = & $psql -h 127.0.0.1 -U postgres -d postgres -tAc `
+            'SELECT count(*) FROM pg_settings WHERE pending_restart'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ("$listen".Trim() -ne 'localhost' -or "$pending".Trim() -ne '0') {
+            Write-Host "::error::listen_addresses '$listen' (want localhost), pending_restart count '$pending' (want 0)"
+            exit 1
+          }
+
+          .\semibase.exe site --port 5432 --expected-major 17 --restart-service $service |
+            Tee-Object -Variable second
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::the second site run exited $LASTEXITCODE"; exit 1 }
+          if (($second -join "`n") -like '*restarting service*') {
+            Write-Host "::error::the second site run restarted $service with nothing pending"
+            exit 1
+          }
+
   linux:
     runs-on: ubuntu-latest
     env:
