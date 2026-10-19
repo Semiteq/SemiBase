@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -34,18 +35,26 @@ type Options struct {
 	WriterPassword string
 	PlotPassword   string
 	ExpectedMajor  int
+	RestartService string
 }
 
 var databaseNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+
+var loopbackHosts = []string{"localhost", "127.0.0.1", "::1"}
 
 func (o Options) Validate() error {
 	if !databaseNamePattern.MatchString(o.Database) {
 		return fmt.Errorf("database name %q must match %s", o.Database, databaseNamePattern)
 	}
+	if o.RestartService != "" && !slices.Contains(loopbackHosts, o.Host) {
+		return fmt.Errorf("--restart-service needs --host to be one of %s, not %q: after the "+
+			"restart the server listens on the loopback interface only",
+			strings.Join(loopbackHosts, ", "), o.Host)
+	}
 	return nil
 }
 
-// Site brings an installation machine to its commissioned state: memory tuning, then
+// Site brings an installation machine to its commissioned state: server settings, then
 // everything the archive needs.
 func (o Options) Site(ctx context.Context) error {
 	if err := o.config(ctx); err != nil {
@@ -57,8 +66,8 @@ func (o Options) Site(ctx context.Context) error {
 	return o.check(ctx)
 }
 
-// Bench brings a throwaway container to the same state minus the tuning: its memory
-// constants are sized for an installation machine and mean nothing to a container.
+// Bench brings a throwaway container to the same state minus the server settings: they are
+// sized for an installation machine, and a loopback-only listener would shut out its clients.
 func (o Options) Bench(ctx context.Context) error {
 	if err := o.create(ctx); err != nil {
 		return err

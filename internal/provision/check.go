@@ -163,7 +163,7 @@ func (o Options) check(ctx context.Context) error {
 	if err := o.checkPlotLogin(ctx); err != nil {
 		return err
 	}
-	// last, so a pending shared_buffers is the last thing the run prints
+	// last, so a setting still waiting for a restart is the last thing the run prints
 	return reportPendingRestart(ctx, archive)
 }
 
@@ -418,8 +418,7 @@ func reportPendingRestart(ctx context.Context, conn *pgx.Conn) error {
 		return err
 	}
 	if len(pending) > 0 {
-		warn("settings waiting for a service restart: %s - restart the PostgreSQL service or reboot the machine.",
-			strings.Join(pending, ", "))
+		warn("settings waiting for a service restart: %s. %s", strings.Join(pending, ", "), restartAdvice(pending))
 	}
 	return nil
 }

@@ -20,7 +20,7 @@ Usage:
   semibase <command> [flags]
 
 Commands:
-  site     an installation machine: apply the memory tuning (ALTER SYSTEM + reload),
+  site     an installation machine: apply the server settings (ALTER SYSTEM + reload),
            then create the archive database, the roles, the access chain, public.trends,
            the five semiplot_* tables and semiplot_register_new_pens()
   bench    a throwaway container: the same, without the tuning
@@ -32,6 +32,11 @@ semiplot_register_new_pens(), updates pen settings, groups and markers, and is
 refused an insert, a delete or a key change on semiplot_tags; it writes neither the
 archive nor semiplot_meta and holds no CREATE on schema public. A failed check is a
 non-zero exit.
+
+The tuning includes settings that take effect only after a server restart. site
+reports them and leaves the restart to the operator, unless --restart-service names
+the Windows service to restart; the restart needs a loopback --host, because the
+server then listens on the loopback interface only.
 
 Every step checks before it creates; re-running either command is safe. Passwords of
 existing roles change only when the corresponding flag or variable is set.
@@ -108,6 +113,10 @@ func run(ctx context.Context, arguments []string) int {
 	defer cancel()
 	if err := execute(commandContext, options); err != nil {
 		fmt.Fprintln(errorOutput, "error:", err)
+		if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
+			fmt.Fprintf(errorOutput, "%s ran out of its %s limit; every step checks before it creates, "+
+				"so re-running it continues from where it stopped\n", command, phaseTimeout)
+		}
 		return 1
 	}
 	fmt.Fprintf(output, "\nDone: %s completed against %s.\n",
@@ -146,10 +155,8 @@ func revisionFromSettings(settings []debug.BuildSetting) string {
 	return vcsRevision
 }
 
-// One flag set serves both commands: site and bench differ only in the tuning phase,
-// which reads no flag of its own, so every flag below is used by either command.
-// Password flags default to empty so the usage output can only ever show the variable
-// names, never their values.
+// Password flags default to empty so the usage output can only ever show the variable names,
+// never their values.
 func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
@@ -166,6 +173,11 @@ func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 		"semiplot password (env SEMIBASE_PLOT_PASSWORD)")
 	flags.IntVar(&options.ExpectedMajor, "expected-major", 0,
 		"required server major version; 0 accepts any major >= 14")
+	if command == "site" {
+		flags.StringVar(&options.RestartService, "restart-service", "",
+			"Windows service to restart when the server settings wait for a restart; "+
+				"needs a loopback --host")
+	}
 	return flags
 }
 

@@ -78,7 +78,7 @@ situations it is run in, not the phases it runs through.
 
 | Command | What it does | When |
 | --- | --- | --- |
-| `site` | The memory tuning, then everything else | An installation machine |
+| `site` | The server settings, then everything else | An installation machine |
 | `bench` | Everything else, without the tuning | A throwaway container: a consumer's test bench or a development database |
 
 The two differ in exactly one thing, the tuning. The rest is identical, which is what makes a bench
@@ -86,12 +86,13 @@ a test of what a site runs:
 
 | Step | `site` | `bench` |
 | --- | --- | --- |
-| `ALTER SYSTEM` constants from `configuration.md`, applied with `pg_reload_conf()` | yes | no — the constants are sized for an installation machine and mean nothing to a container |
+| `ALTER SYSTEM` deltas from `configuration.md`, applied with `pg_reload_conf()` | yes | no: the memory constants are sized for an installation machine and mean nothing to a container, and a loopback-only `listen_addresses` would shut out the clients that reach a bench through a published port |
+| Restarting the Windows service the deltas wait for ([The service restart](#the-service-restart)) | only with `--restart-service` | no: `bench` does not register the flag |
 | Archive database, the three created roles, grants, default privileges | yes | yes |
 | `public.trends` with the `tpdefault` partition, created as `scada_writer` | yes | yes |
 | The five SemiPlot tables and `semiplot_register_new_pens()`, after `public.trends` because the function body names it | yes | yes |
 | The `semiplot` access checks at the tail | yes | yes |
-| Pending-restart warning at the tail | yes | yes — `bench` tunes nothing, but it runs against existing servers too, and one a `site` run tuned can still be waiting for its restart |
+| Pending-restart warning at the tail | yes, and after a `--restart-service` restart the list is empty | yes — `bench` tunes nothing, but it runs against existing servers too, and one a `site` run tuned can still be waiting for its restart |
 
 `version` (or `--version`) prints the build revision: the ldflags value
 (`-X main.revision=...`) when a release sets it, otherwise the VCS revision from
@@ -179,13 +180,137 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
 - **Cancellable execution.** Every phase honors its context: cancellation stops the
   in-flight query through pgx instead of killing the process mid-DDL. The context itself —
   `signal.NotifyContext(..., os.Interrupt)` plus the five-minute per-command timeout
-  (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`.
-- **Pending-restart reporting.** The tool never touches the service manager. The tuning phase
-  applies its deltas with `pg_reload_conf()` and reads `pg_settings.pending_restart` back from
-  the server; both commands read it again as the **last** statement of the tail, after the
-  access checks, so a pending `shared_buffers` is named in the run's last line. The operator
-  restarts the service or reboots the machine — the one manual step, and the tool says so
-  instead of doing it.
+  (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`. The one exception is a
+  service restart: once the service accepts the Stop, the waits, the port probe and the Start
+  ignore the command's cancellation, so that an interrupt does not leave the service stopped
+  ([The service restart](#the-service-restart)). A run that used up `phaseTimeout` says so in a
+  second error line.
+- **Pending-restart reporting.** The tuning phase applies its deltas with `pg_reload_conf()` and
+  reads `pg_settings.pending_restart` back from the server; both commands read it again as the
+  **last** statement of the tail, after the access checks, so a pending `shared_buffers` or
+  `listen_addresses` is named in the run's last line. Without `--restart-service` the tool never
+  touches the service manager: the operator restarts the service or reboots the machine, and the
+  tool says so instead of doing it. With the flag, `site` restarts the named Windows service
+  itself, and the tail reads an empty list.
+
+## The service restart
+
+`site --restart-service <name>` restarts that Windows service when, and only when, the tuning
+phase leaves settings waiting for a restart, then waits for the server to accept connections and
+continues. Without the flag the run reports the pending settings and changes nothing else.
+
+Only `site` registers the flag: `bench` applies no settings, so nothing it does waits for a
+restart, and `bench --restart-service` fails as an undefined flag. `Options.Validate` refuses a
+`--host` other than `localhost`, `127.0.0.1` or `::1`, because after the restart the server listens
+on the loopback interface only.
+
+`config` opens the service before `applySettings` connects, so a service it cannot restart, or one
+that is not the run's server, fails the run with nothing changed. `openService`
+(`service_windows.go`) refuses a service that does not exist, a service manager or service the run
+may not control (the message says to run `semibase` as an administrator), and a Disabled start
+type, which would leave the service stopped after the Stop. A service in Start Pending gets up to
+2 minutes to reach Running: an installer may run `site` right after it started the service, and an
+EDB service (`pg_ctl runservice ... -w`, the `PathName` the Windows CI step prints) reports Running
+only once the server accepts connections. That step starts the service with `sc.exe start`, which
+returns while it is Start Pending, and runs `site` at once. Stopped, Stop Pending, Paused, or a
+start that ends in Stopped, is refused.
+
+Once the service is Running, `openService` ties it to the server the run connects to. It connects
+as the superuser, reads `SHOW data_directory` and the connection's remote IP:port, and compares
+the directory with the `-D` argument of the service's `PathName`, split with
+`windows.DecomposeCommandLine`. `pg_ctl register` writes that argument quoted, absolute and with
+backslashes; the server reports forward slashes. The comparison runs `filepath.Clean` on both
+paths and ignores case. A mismatch, or a `PathName` with no `-D`, is refused with nothing
+changed: a Stop sent to another service would leave that service stopped, because the run's own
+server would keep answering the probe. Without a `-D`, `pg_ctl` takes the data directory from the
+service's environment, which the tool does not read. Off Windows, `service_other.go` refuses the
+flag the same way and names the platform, so the module stays one cross-platform build.
+
+The restart runs inside `config`, right after `pendingRestartSettings` returns a non-empty list, so
+`create` and `check` run against the restarted server. `applySettings` closes the phase connection
+before it returns; then:
+
+1. Stop, then wait for Stopped and then for a refused TCP connect to the IP:port the identity
+   check's connection reached, both within one bound of 3 minutes from the Stop. If the bound runs
+   out, the Start is not sent.
+2. Start, then wait up to 2 minutes from the Start for Running. Stopped after the first query fails
+   at once, and one more connect to that address names the cause (see below).
+3. Connect to `postgres` as the superuser every second, up to 60 s. Every error that is not a
+   server error, a refused connection for one, is retried, and so is 57P03; any other server
+   error, a wrong password for one, fails at once. A timeout reports the last connect error the
+   deadline did not cut short; when no dial failed before the deadline, it reports the error of
+   the dial the deadline cut short.
+4. Read `pending_restart` on the new connection. A non-empty list is an error naming the settings.
+
+Stopped does not mean that the postmaster has exited. What follows was read in
+`src/bin/pg_ctl/pg_ctl.c` and `src/backend/postmaster/postmaster.c` of PostgreSQL REL_17_STABLE:
+
+- On a Stop, `pgwin32_ServiceMain` sends the postmaster SIGINT (fast shutdown) and waits for its
+  process at most 12 times 5 s. Then it reports Stopped and exits, whether the postmaster is gone
+  or not. The job object it puts the postmaster in has no `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so
+  the postmaster outlives it and finishes its shutdown checkpoint, which with
+  `max_wal_size = 8GB` can take longer than that minute.
+- A Start in that window launches a postmaster that finds the old one's live PID in
+  `postmaster.pid` and exits FATAL "lock file already exists" (`CreateLockFile` in `miscinit.c`).
+- The postmaster keeps its listening sockets until its exit callbacks close them, just before
+  they remove `postmaster.pid` (`CloseServerPorts`). In `PM_WAIT_DEAD_END` it stops accepting
+  but keeps the sockets open, and the kernel still completes a TCP handshake into the listen
+  backlog. So a refused connect (`WSAECONNREFUSED`) means the
+  postmaster is gone, and step 1 waits for it. Any other connect error is retried.
+- Step 1 probes once a second, because each accepted connect costs the server a process. The
+  probe dials the one literal IP:port the identity check's connection reached, never the name
+  `localhost`. Go dials a name that resolves to both `::1` and `127.0.0.1` in parallel and, when
+  both fail, returns the error of the first family (`dialParallel` in `net/dial.go`, Go 1.27).
+  An IPv6 failure other than a refusal would then hide the IPv4 refusal, and the Start would never
+  be sent. A literal address has one family.
+- Each probe dial has a 15 s timeout. Windows resends a SYN after an RST, so a refused loopback
+  connect can take seconds (Daniel Stenberg,
+  `daniel.haxx.se/blog/2024/08/14/slow-tcp-connect-on-windows`). Measured on Windows 11 build
+  26300, a refusal took under 2 ms; the resends were not reproduced here. The 3-minute stop bound
+  still limits the whole wait.
+- The service runs `pg_ctl runservice ... -w` with no `-t`, so `wait_for_postmaster_start` gives
+  up after `DEFAULT_WAIT` = 60 s. It then reports Stopped and leaves a slower postmaster running
+  outside the service. A postmaster that exits during its startup also ends in Stopped. In step 2
+  the probe tells the two apart: an answer means the timed-out startup, a refusal means the exit.
+  Only a hung `pg_ctl` reaches the 2-minute bound.
+
+Once the service accepts the Stop, steps 1 and 2 run on `context.WithoutCancel`, each to its own
+bound. An interrupt or the command timeout during them does not stop the sequence: the service is
+started, and the run then ends with the cancellation. A wait that runs out its bound names the
+service and the last state it observed. Four cases still leave the service stopped:
+
+| Case | What the run says | Recovery |
+| --- | --- | --- |
+| The old postmaster still runs 3 minutes after the Stop, or `pg_ctl` itself has not reported Stopped by then | the service is stopped but the server still answers, or the service is still stopping; no Start was sent and the service stays stopped | once a connect to the port is refused (`Test-NetConnection localhost -Port <port>`) and `Get-Service <name>` shows Stopped, `Start-Service <name>` |
+| The process ends without running its code: console window closed, logoff, shutdown, a killed process. `signal.NotifyContext` catches `os.Interrupt` only, and Windows ends a console process a few seconds after a close event, which no handler can extend | nothing | `Start-Service <name>` |
+| The postmaster exits during its startup, for example it cannot allocate `shared_buffers = 2GB` | the service stopped again after the Start and nothing answers on the port; the message names the recovery | read the server log in the data directory's `log` folder, remove the line it names from `postgresql.auto.conf`, then `Start-Service <name>`. A re-run of `site` writes the line again and stops the service the same way, so fix the cause first |
+| The startup takes longer than `pg_ctl`'s 60 s wait | the service stopped again after the Start but the server answers on the port: it runs outside the service | once it accepts connections, `pg_ctl stop -D <the -D in the service's PathName>`, then `Start-Service <name>` |
+
+The command's five-minute `phaseTimeout` also covers the restart. A stop and a start that use
+their whole bounds leave no time for the ready wait, `create` and `check`; the run then fails with
+the service running, says it ran out of its limit, and a re-run finishes the work.
+
+Service control goes through `golang.org/x/sys/windows/svc/mgr`, not `net stop` and `net start`.
+Its errors do not depend on the Windows display language, it reads the start type, so a Disabled
+service is refused before any change, and it reports the service state for the bounded waits.
+`x/sys` is pure Go, so the release still cross-compiles with `CGO_ENABLED=0`.
+
+A restart drops every open connection to the server, the SCADA's included.
+
+CI's Linux job runs `site` without the flag: its server is a GitHub Actions service container, not
+a Windows service, and nothing in the job restarts it. The `Require the listen_addresses delta`
+step then reads `listen_addresses` still pending and `localhost` in `postgresql.auto.conf`
+through `pg_file_settings`, which proves `site` wrote the delta. The Windows job's
+`Restart the runner's PostgreSQL service through site` step is the one test of the restart
+itself. The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and Disabled. The
+step first requires `site --restart-service postgresql-x64-17` to refuse the Disabled service
+with no `ALTER SYSTEM SET` line in its output. It then sets the service to Manual, starts it with
+`sc.exe start`, and runs `site` at once, while the service is Start Pending. That run must print
+`restarting service postgresql-x64-17`, the identity line
+`runs data directory C:\PostgreSQL\17\data, as the server on <IP>:5432 does` and
+`stopped, nothing answers on <IP>:5432`, and leave `listen_addresses = localhost` with no setting
+pending. A second run must not restart the service, and `--restart-service no-such-service` must
+be refused with no `ALTER SYSTEM SET` line.
 
 ## The roles
 
@@ -492,8 +617,9 @@ promises. They are knowable at exit precisely because this tool creates `public.
    was given, and on a socket host — `peer` is the platform default there and no consumer reads
    over the socket.
 9. No setting waits for a service restart (`pg_settings.pending_restart`) — a warning, not a
-   failure, so a pending `shared_buffers` never blocks the access checks. Both commands read it,
-   last, after the access checks.
+   failure, so a pending `shared_buffers` or `listen_addresses` never blocks the access checks.
+   Both commands read it, last, after the access checks. After a `--restart-service` restart it
+   reads an empty list.
 
 ## Development benches
 
