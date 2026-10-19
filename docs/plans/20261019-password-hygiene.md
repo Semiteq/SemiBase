@@ -83,9 +83,9 @@
 - [x] run `go test ./...` and read the CI run - green before task 3
 
 ### Task 3: [Final] Update documentation
-- [ ] `CLAUDE.md` (Run section) and `docs/deployment.md:47-49,152`: passwords come from flags or
+- [x] `CLAUDE.md` (Run section) and `docs/deployment.md:47-49,152`: passwords come from flags or
       environment; the `.env` sentences go
-- [ ] `CLAUDE.md` (Test section): the CI step list gains the server-log step
-- [ ] `docs/architecture/provisioning.md:103-108`: the same, plus the two session settings and
+- [x] `CLAUDE.md` (Test section): the CI step list gains the server-log step
+- [x] `docs/architecture/provisioning.md:103-108`: the same, plus the two session settings and
       why
-- [ ] move this plan to `docs/plans/completed/`
+- [x] move this plan to `docs/plans/completed/` (left for the delivery step)

@@ -102,11 +102,13 @@ re-running any command is safe.
 
 Role passwords are set
 only when the corresponding flag or environment variable is present (`SEMIBASE_SUPER_PASSWORD`,
-`SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD`); a `.env`
-file in the working directory is read as the lowest-precedence source (flag > environment >
-`.env`; `.env.example` is the template, `.env` is gitignored). A run without passwords leaves
-existing credentials untouched. Flag usage output shows only the environment variable names,
-never their values.
+`SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD`); a flag wins over its variable. No file is
+read. A password file beside `semibase.exe` would keep the superuser password in plaintext on the
+installation machine, and no caller needs one: CI sets the variables at job level, a consumer's
+bench passes them with `docker -e`, and a hand run sets them in its shell. A run without
+passwords leaves existing credentials untouched. Flag usage output shows only the environment
+variable names, never their values. The statements that set a password stay out of the server
+log ([Invariants the provision package owns](#invariants-the-provision-package-owns)).
 
 ## The connection target
 
@@ -153,6 +155,20 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
   `semiplot_*` objects are named unqualified in the embedded DDL and in the tail check's
   `has_table_privilege` arguments, so without the setting a `semiplot_tags` in another schema on
   the superuser's `search_path` would take the grants and the probes.
+- **Password statements stay out of the server log.** On a superuser connection `connect` also
+  issues `SET log_statement = 'none'`, `SET log_min_error_statement = 'panic'` and
+  `SET log_min_duration_statement = -1`. `CREATE ROLE ... PASSWORD` and `ALTER ROLE ... PASSWORD`
+  carry the password as a literal, and the server logs a statement's text in three cases, one per
+  setting: every statement under `log_statement = 'all'`, which an operator sets for the SCADA's
+  first start ([the SCADA assumption](#assumption-the-scada-meeting-an-existing-trends)); a
+  failing statement under the default `log_min_error_statement = error`; and a statement slower
+  than `log_min_duration_statement`, which `config` sets to 1000 ms. All three are superuser-only
+  parameters, so the one connection `connect` opens as another role, the `semiplot` login of
+  check 8, sets none of them; it issues no password statement. `sessionSettings` builds the list
+  and `TestSessionSettings` pins it for the superuser and for `semiplot`. The
+  `Keep the password statements out of the server log` CI step sets `log_statement = 'all'`,
+  proves with a probe statement that the server logs it, runs `site` with a random `semiplot`
+  password, and finds that password in neither `docker logs` nor the server's log directory.
 - **Cancellable execution.** Every phase honors its context: cancellation stops the
   in-flight query through pgx instead of killing the process mid-DDL. The context itself —
   `signal.NotifyContext(..., os.Interrupt)` plus the five-minute per-command timeout

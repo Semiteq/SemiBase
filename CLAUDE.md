@@ -91,12 +91,16 @@ request rather than at tag time. CI pushes nothing. Between the 17 and the 14 st
 `scada_writer`, calls `semiplot_register_new_pens()` twice as `semiplot` and requires 3, then 0,
 and the three rows it added: the only place the function body runs over a non-empty archive. As
 `semiplot` it then updates pen 0 and requires the scale-pair `CHECK` to refuse unpaired and
-inverted bounds (23514) and the log flag to refuse `NULL` (23502). It needs `psql` on the runner;
-to run it locally, point `psql` at a container.
+inverted bounds (23514) and the log flag to refuse `NULL` (23502). The
+`Keep the password statements out of the server log` step follows it: it sets
+`log_statement = 'all'` on the service container, proves with a probe statement that the server
+logs it, runs `site` again with a random `semiplot` password, and requires that password in
+neither `docker logs` nor the server's log directory. Both steps need `psql` on the runner; to run
+them locally, point `psql` at a container.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests in the repository; the integration checks are
-the `semiplot` access check both commands run at the tail and the four CI database steps above,
+the `semiplot` access check both commands run at the tail and the five CI database steps above,
 against a live server.
 
 ## Format
@@ -142,9 +146,13 @@ this release and is a floor: a viewer refuses a database below the version it ne
 above. Until the first installation, a schema change, a rename included, edits the `CREATE TABLE`
 alone and keeps `1` (`docs/architecture/provisioning.md#the-schema-version-is-a-floor`).
 
-Passwords come from flags, env, or a `.env` file in the working directory (flag > env > `.env`;
-template `.env.example`): `SEMIBASE_SUPER_PASSWORD`, `SEMIBASE_WRITER_PASSWORD`,
-`SEMIBASE_PLOT_PASSWORD`. The writer and `semiplot` passwords are needed on a first run, which
+Passwords come from flags or env (flag > env), never from a file: `SEMIBASE_SUPER_PASSWORD`,
+`SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD`. Every superuser connection sets
+`log_statement = 'none'`, `log_min_error_statement = 'panic'` and
+`log_min_duration_statement = -1`, so `CREATE ROLE ... PASSWORD` and `ALTER ROLE ... PASSWORD`
+never reach the server log; the `semiplot` connection sets none of them, since it may not and
+issues no password statement
+(`docs/architecture/provisioning.md#invariants-the-provision-package-owns`). The writer and `semiplot` passwords are needed on a first run, which
 creates those roles. Otherwise the superuser password alone carries a run, and the `semiplot` password only decides
 whether the run also tests that role's TCP login. `public.trends` is created under
 `SET ROLE scada_writer` on the superuser connection, so the table's owner is the role the SCADA
