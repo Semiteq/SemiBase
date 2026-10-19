@@ -70,6 +70,22 @@ jobs:
           ./semibase site --database semiplot_dev --expected-major 17
           ./semibase site --database semiplot_dev --expected-major 17
 
+      # The service container is never restarted, so the loopback-only value
+      # stays pending; a pending value proves site wrote the delta.
+      - name: Require the listen_addresses delta
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: ci-super
+        run: |
+          set -euo pipefail
+          pending=$(psql -d postgres -tAc \
+            "SELECT pending_restart FROM pg_settings WHERE name = 'listen_addresses'")
+          if [[ "$pending" != t ]]; then
+            echo "::error::listen_addresses pending_restart is '$pending' (want t)"
+            exit 1
+          fi
+
       # Every other step runs semiplot_register_new_pens() over an empty
       # public.trends, so its INSERT adds nothing.
       - name: Register pens and probe the semiplot_tags constraints

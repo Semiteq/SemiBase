@@ -25,6 +25,7 @@ var settings = []setting{
 	{"random_page_cost", "1.1"},
 	{"log_min_duration_statement", "1000"},
 	{"track_io_timing", "on"},
+	{"listen_addresses", "localhost"},
 }
 
 func (o Options) config(ctx context.Context) error {
