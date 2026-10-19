@@ -209,8 +209,9 @@ nothing changed. `openService` (`service_windows.go`) refuses a service that doe
 service manager or service the run may not control (the message says to run `semibase` as an
 administrator), and a Disabled start type, which would leave the service stopped after the Stop.
 A service in Start Pending gets up to 2 minutes to reach Running: an installer may run `site` right
-after it started the service, and an EDB service (`pg_ctl runservice ... -w`) reports Running only
-once the server accepts connections. Stopped, Stop Pending, Paused, or a start that ends in Stopped,
+after it started the service, and an EDB service (`pg_ctl runservice ... -w`, the `PathName` the
+Windows CI step prints) reports Running only once the server accepts connections. That step starts
+the service with `sc.exe start`, which returns while it is Start Pending, and runs `site` at once. Stopped, Stop Pending, Paused, or a start that ends in Stopped,
 is refused. The tool does not check that the service is the server behind `--port`: a wrong name
 restarts another running instance, and the run then fails with the settings still pending and a
 hint to compare the service's `-D` with `SHOW data_directory`. Off Windows, `service_other.go`

@@ -90,7 +90,9 @@
   settings.
 - After the service reports Running, the tool reconnects in a bounded loop. An EDB service runs
   `pg_ctl runservice ... -w` and reports Running only once the postmaster accepts connections
-  (read with CIM on the development machine), so the loop normally costs one connect.
+  (read with CIM on the development machine, and printed by the Windows CI step for
+  `postgresql-x64-17`: `pg_ctl.exe runservice -N "postgresql-x64-17" -D "C:\PostgreSQL\17\data" -w`),
+  so the loop normally costs one connect.
 
 ## Technical Details
 - `Options.RestartService string`; empty means no restart.
