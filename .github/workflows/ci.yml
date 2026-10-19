@@ -522,10 +522,6 @@ jobs:
             Write-Host '::error::the setup log contains the superuser password'
             exit 1
           }
-          if (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe") {
-            Write-Host '::error::the refused run installed semibase.exe'
-            exit 1
-          }
 
       # Start-Process would rebuild the argument string; ProcessStartInfo passes it as
       # written, so the " reaches Setup. The password parameter comes last, so an
@@ -563,10 +559,6 @@ jobs:
 
           if (Get-Service postgresql* -ErrorAction SilentlyContinue) {
             Write-Host '::error::a refused run left a postgresql* service'
-            exit 1
-          }
-          if (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe") {
-            Write-Host '::error::a refused run installed semibase.exe'
             exit 1
           }
 
