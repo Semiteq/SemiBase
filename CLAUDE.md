@@ -2,9 +2,11 @@
 
 SemiBase is the deployable PostgreSQL service for the semiconductor-tools installation. It
 provisions and configures the instance that hosts the Simple-Scada 2 archive: the SCADA writes
-`trends`/`messages` into it, SemiPlot and future tools read from it. The deliverable is one
-CLI binary, `semibase.exe`, a container image carrying its Linux build, plus the instance's
-architecture docs.
+`trends`/`messages` into it, SemiPlot and future tools read from it. The deliverables are a
+Windows setup, `SemiBase-Setup.exe` (Inno Setup, `Installer/`), which installs the vendored EDB
+PostgreSQL 17 when none is registered and runs `semibase site`; the CLI binary `semibase.exe` it
+carries; a container image carrying the binary's Linux build; and the instance's architecture
+docs.
 Deployment target: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver
 `pgx/v5`, the five `sql/semiplot_*.sql` files and `sql/trends.sql` embedded via `go:embed`. Entry point:
 `cmd/semibase`. The module is pure Go (`pgx/v5`, plus `golang.org/x/sys` for the Windows service
@@ -21,20 +23,38 @@ go build -ldflags "-X main.revision=<rev>" -o semibase.exe ./cmd/semibase   # re
 
 Without ldflags, `version` falls back to the VCS revision recorded by the Go toolchain.
 
+The setup needs Inno Setup 6 (`winget install --id JRSoftware.InnoSetup --exact`) and the pinned
+EDB installer, which the fetch script downloads and checks against its SHA256:
+
+```powershell
+bash Installer/fetch-postgresql.sh    # Git Bash's bash, not WSL's; into Installer/payload/
+iscc /DAppVersion=0.0.0-dev /DFileVersion=0.0.0 "/DSemibaseExe=$PWD\semibase.exe" Installer\SemiBase.iss
+```
+
+The output is `Installer/Output/SemiBase-Setup.exe`. Under Git Bash, prefix `iscc` with
+`MSYS2_ARG_CONV_EXCL='*'`, or MSYS rewrites the `/D` arguments as paths.
+
 ## Release
 
-`.github/workflows/release.yml` fires on a `v*` tag push. One `ubuntu-latest` job
-cross-compiles `windows/amd64` and `linux/amd64` with `CGO_ENABLED=0` — the module is pure
-Go, so native runners are CI's job, not the release's — and attaches
-`semibase_<version>_<goos>_amd64[.exe]` to the GitHub release — no extension on the Linux
-artifact, an ELF is executable by its mode bit. `-X main.revision=<tag>` is embedded, so
-`semibase version` prints the tag.
+`.github/workflows/release.yml` fires on a `v*` tag push and runs three jobs under one
+workflow-level concurrency group. `build` (`ubuntu-latest`) tests, reads the tag and
+cross-compiles `windows/amd64` and `linux/amd64` with `CGO_ENABLED=0` — the module is pure Go,
+so native runners are CI's job, not the release's — into `semibase_<version>_<goos>_amd64[.exe]`;
+no extension on the Linux artifact, an ELF is executable by its mode bit. `-X
+main.revision=<tag>` is embedded, so `semibase version` prints the tag. `installer`
+(`windows-latest`) fetches the EDB payload, installs Inno Setup through `winget` and compiles
+`SemiBase-Setup.exe` around the Windows binary (`/DAppVersion=<version>`, `/DFileVersion=` the
+part before the first `-`). `release` (`ubuntu-latest`) restores the Linux binary's exec bit,
+which artifact transfer drops, and attaches two assets, the Linux binary and the setup; the
+Windows binary is not attached, the setup carries it.
 
-The same job then pushes `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` — the root
+`release` then pushes `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` — the root
 `Dockerfile`, `FROM scratch`, a copy of the Linux artifact as the only file. The image is built
 and smoke-run before the release is created, so a bad `Dockerfile` aborts with nothing
-published, and pushed after it, since consumers track `:latest` and still download the release
-assets. "Latest" is one decision made once in the `Read the tag` step — the tag has no `-`
+published, and pushed after it: `:latest` is the publish consumers act on and the release page
+is its record, so a push that lands while the release step fails would leave `:latest` on a
+version with no release and no notes. "Latest" is one decision made once in `build`'s
+`Read the tag` step and read by `release` through job outputs — the tag has no `-`
 suffix **and** it is the newest release tag in the repository (`git tag -l --sort=-v:refname`
 over plain `vN.N.N` tags) — and both the release page's `prerelease`/`make_latest` and the
 `:latest` push read it, so they cannot disagree. A prerelease publishes its version tag alone,
@@ -115,10 +135,25 @@ requires the passwords absent. The `listen_addresses`, the pens and the 17 log s
 on the runner; to run them locally, point `psql` at a container. The Windows step uses the
 runner's own `$env:PGBIN\psql.exe`.
 
+The `installer` job (`windows-latest`) builds `semibase.exe`, fetches the EDB payload (cached on
+the fetch script's hash), installs Inno Setup and compiles the setup; the Linux job shellchecks
+the fetch script. It then runs the setup silently through `Start-Process -Wait -PassThru`, since
+the call operator does not wait for a GUI exe, and asserts each exit code, ten cases in order:
+no superuser password refuses with 7, installs no `semibase.exe` and leaves the runner's service
+Disabled; the runner's own 17 provisions with exit 0, Automatic, and `semiplot`/`semiplot` reads
+`semiplot_tags`; the runner's PostgreSQL is uninstalled and its remains deleted; a fake
+`postgresql-x64-14` key refuses, the setup log naming key, version, service and port and not the
+password; a Cyrillic password and a `"` one refuse; a clean machine installs EDB 17 and
+provisions it (`restarting service` in the site log, nothing pending, `listen_addresses`
+`localhost`, `template1` and `scada_archive` `C`/`C`/`UTF8`); a second run restarts nothing; a
+wrong superuser password refuses with `password authentication failed` in the site log; neither
+generated password appears in any EDB, setup, site or server log; the uninstaller removes
+`semibase.exe` and keeps PostgreSQL. No case passes `/LOG`, which records Setup's command line.
+
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests in the repository; the integration checks are
-the `semiplot` access check both commands run at the tail and the eight CI database steps above,
-against a live server.
+the `semiplot` access check both commands run at the tail, the eight CI database steps above and
+the `installer` job's cases, against a live server.
 
 ## Format
 
@@ -204,6 +239,9 @@ internal/provision/  one file per phase behind the two commands: config.go (ALTE
 sql/                 embedded DDL: the five semiplot_* files (ours: the tables, the
                      pen-registration function, the time markers, the version stamp) and trends
                      (the vendor's shape)
+Installer/           SemiBase.iss (the Inno Setup script: engine states, EDB install, the site
+                     run, all in PrepareToInstall) and fetch-postgresql.sh (the pinned EDB
+                     payload into the git-ignored payload/; ISCC writes Output/)
 docs/                human docs in Russian (enter at docs/readme.md)
 docs/architecture/   agent-facing design docs in English
 docs/plans/          dated implementation plans

@@ -369,27 +369,27 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
       Linux job (run 39302087408; locally golangci-lint 2.14.0, CI runs the pinned 2.12.2)
 
 ### Task 10: [Final] Update documentation
-- [ ] `docs/deployment.md`, in Russian: the setup command line, its parameters, environment
+- [x] `docs/deployment.md`, in Russian: the setup command line, its parameters, environment
       fallbacks and exit codes, the three state tables in operator terms, the commissioning order
       with the setup as step 1; `winget` and the manual restart go
-- [ ] `docs/deployment.md`: one recovery section for the states the setup refuses, running
+- [x] `docs/deployment.md`: one recovery section for the states the setup refuses, running
       `{app}\semibase.exe site --port <p> --superuser <u> --expected-major 17 --restart-service
       <service>` with the password variables set in the shell; `deployment.md:22` stops pointing
       at a bare Windows binary
-- [ ] `README.md:28-36` becomes the setup command
-- [ ] `docs/architecture/README.md:19`: the locked decision becomes "EDB PostgreSQL 17 vendored
+- [x] `README.md:28-36` becomes the setup command
+- [x] `docs/architecture/README.md:19`: the locked decision becomes "EDB PostgreSQL 17 vendored
       in the setup, pinned by SHA256"; `README.md:30` (Distribution) and the document index
       gain the setup and `installer.md`
-- [ ] `docs/architecture/provisioning.md:12-14` (the `winget` line outside the tool) and the
+- [x] `docs/architecture/provisioning.md:12-14` (the `winget` line outside the tool) and the
       artifact table at `provisioning.md:18-25`: the Windows row becomes the setup, the Linux
       row's consumer becomes the image build and its provenance
-- [ ] `docs/architecture/overview.md`: Components gets `Installer/`; Provisioning order step 1
+- [x] `docs/architecture/overview.md`: Components gets `Installer/`; Provisioning order step 1
       (`overview.md:56`) becomes the setup
-- [ ] `CLAUDE.md`: the deliverable list, the Layout, and the Release section, including the
+- [x] `CLAUDE.md`: the deliverable list, the Layout, and the Release section, including the
       ordering rationale and "consumers ... still download the release assets"
-- [ ] grep both repositories for `winget` next to `PostgreSQL`; every hit in this repository is
+- [x] grep both repositories for `winget` next to `PostgreSQL`; every hit in this repository is
       updated, and SemiPlot's go to Post-Completion
-- [ ] move this plan to `docs/plans/completed/`
+- [x] move this plan to `docs/plans/completed/` (left for the delivery step)
 
 ## Post-Completion
 - SemiPlot `ConfigFiles/connection/connection.yaml:3` names database `semiplot`, while
@@ -401,7 +401,12 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 - SemiPlot tells the operator to "run `semibase site`" in `docs/architecture/data-integration.md`
   (`:1017-1021`, `:1092`, `:1342`) and in `SemiPlot.UI/Localization/Resources.resx` and
   `Resources.ru.resx` (`:316`, `:322`, `:340`); each becomes "run the SemiBase setup again".
-- SemiPlot `docs/architecture/testing-strategy.md:417` names the `winget` install.
+- SemiPlot `docs/architecture/testing-strategy.md:418` names the `winget` install. Its other hit,
+  `docs/plans/completed/20260810-archive-populator.md:1270`, is a completed plan and stays.
+- No `semibase.exe` exists for the manual run in the recovery section of `docs/deployment.md` on
+  a machine where Setup has never succeeded: every refusal precedes the `[Files]` copy, and the
+  release no longer attaches the Windows binary. Decide whether the release attaches it again or
+  Setup keeps a copy before it refuses.
 - Click through `SemiBase-Setup.exe` once, interactively, in a clean Windows VM: the password page
   appears after the folder page; Next with an empty superuser field shows an error and stays;
   with no PostgreSQL registered, Next with an empty writer field shows an error and stays; with

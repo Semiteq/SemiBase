@@ -1,12 +1,75 @@
 # Installer
 
-The facts about the EDB PostgreSQL 17 installer and Inno Setup that the Windows setup rests on.
-Each one is a dated measurement. The EDB runs happened on GitHub's `windows-latest` runner
-(Windows Server 2025, build 26100, ANSI code page 1252) on 2026-10-19, in a throwaway CI job: the
-probe script is in commits `6f6413e`, `0b7eebd`, `e837805` and `4649439`, its logs in CI runs
-39268177188, 39269744425, 39270947396 and 39273096839. Every install ran on a machine whose
-earlier PostgreSQL had been uninstalled, its uninstaller process waited for, and its service,
-`C:\PostgreSQL`, `C:\Program Files\PostgreSQL` and `HKLM\SOFTWARE\PostgreSQL` deleted.
+What `SemiBase-Setup.exe` does, then the facts about the EDB PostgreSQL 17 installer and Inno
+Setup that it rests on. Each fact is a dated measurement. The EDB runs happened on GitHub's
+`windows-latest` runner (Windows Server 2025, build 26100, ANSI code page 1252) on 2026-10-19, in
+a throwaway CI job: the probe script is in commits `6f6413e`, `0b7eebd`, `e837805` and `4649439`,
+its logs in CI runs 39268177188, 39269744425, 39270947396 and 39273096839. Every install ran on a
+machine whose earlier PostgreSQL had been uninstalled, its uninstaller process waited for, and
+its service, `C:\PostgreSQL`, `C:\Program Files\PostgreSQL` and `HKLM\SOFTWARE\PostgreSQL`
+deleted.
+
+## The setup
+
+`Installer/SemiBase.iss` compiles to `SemiBase-Setup.exe` with `iscc /DAppVersion=<version>
+/DFileVersion=<digits and dots> /DSemibaseExe=<path>`, around the EDB installer that
+`Installer/fetch-postgresql.sh` puts into `Installer/payload/`. The main channel is headless:
+`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, the passwords from `/SUPERPASSWORD` and
+`/WRITERPASSWORD`, else from `SEMIBASE_SUPER_PASSWORD` and `SEMIBASE_WRITER_PASSWORD`. Exit code 0
+means provisioned.
+
+All of the work runs in `PrepareToInstall`, before Inno copies a file. A string it returns ends
+Setup with exit code 7 under `/VERYSILENT`; a failure raised later comes after the uninstaller is
+registered and may still exit 0. Under `/VERYSILENT` the returned text reaches no one, and `/LOG`
+would record the command line, so every refusal is also appended, password-free, to
+`C:\DISTR\Logs\SemiBase\setup-<yyyymmdd-hhnnss>.log`. The refusals about the engine end with
+`See the recovery section of docs/deployment.md.` In order, `PrepareToInstall` checks that each
+password parameter arrived as typed (`GetCmdTail`), checks the password characters, decides the
+engine state, installs EDB on the fresh row, runs `sc.exe config <service> start= auto` and
+`sc.exe start`, waits up to 60 s for `127.0.0.1:<port>` to accept TCP (a PowerShell `TcpClient`
+probe through `Exec`, since Pascal Script has no sockets), and runs `semibase.exe site --port
+<Port> --superuser <Super User> --expected-major 17 --restart-service <Service ID>` through
+`cmd.exe /c` into `site-<yyyymmdd-hhnnss>.log` beside the setup log. A non-zero exit refuses,
+naming that log.
+
+The engine state comes from the `HKLM64` EDB keys, never from the service list alone; the first
+matching row wins:
+
+| State | Action |
+| --- | --- |
+| `Installations\postgresql-x64-17` with a `Version` starting `17.`, a `Super User`, `<Data Directory>\PG_VERSION`, and a `Service ID` naming an existing service with a `Services\<Service ID>\Port` | Use it, even when other majors are registered too |
+| `Installations\postgresql-x64-17` with another `Version`, no `Super User` or no `PG_VERSION` | Refuse, naming `<Base Directory>\uninstall-postgresql.exe`: a [failed install](#a-failed-install) leaves exactly this |
+| `Installations\postgresql-x64-17` whose service or `Port` does not exist | Refuse: an orphaned registration is not the setup's to repair |
+| Another major registered, 17 not | Refuse, naming each key's version, service and port |
+| Nothing registered, `127.0.0.1:5432` accepts TCP | Refuse: a server the registry does not know is not the setup's to provision |
+| Nothing registered, `C:\Program Files\PostgreSQL\17\data` not empty | Refuse: existing data is never overwritten |
+| Nothing registered, port free, no data directory | Refuse without a writer password; otherwise install EDB with the option file under [command line](#command-line), then re-read the new registration as in the first row |
+
+Any non-zero EDB exit refuses, naming `%TEMP%\install-postgresql.log`; there is no reboot branch,
+since no reboot code was reproduced ([exit codes](#exit-codes)). Every database-level decision
+belongs to `semibase site`, and the setup duplicates none of them.
+
+Passwords stay off every child command line the setup controls. `[Code]` sets
+`SEMIBASE_SUPER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD=semiplot` and, when given,
+`SEMIBASE_WRITER_PASSWORD` in Setup's own environment through `SetEnvironmentVariableW`, after EDB
+has run, and `semibase` inherits them. EDB reads its password from `{tmp}\postgresql-options.txt`,
+deleted as soon as the EDB process returns. What stays exposed: Setup's own command line when the
+caller passes the parameters, which Inno writes into its log under `/LOG` (`SetupLogging` stays
+off); Setup's environment block, readable by another administrator during the run; and EDB's
+`initcluster.ps1` command line and pwfile ([where the superuser password
+goes](#where-the-superuser-password-goes)). Both passwords must be printable ASCII, and the
+superuser password must not contain `"` or end in `\` ([password
+characters](#password-characters)); a password with `"` reaches Setup only through its variable
+([Inno Setup](#inno-setup)). Every run sets the `semiplot` password to `semiplot`, the convention
+SemiPlot's connection file relies on, so the role has one writer.
+
+Without `/SILENT` or `/VERYSILENT`, a password page after the folder page holds both fields,
+prefilled the same way; its Next check only lets the user correct a field, and `PrepareToInstall`
+stays the enforcement. `semibase.exe` has one `[Files]` entry into `{app}`, and
+`ExtractTemporaryFile` takes it to `{tmp}` for the run. So the `{app}` copy, the recovery tool,
+exists only after a successful run. The uninstaller removes that copy alone; the engine, its
+data, the roles and `C:\DISTR\Logs\SemiBase` stay. The `installer` job in
+`.github/workflows/ci.yml` runs the setup end to end on `windows-latest`.
 
 ## The pinned payload
 

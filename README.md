@@ -21,22 +21,22 @@ SemiBase — разворачиваемый PostgreSQL-сервис для ус�
 | DB         | PostgreSQL 17; минимально поддерживаемая — 14    |
 | Writer     | Simple-Scada 2 с архивацией в PostgreSQL         |
 
-Утилита развёртывания — один исполняемый файл, среда исполнения не требуется.
+Установщик `SemiBase-Setup.exe` — один файл на странице
+[Releases](https://github.com/Semiteq/SemiBase/releases/latest). Он несёт PostgreSQL 17 и ничего не
+скачивает.
 
 ## Быстрое развёртывание
 
 ```powershell
-# установка pgsql
-winget install --id PostgreSQL.PostgreSQL.17 --exact
-
-# дальше всё в PowerShell от имени администратора: утилита перезапускает службу PostgreSQL
+# всё в PowerShell от имени администратора: установщик ставит PostgreSQL и управляет его службой
 # пароли ролей: каждая строка запрашивает пароль, в историю PowerShell он не попадает
 $env:SEMIBASE_SUPER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль postgres' -AsSecureString)).Password
 $env:SEMIBASE_WRITER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль scada_writer' -AsSecureString)).Password
-$env:SEMIBASE_PLOT_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль semiplot' -AsSecureString)).Password
 
-# конфигурация сервера, архивная база, роли `scada_writer`, `semiplot` и
-# `semiplot_registrar`, права, таблица архива, пять таблиц SemiPlot и функция
-# регистрации новых перьев; перезапуск службы, если настройки его ждут
-.\semibase.exe site --restart-service postgresql-x64-17
+# PostgreSQL 17, если его нет; конфигурация сервера, архивная база, роли `scada_writer`,
+# `semiplot` (пароль `semiplot`) и `semiplot_registrar`, права, таблица архива, пять таблиц
+# SemiPlot и функция регистрации новых перьев; перезапуск службы, если настройки его ждут.
+# код 0: машина готова; код 7: отказ, причина в C:\DISTR\Logs\SemiBase\setup-*.log
+$setup = Start-Process -FilePath .\SemiBase-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+$setup.ExitCode
 ```

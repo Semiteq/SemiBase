@@ -9,9 +9,11 @@ The binary is self-contained: `pgx/v5` speaks the wire protocol itself, over TCP
 socket, so neither `psql.exe` nor any runtime needs to be present on the target machine.
 The SQL is embedded at build time: `sql/trends.sql` for the archive table, and
 `sql/semiplot_tags.sql`, `sql/semiplot_register.sql`, `sql/semiplot_groups.sql`,
-`sql/semiplot_markers.sql` and `sql/semiplot_meta.sql` for the SemiPlot configuration schema. Installing the PostgreSQL
-engine itself is one documented `winget` line, deliberately outside the tool — OS package management
-is not database provisioning.
+`sql/semiplot_markers.sql` and `sql/semiplot_meta.sql` for the SemiPlot configuration schema.
+Installing the PostgreSQL engine stays outside the tool, deliberately: OS package management is
+not database provisioning. On an installation machine `SemiBase-Setup.exe` does both, installing
+the vendored EDB PostgreSQL 17 when none is registered and then running `semibase site`
+([installer.md](./installer.md)).
 
 ## Distribution
 
@@ -20,9 +22,14 @@ A tagged release carries three artifacts, all built from one commit by
 
 | Artifact | Form | Consumer |
 | --- | --- | --- |
-| `semibase_<version>_windows_amd64.exe` | GitHub release asset | Commissioning on the installation machine |
-| `semibase_<version>_linux_amd64` | GitHub release asset | Provisioning a bench from a Linux host or CI runner |
+| `SemiBase-Setup.exe` | GitHub release asset | Commissioning on the installation machine; it carries the Windows binary, which is not attached on its own |
+| `semibase_<version>_linux_amd64` | GitHub release asset | The published reference for the image's bytes; provisioning a bench from a Linux host or CI runner |
 | `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` | Container image | Bench images that layer the binary onto `postgres:17-alpine` |
+
+The workflow has three jobs. `build` (ubuntu) tests, reads the tag and cross-compiles both
+binaries; `installer` (windows) compiles the setup around the Windows one; `release` (ubuntu)
+builds the image, creates the GitHub release with the Linux binary and the setup, and pushes the
+image. One workflow-level concurrency group covers all three.
 
 The image is `FROM scratch` and holds one file, `/semibase` — the same bytes as the Linux
 release asset, copied rather than built a second time. It carries no shell, no libc and no CA
@@ -46,8 +53,9 @@ pair nobody runs. The `vX.Y.Z` tag is immutable and exists to place blame and to
 failing pair.
 
 "Latest" only ever moves forward, and that is enforced rather than assumed. One decision, made
-once in the release job, drives all of it: the tag is a release tag (no `-` suffix) **and** it is
-the newest release tag in the repository. That answer sets the GitHub release's `prerelease` and
+once in the `build` job's `Read the tag` step and read by the `release` job through job outputs,
+drives all of it: the tag is a release tag (no `-` suffix) **and** it is the newest release tag
+in the repository. That answer sets the GitHub release's `prerelease` and
 `make_latest` fields and gates the `:latest` push alike, so `/releases/latest` and `:latest`
 cannot name different versions. Without the newest test, re-running an old tag's workflow from
 the Actions UI, or pushing two tags at once, walks "latest" backwards with no signal to anyone
@@ -61,10 +69,11 @@ prereleases out of the comparison, and with them git's own placement of `v1.0.0-
 of it to mean anything; `fetch-depth: 0` is what puts them there, and the job fails loudly if
 the tag being released is not among them.
 
-The image is pushed after the GitHub release exists, never before: consumers still download the
-release assets, so `latest` must never name a version whose assets are missing. The image is
-*built* before it, because a bad copy or a bad `Dockerfile` has to abort while there is still
-nothing published to withdraw.
+The image is pushed after the GitHub release exists, never before: `:latest` is the publish
+consumers act on, and the release page is its record. A push that lands while the release step
+fails leaves `:latest` on a version with no release and no notes, and nobody re-runs a push that
+worked. The image is *built* before it, because a bad copy or a bad `Dockerfile` has to abort
+while there is still nothing published to withdraw.
 
 The GHCR package is public, because consumers pull it anonymously from their own CI. The first
 push creates it private; that is switched once, in the package's settings, and the workflow has
