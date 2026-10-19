@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -19,6 +21,7 @@ type serviceControl interface {
 	Query() (svc.Status, error)
 	Control(c svc.Cmd) (svc.Status, error)
 	Start(args ...string) error
+	Config() (mgr.Config, error)
 }
 
 type serviceTimings struct {
@@ -39,12 +42,13 @@ func defaultServiceTimings() serviceTimings {
 	}
 }
 
-const listenerDialTimeout = 2 * time.Second
+// Windows resends a SYN after an RST, so even a refused loopback connect can take seconds
+const listenerDialTimeout = 15 * time.Second
 
 type managedService struct {
 	name    string
 	control serviceControl
-	// address is the server's host:port, which listening dials
+	// address is the IP:port the run's connection reached, which listening dials
 	address string
 	// listening reports whether a TCP connect to address succeeds; false with a nil error means
 	// the connect was refused, so no postmaster listens there
@@ -53,9 +57,14 @@ type managedService struct {
 	release   func()
 }
 
-// openService refuses a service the restart could not complete: missing, out of reach,
-// Disabled, or not running once a start in progress has finished.
-func openService(ctx context.Context, name, address string) (*managedService, error) {
+// openService refuses a service the restart could not complete or that is not the server the run
+// connects to: missing, out of reach, Disabled, not running once a start in progress has
+// finished, or registered for another data directory than the one describe reads.
+func openService(
+	ctx context.Context,
+	name string,
+	describe func(context.Context) (runningServer, error),
+) (*managedService, error) {
 	manager, err := mgr.Connect()
 	if err != nil {
 		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
@@ -76,37 +85,90 @@ func openService(ctx context.Context, name, address string) (*managedService, er
 		return nil, fmt.Errorf("opening service %s: %w", name, err)
 	}
 	service := &managedService{
-		name:      name,
-		control:   handle,
-		address:   address,
-		listening: dialListener(address),
-		timings:   defaultServiceTimings(),
+		name:    name,
+		control: handle,
+		timings: defaultServiceTimings(),
 		release: func() {
 			_ = handle.Close()
 			_ = manager.Disconnect()
 		},
 	}
-	if err := refuseDisabled(handle, name); err != nil {
+	if err := service.check(ctx, describe); err != nil {
 		service.close()
 		return nil, err
 	}
-	if err := service.awaitRunning(ctx); err != nil {
-		service.close()
-		return nil, err
-	}
+	service.listening = dialListener(service.address)
 	return service, nil
 }
 
-func refuseDisabled(handle *mgr.Service, name string) error {
-	config, err := handle.Config()
+func (s *managedService) check(
+	ctx context.Context,
+	describe func(context.Context) (runningServer, error),
+) error {
+	config, err := s.control.Config()
 	if err != nil {
-		return fmt.Errorf("reading the configuration of service %s: %w", name, err)
+		return fmt.Errorf("reading the configuration of service %s: %w", s.name, err)
 	}
 	if config.StartType == mgr.StartDisabled {
 		return fmt.Errorf("service %s is Disabled, so it could not be started again after the stop; "+
-			"set its start type to Automatic or Manual", name)
+			"set its start type to Automatic or Manual", s.name)
 	}
+	if err := s.awaitRunning(ctx); err != nil {
+		return err
+	}
+	return s.confirmServes(ctx, config.BinaryPathName, describe)
+}
+
+// confirmServes ties the service to the server behind --host:--port through the data directory:
+// stopping another service would leave it stopped, since the probe would keep finding the
+// run's server answering.
+func (s *managedService) confirmServes(
+	ctx context.Context,
+	pathName string,
+	describe func(context.Context) (runningServer, error),
+) error {
+	serviceDirectory, found := dataDirectoryFlag(pathName)
+	if !found {
+		return fmt.Errorf("the PathName of service %s carries no -D, so site cannot tell which data "+
+			"directory it runs; site restarts a service registered with pg_ctl register -D", s.name)
+	}
+	server, err := describe(ctx)
+	if err != nil {
+		return err
+	}
+	if !sameDataDirectory(serviceDirectory, server.dataDirectory) {
+		return fmt.Errorf("service %s runs data directory %s, but the server on %s uses %s: "+
+			"--restart-service names another server. Find the service whose PathName carries "+
+			"-D %s with Get-CimInstance Win32_Service", s.name, serviceDirectory, server.address,
+			server.dataDirectory, filepath.Clean(server.dataDirectory))
+	}
+	ok("service %s runs data directory %s, as the server on %s does", s.name, serviceDirectory,
+		server.address)
+	s.address = server.address
 	return nil
+}
+
+// dataDirectoryFlag reads the -D argument of a service command line, as pg_ctl register writes it.
+func dataDirectoryFlag(pathName string) (string, bool) {
+	args, err := windows.DecomposeCommandLine(pathName)
+	if err != nil {
+		return "", false
+	}
+	for i, arg := range args {
+		switch {
+		case arg == "-D" && i+1 < len(args):
+			return args[i+1], true
+		case strings.HasPrefix(arg, "-D") && len(arg) > len("-D"):
+			return strings.TrimPrefix(arg, "-D"), true
+		}
+	}
+	return "", false
+}
+
+// sameDataDirectory compares the service's native path with the server's, which PostgreSQL
+// reports with forward slashes.
+func sameDataDirectory(servicePath, serverPath string) bool {
+	return strings.EqualFold(filepath.Clean(servicePath), filepath.Clean(serverPath))
 }
 
 func dialListener(address string) func(context.Context) (bool, error) {
@@ -267,8 +329,10 @@ func (s *managedService) stoppedAfterStart(ctx context.Context) error {
 	}
 	return fmt.Errorf("service %s stopped again after the Start, and nothing answers on %s: the "+
 		"server exited during its startup. Read the server log in the data directory's log folder "+
-		"and the Windows Application event log; the settings this run wrote stay in "+
-		"postgresql.auto.conf", s.name, s.address)
+		"and the Windows Application event log. If it names a setting this run wrote, remove that "+
+		"line from postgresql.auto.conf, then start the service with Start-Service %s; a re-run "+
+		"of site writes the line again and stops the service the same way until the cause is fixed",
+		s.name, s.address, s.name)
 }
 
 // pollUntil queries the service until done accepts its state or ctx ends, and returns the last

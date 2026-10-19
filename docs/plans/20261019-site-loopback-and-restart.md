@@ -81,14 +81,22 @@
   (`service_other.go` returns "service restart is not supported on <GOOS>") fails with nothing
   changed. The module stays one cross-platform build: the Linux binary is what the docker benches
   run.
+- The service must be the run's server. Once it is Running, `openService` connects, reads
+  `SHOW data_directory` and the connection's remote IP:port, and compares the directory with the
+  `-D` in the service's `PathName` (`windows.DecomposeCommandLine`, `filepath.Clean` on both
+  sides, case ignored). A mismatch or a `PathName` with no `-D` fails with nothing changed: a Stop
+  sent to another service would leave it stopped while the run's server keeps answering.
 - Once the service accepts the Stop, the exit wait, the Start and the Running wait run on a
   context detached from the command's cancellation and timeout (`context.WithoutCancel`), each
   wait with its own bound. An interrupt or the command timeout during them does not stop the
   sequence.
 - SCM Stopped does not prove the postmaster is gone: `pg_ctl runservice` reports Stopped after at
   most 12 x 5 s of a stop and leaves a slower postmaster running (`pg_ctl.c`, REL_17_STABLE). So
-  the Start waits, within the stop bound, for a TCP connect to `--host:--port` to be refused; the
-  run already knows that address, while a `postmaster.pid` check would need the service's `-D`.
+  the Start waits, within the stop bound, for a TCP connect to be refused. The probe dials the
+  literal IP:port the identity check's connection reached: Go dials `localhost` to `::1` and
+  `127.0.0.1` in parallel and reports the first family's error, so a non-refusal on one family
+  would hide the refusal on the other. Each dial has a 15 s timeout, since Windows resends a SYN
+  after an RST.
 - `pg_ctl -w` without `-t` gives up on a startup after 60 s and reports Stopped while the
   postmaster keeps starting. Stopped after the Start therefore probes the port once: an answer
   names that timeout, a refusal names a postmaster that exited during its startup.
@@ -111,27 +119,33 @@
 - The restart runs when the pending list is non-empty and a service was opened; the condition
   sits inline in `config`'s switch.
 - `openService` waits up to 2 minutes for a Start Pending service to reach Running, then refuses
-  any state other than Running.
+  any state other than Running. It then calls `describeServer` (`config.go`), which connects as
+  the superuser and returns `SHOW data_directory` and `RemoteAddr()`, and refuses a service whose
+  `-D` differs or is absent. The address becomes the probe's target.
 - Restart sequence in `config`:
   1. Close the phase connection.
   2. `Stop` on the command context. From here on, steps 3 and 4 run on
      `context.WithoutCancel(ctx)`.
-  3. Wait for `Stopped`, then for a refused TCP connect to `--host:--port` (`WSAECONNREFUSED`;
-     any other connect error is retried), probing once a second, both bounded by 3 minutes from
+  3. Wait for `Stopped`, then for a refused TCP connect to the identity check's IP:port
+     (`WSAECONNREFUSED`; any other connect error is retried; each dial times out after 15 s),
+     probing once a second, both bounded by 3 minutes from
      the Stop: a shutdown checkpoint with `max_wal_size = 8GB` can be long. If the wait gives up,
      Start is not sent and the error says the service will stay stopped and how to start it.
   4. `Start`, then wait for `Running`, bounded by 2 minutes from the Start. Stopped from the
      second query on fails at once; one more probe decides the message: an answer means
      `pg_ctl`'s 60 s startup wait ran out and the server runs outside the service, a refusal
-     means the server exited during its startup and points to the server log.
+     means the server exited during its startup and points to the server log, to removing the
+     line it names from `postgresql.auto.conf` before `Start-Service`, and warns that a re-run
+     writes the line again.
   5. The ready wait connects to `postgres` as the superuser every second, bounded by 60 s. It
      retries network errors and 57P03 only, returns the new connection, and the last connect
      error that is not a context error goes into the timeout message.
   6. `pendingRestartSettings` runs on the new connection. A non-empty list is an error naming the
-     settings, with a hint that the service may belong to another server.
-- Service control goes through a three-method seam over `*mgr.Service` (`Query`, `Control`,
-  `Start`), and the port probe is a function field on `managedService`, so the sequence is
-  unit-tested with scripted states and probe results.
+     settings.
+- Service control goes through a four-method seam over `*mgr.Service` (`Query`, `Control`,
+  `Start`, `Config`), the port probe is a function field on `managedService`, and the server read
+  is a function `openService` receives, so the check and the sequence are unit-tested with
+  scripted states, configurations, servers and probe results.
 - A wait that runs out its bound names the service and its last observed state.
 - Output: `step("restarting service %s: %s waiting for a restart", name, list)`, then `ok` lines
   for stopped, running, accepting connections.

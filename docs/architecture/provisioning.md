@@ -204,28 +204,36 @@ restart, and `bench --restart-service` fails as an undefined flag. `Options.Vali
 `--host` other than `localhost`, `127.0.0.1` or `::1`, because after the restart the server listens
 on the loopback interface only.
 
-`config` opens the service before it connects, so a service it cannot restart fails the run with
-nothing changed. `openService` (`service_windows.go`) refuses a service that does not exist, a
+`config` opens the service before `applySettings` connects, so a service it cannot restart, or one
+that is not the run's server, fails the run with nothing changed. `openService` (`service_windows.go`) refuses a service that does not exist, a
 service manager or service the run may not control (the message says to run `semibase` as an
 administrator), and a Disabled start type, which would leave the service stopped after the Stop.
 A service in Start Pending gets up to 2 minutes to reach Running: an installer may run `site` right
 after it started the service, and an EDB service (`pg_ctl runservice ... -w`, the `PathName` the
 Windows CI step prints) reports Running only once the server accepts connections. That step starts
 the service with `sc.exe start`, which returns while it is Start Pending, and runs `site` at once. Stopped, Stop Pending, Paused, or a start that ends in Stopped,
-is refused. The tool does not check that the service is the server behind `--port`: a wrong name
-restarts another running instance, and the run then fails with the settings still pending and a
-hint to compare the service's `-D` with `SHOW data_directory`. Off Windows, `service_other.go`
-refuses the flag the same way and names the platform, so the module stays one cross-platform
-build.
+is refused.
+
+Once the service is Running, `openService` ties it to the server the run connects to. It connects
+as the superuser, reads `SHOW data_directory` and the connection's remote IP:port, and compares
+the directory with the `-D` argument of the service's `PathName`, split with
+`windows.DecomposeCommandLine`. `pg_ctl register` writes that argument quoted, absolute and with
+backslashes; the server reports forward slashes. The comparison runs `filepath.Clean` on both
+paths and ignores case. A mismatch, or a `PathName` with no `-D`, is refused with nothing
+changed: a Stop sent to another service would leave that service stopped, because the run's own
+server would keep answering the probe. Without a `-D`, `pg_ctl` takes the data directory from the
+service's environment, which the tool does not read. Off Windows, `service_other.go` refuses the
+flag the same way and names the platform, so the module stays one cross-platform build.
 
 The restart runs inside `config`, right after `pendingRestartSettings` returns a non-empty list, so
 `create` and `check` run against the restarted server. `applySettings` closes the phase connection
 before it returns; then:
 
-1. Stop, then wait for Stopped and then for a refused TCP connect to `--host:--port`, both within
-   one bound of 3 minutes from the Stop. If the bound runs out, the Start is not sent.
+1. Stop, then wait for Stopped and then for a refused TCP connect to the IP:port the identity
+   check's connection reached, both within one bound of 3 minutes from the Stop. If the bound runs
+   out, the Start is not sent.
 2. Start, then wait up to 2 minutes from the Start for Running. Stopped after the first query fails
-   at once, and one more connect to `--host:--port` names the cause (see below).
+   at once, and one more connect to that address names the cause (see below).
 3. Connect to `postgres` as the superuser every second, up to 60 s. A refused connection and 57P03
    are retried; any other server error, a wrong password for one, fails at once. A timeout
    reports the last connect error, never the context's.
@@ -247,8 +255,16 @@ Stopped does not mean that the postmaster has exited. What follows was read in
   backlog. So a refused connect (`WSAECONNREFUSED`) means the
   postmaster is gone, and step 1 waits for it. Any other connect error is retried.
 - Step 1 probes once a second, because each accepted connect costs the server a process. The
-  probe dials the address the run connects to. `Validate` already restricts it to loopback, so it
-  needs nothing the run does not have. A `postmaster.pid` check would need the service's `-D`.
+  probe dials the one literal IP:port the identity check's connection reached, never the name
+  `localhost`. Go dials a name that resolves to both `::1` and `127.0.0.1` in parallel and, when
+  both fail, returns the error of the first family (`dialParallel` in `net/dial.go`, Go 1.27).
+  An IPv6 failure other than a refusal would then hide the IPv4 refusal, and the Start would never
+  be sent. A literal address has one family.
+- Each probe dial has a 15 s timeout. Windows resends a SYN after an RST, so a refused loopback
+  connect can take seconds (Daniel Stenberg,
+  `daniel.haxx.se/blog/2024/08/14/slow-tcp-connect-on-windows`). Measured on Windows 11 build
+  26300, a refusal took under 2 ms; the resends were not reproduced here. The 3-minute stop bound
+  still limits the whole wait.
 - The service runs `pg_ctl runservice ... -w` with no `-t`, so `wait_for_postmaster_start` gives
   up after `DEFAULT_WAIT` = 60 s. It then reports Stopped and leaves a slower postmaster running
   outside the service. A postmaster that exits during its startup also ends in Stopped. In step 2
@@ -264,7 +280,7 @@ service and the last state it observed. Four cases still leave the service stopp
 | --- | --- | --- |
 | The old postmaster still runs 3 minutes after the Stop, or `pg_ctl` itself has not reported Stopped by then | the service is stopped but the server still answers, or the service is still stopping; no Start was sent and the service stays stopped | once a connect to the port is refused (`Test-NetConnection localhost -Port <port>`) and `Get-Service <name>` shows Stopped, `Start-Service <name>` |
 | The process ends without running its code: console window closed, logoff, shutdown, a killed process. `signal.NotifyContext` catches `os.Interrupt` only, and Windows ends a console process a few seconds after a close event, which no handler can extend | nothing | `Start-Service <name>` |
-| The postmaster exits during its startup, for example it cannot allocate `shared_buffers = 2GB` | the service stopped again after the Start and nothing answers on the port; the settings this run wrote stay in `postgresql.auto.conf` | read the server log in the data directory's `log` folder, remove the offending line from `postgresql.auto.conf`, then `Start-Service <name>` |
+| The postmaster exits during its startup, for example it cannot allocate `shared_buffers = 2GB` | the service stopped again after the Start and nothing answers on the port; the message names the recovery | read the server log in the data directory's `log` folder, remove the line it names from `postgresql.auto.conf`, then `Start-Service <name>`. A re-run of `site` writes the line again and stops the service the same way, so fix the cause first |
 | The startup takes longer than `pg_ctl`'s 60 s wait | the service stopped again after the Start but the server answers on the port: it runs outside the service | once it accepts connections, `pg_ctl stop -D <the -D in the service's PathName>`, then `Start-Service <name>` |
 
 The command's five-minute `phaseTimeout` also covers the restart. A stop and a start that use
@@ -287,7 +303,9 @@ itself. The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and
 step first requires `site --restart-service postgresql-x64-17` to refuse the Disabled service
 with no `ALTER SYSTEM SET` line in its output. It then sets the service to Manual, starts it with
 `sc.exe start`, and runs `site` at once, while the service is Start Pending. That run must print
-`restarting service postgresql-x64-17` and `stopped, nothing answers on localhost:5432`, and leave `listen_addresses = localhost` with no setting
+`restarting service postgresql-x64-17`, the identity line
+`runs data directory C:\PostgreSQL\17\data, as the server on <IP>:5432 does` and
+`stopped, nothing answers on <IP>:5432`, and leave `listen_addresses = localhost` with no setting
 pending. A second run must not restart the service, and `--restart-service no-such-service` must
 be refused with no `ALTER SYSTEM SET` line.
 

@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -49,8 +47,7 @@ func (o Options) config(ctx context.Context) error {
 	if o.RestartService != "" {
 		var err error
 		// SA4023: off Windows openService always fails, by design
-		address := net.JoinHostPort(o.Host, strconv.Itoa(o.Port))
-		if service, err = openService(ctx, o.RestartService, address); err != nil { //nolint:staticcheck
+		if service, err = openService(ctx, o.RestartService, o.describeServer); err != nil { //nolint:staticcheck
 			return err
 		}
 		defer service.close()
@@ -69,6 +66,29 @@ func (o Options) config(ctx context.Context) error {
 		ok("all settings active")
 	}
 	return nil
+}
+
+// runningServer is what a connection to --host:--port learns about the server behind it.
+type runningServer struct {
+	dataDirectory string
+	// address is the IP:port the connection reached, one address of one family
+	address string
+}
+
+func (o Options) describeServer(ctx context.Context) (runningServer, error) {
+	conn, err := o.connectSuperuser(ctx, "postgres")
+	if err != nil {
+		return runningServer{}, err
+	}
+	defer conn.Close(ctx)
+	var dataDirectory string
+	if err := conn.QueryRow(ctx, "SHOW data_directory").Scan(&dataDirectory); err != nil {
+		return runningServer{}, fmt.Errorf("reading data_directory: %w", err)
+	}
+	return runningServer{
+		dataDirectory: dataDirectory,
+		address:       conn.PgConn().Conn().RemoteAddr().String(),
+	}, nil
 }
 
 // applySettings closes its connection before returning: a restart must not find it open.
@@ -128,10 +148,8 @@ func (o Options) restartService(ctx context.Context, service *managedService, pe
 		return err
 	}
 	if len(stillPending) > 0 {
-		return fmt.Errorf("after restarting service %s, settings still wait for a restart: %s. "+
-			"The service may belong to another server than the one on port %d: compare the -D in "+
-			"its PathName (Get-CimInstance Win32_Service) with SHOW data_directory",
-			o.RestartService, strings.Join(stillPending, ", "), o.Port)
+		return fmt.Errorf("after restarting service %s, settings still wait for a restart: %s",
+			o.RestartService, strings.Join(stillPending, ", "))
 	}
 	ok("all settings active")
 	return nil

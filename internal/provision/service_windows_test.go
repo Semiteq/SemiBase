@@ -3,6 +3,7 @@
 package provision
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 type probeResult struct {
@@ -26,6 +28,7 @@ var (
 // fakeService answers Query with states and the listener probe with probes, each in order and
 // repeating its last entry; no probes means a refused connect.
 type fakeService struct {
+	config     mgr.Config
 	states     []svc.State
 	probes     []probeResult
 	queries    int
@@ -43,6 +46,10 @@ func (f *fakeService) Query() (svc.Status, error) {
 	state := f.states[min(f.queries, len(f.states)-1)]
 	f.queries++
 	return svc.Status{State: state}, nil
+}
+
+func (f *fakeService) Config() (mgr.Config, error) {
+	return f.config, nil
 }
 
 func (f *fakeService) Control(svc.Cmd) (svc.Status, error) {
@@ -74,7 +81,7 @@ func newFakeManagedService(fake *fakeService) *managedService {
 	return &managedService{
 		name:      "pg",
 		control:   fake,
-		address:   "localhost:5432",
+		address:   "[::1]:5432",
 		listening: fake.listening,
 		timings: serviceTimings{
 			stop: 50 * time.Millisecond, start: 50 * time.Millisecond,
@@ -145,7 +152,7 @@ func TestRestart(t *testing.T) {
 		{
 			name: "a server that outlives the stop bound gets no Start", ctx: context.Background(),
 			states: []svc.State{svc.Stopped}, probes: []probeResult{answering},
-			wantErr:   []string{"still answers on localhost:5432", "sends no Start", "Start-Service pg"},
+			wantErr:   []string{"still answers on [::1]:5432", "sends no Start", "Start-Service pg"},
 			wantCause: context.DeadlineExceeded,
 		},
 		{
@@ -162,7 +169,10 @@ func TestRestart(t *testing.T) {
 		{
 			name: "a server that exits during its startup fails at once", ctx: context.Background(),
 			states: []svc.State{svc.Stopped, svc.StartPending, svc.Stopped}, wantStarts: 1,
-			wantErr: []string{"stopped again after the Start", "nothing answers", "postgresql.auto.conf"},
+			wantErr: []string{
+				"stopped again after the Start", "nothing answers", "postgresql.auto.conf",
+				"Start-Service pg", "writes the line again",
+			},
 		},
 		{
 			name: "a startup pg_ctl stopped waiting for is not blamed on the settings", ctx: context.Background(),
@@ -207,32 +217,96 @@ func TestRestart(t *testing.T) {
 	}
 }
 
-func TestAwaitRunning(t *testing.T) {
+const runnerPathName = `"C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe" runservice -N "pg" -D "C:\PostgreSQL\17\data" -w`
+
+var runnerServer = runningServer{dataDirectory: "C:/PostgreSQL/17/data", address: "[::1]:5432"}
+
+func TestCheck(t *testing.T) {
 	tests := []struct {
-		name      string
-		states    []svc.State
-		wantErr   []string
-		wantCause error
+		name         string
+		startType    uint32
+		pathName     string
+		states       []svc.State
+		server       runningServer
+		describeErr  error
+		wantErr      []string
+		wantCause    error
+		wantDescribe bool
 	}{
-		{name: "running", states: []svc.State{svc.Running}},
-		{name: "a start in progress is waited out", states: []svc.State{svc.StartPending, svc.StartPending, svc.Running}},
 		{
-			name: "a start past its bound is refused", states: []svc.State{svc.StartPending},
-			wantErr: []string{"still start pending"}, wantCause: context.DeadlineExceeded,
+			name: "the running service of the run's server", pathName: runnerPathName,
+			states: []svc.State{svc.Running}, server: runnerServer, wantDescribe: true,
 		},
-		{name: "stopped is refused", states: []svc.State{svc.Stopped}, wantErr: []string{"is stopped, not running"}},
-		{name: "stopping is refused", states: []svc.State{svc.StopPending}, wantErr: []string{"is stop pending"}},
-		{name: "paused is refused", states: []svc.State{svc.Paused}, wantErr: []string{"is paused"}},
 		{
-			name: "a start that fails is refused", states: []svc.State{svc.StartPending, svc.Stopped},
+			name: "a start in progress is waited out", pathName: runnerPathName,
+			states: []svc.State{svc.StartPending, svc.StartPending, svc.Running}, server: runnerServer,
+			wantDescribe: true,
+		},
+		{
+			name: "Disabled is refused", startType: mgr.StartDisabled, pathName: runnerPathName,
+			states: []svc.State{svc.Running}, wantErr: []string{"is Disabled"},
+		},
+		{
+			name: "a start past its bound is refused", pathName: runnerPathName,
+			states: []svc.State{svc.StartPending}, wantErr: []string{"still start pending"},
+			wantCause: context.DeadlineExceeded,
+		},
+		{
+			name: "stopped is refused", pathName: runnerPathName, states: []svc.State{svc.Stopped},
 			wantErr: []string{"is stopped, not running"},
+		},
+		{
+			name: "stopping is refused", pathName: runnerPathName, states: []svc.State{svc.StopPending},
+			wantErr: []string{"is stop pending"},
+		},
+		{
+			name: "paused is refused", pathName: runnerPathName, states: []svc.State{svc.Paused},
+			wantErr: []string{"is paused"},
+		},
+		{
+			name: "a start that fails is refused", pathName: runnerPathName,
+			states: []svc.State{svc.StartPending, svc.Stopped}, wantErr: []string{"is stopped, not running"},
+		},
+		{
+			name: "a service with no -D is refused", pathName: `C:\Scada\scada.exe --service`,
+			states: []svc.State{svc.Running}, wantErr: []string{"carries no -D"},
+		},
+		{
+			name: "a service of another data directory is refused", pathName: runnerPathName,
+			states: []svc.State{svc.Running}, wantDescribe: true,
+			server: runningServer{dataDirectory: "C:/Program Files/PostgreSQL/14/data", address: "[::1]:5432"},
+			wantErr: []string{
+				`runs data directory C:\PostgreSQL\17\data`, "names another server",
+				`-D C:\Program Files\PostgreSQL\14\data`,
+			},
+		},
+		{
+			name: "a failed read of the server is returned", pathName: runnerPathName,
+			states: []svc.State{svc.Running}, describeErr: errors.New("connection refused"),
+			wantDescribe: true, wantErr: []string{"connection refused"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fake := &fakeService{states: tt.states}
-			err := newFakeManagedService(fake).awaitRunning(context.Background())
+			fake := &fakeService{
+				config: mgr.Config{StartType: cmp.Or(tt.startType, mgr.StartManual), BinaryPathName: tt.pathName},
+				states: tt.states,
+			}
+			described := false
+			describe := func(context.Context) (runningServer, error) {
+				described = true
+				return tt.server, tt.describeErr
+			}
+			service := newFakeManagedService(fake)
+			service.address = ""
+			err := service.check(context.Background(), describe)
 			assertServiceError(t, err, tt.wantErr, tt.wantCause)
+			if described != tt.wantDescribe {
+				t.Errorf("described the server = %v, want %v", described, tt.wantDescribe)
+			}
+			if err == nil && service.address != tt.server.address {
+				t.Errorf("address = %q, want the connection's %q", service.address, tt.server.address)
+			}
 			if fake.stops != 0 || fake.starts != 0 {
 				t.Errorf("the check sent %d Stop and %d Start, want none", fake.stops, fake.starts)
 			}
@@ -240,28 +314,89 @@ func TestAwaitRunning(t *testing.T) {
 	}
 }
 
-// localhost resolves to ::1 first on Windows, so the listener on 127.0.0.1 also proves that a
-// refusal on one address does not hide an answer on the other
-func TestDialListener(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+func TestDataDirectoryFlag(t *testing.T) {
+	tests := []struct {
+		name      string
+		pathName  string
+		want      string
+		wantFound bool
+	}{
+		{
+			name:     "pg_ctl register, quoted with spaces",
+			pathName: `"C:\Program Files\PostgreSQL\14\bin\pg_ctl.exe" runservice -N "postgresql-14" -D "C:\Program Files\PostgreSQL\14\data" -w`,
+			want:     `C:\Program Files\PostgreSQL\14\data`, wantFound: true,
+		},
+		{
+			name:     "unquoted",
+			pathName: `C:\pg\bin\pg_ctl.exe runservice -D C:\pg\data -w`,
+			want:     `C:\pg\data`, wantFound: true,
+		},
+		{
+			name:     "value attached to the flag",
+			pathName: `C:\pg\bin\pg_ctl.exe runservice -DC:\pg\data`,
+			want:     `C:\pg\data`, wantFound: true,
+		},
+		{name: "no -D", pathName: `"C:\pg\bin\pg_ctl.exe" runservice -N "pg" -w`},
+		{name: "-D with no value", pathName: `C:\pg\bin\pg_ctl.exe runservice -D`},
 	}
-	_, port, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := dataDirectoryFlag(tt.pathName)
+			if got != tt.want || found != tt.wantFound {
+				t.Errorf("dataDirectoryFlag() = %q, %v, want %q, %v", got, found, tt.want, tt.wantFound)
+			}
+		})
 	}
-	probe := dialListener(net.JoinHostPort("localhost", port))
+}
 
-	if answers, err := probe(context.Background()); !answers || err != nil {
-		t.Errorf("with a listener: answers = %v, error = %v, want true, nil", answers, err)
+func TestSameDataDirectory(t *testing.T) {
+	const server = "C:/PostgreSQL/17/data"
+	tests := []struct {
+		name        string
+		servicePath string
+		want        bool
+	}{
+		{name: "forward slashes on the server side", servicePath: `C:\PostgreSQL\17\data`, want: true},
+		{name: "case", servicePath: `c:\postgresql\17\DATA`, want: true},
+		{name: "trailing separator", servicePath: `C:\PostgreSQL\17\data\`, want: true},
+		{name: "another directory", servicePath: `C:\Program Files\PostgreSQL\14\data`},
+		{name: "a longer name with the same prefix", servicePath: `C:\PostgreSQL\17\data2`},
 	}
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameDataDirectory(tt.servicePath, server); got != tt.want {
+				t.Errorf("sameDataDirectory(%q, %q) = %v, want %v", tt.servicePath, server, got, tt.want)
+			}
+		})
 	}
-	if answers, err := probe(context.Background()); answers || err != nil {
-		t.Errorf("after the listener closed: answers = %v, error = %v, want false, nil", answers, err)
+}
+
+// The probe dials one literal address, so the other loopback family cannot decide the answer.
+func TestDialListener(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		t.Run(host+" answers, then refuses", func(t *testing.T) {
+			listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+			if err != nil {
+				t.Skipf("no %s listener on this machine: %v", host, err)
+			}
+			probe := dialListener(listener.Addr().String())
+			if answers, err := probe(context.Background()); !answers || err != nil {
+				t.Errorf("with a listener: answers = %v, error = %v, want true, nil", answers, err)
+			}
+			if err := listener.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if answers, err := probe(context.Background()); answers || err != nil {
+				t.Errorf("after the listener closed: answers = %v, error = %v, want false, nil", answers, err)
+			}
+		})
 	}
+	t.Run("a connect error other than a refusal is not taken as gone", func(t *testing.T) {
+		answers, err := dialListener("127.0.0.1:0")(context.Background())
+		if answers || err == nil {
+			t.Errorf("answers = %v, error = %v, want false and an error", answers, err)
+		}
+	})
 }
 
 func assertServiceError(t *testing.T, err error, wantText []string, wantCause error) {

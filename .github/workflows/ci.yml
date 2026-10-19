@@ -34,8 +34,9 @@ jobs:
       # while the service is still start pending, so the restart run begins
       # with openService waiting for Running, the way an installer that has
       # just started the service runs site; no other readiness wait precedes
-      # it. That run finds settings pending and restarts the service, sending
-      # the Start only once the old server's port refuses; the next
+      # it. That run ties the service to the server on port 5432 through the
+      # -D in its PathName, finds settings pending and restarts the service,
+      # sending the Start only once the old server's address refuses; the next
       # finds nothing pending and must not restart it; a service that does not
       # exist is refused before any change.
       - name: Restart the runner's PostgreSQL service through site
@@ -81,11 +82,16 @@ jobs:
             Write-Host "::error::the first site run did not restart $service"
             exit 1
           }
-          if ($first.Output -notlike "*service $service stopped, nothing answers on localhost:5432*") {
+          if ($first.Output -notlike "*service $service runs data directory C:\PostgreSQL\17\data, as the server on *:5432 does*") {
+            Write-Host "::error::the first site run did not tie $service to the server on port 5432"
+            exit 1
+          }
+          if ($first.Output -notlike "*service $service stopped, nothing answers on *:5432*") {
             Write-Host "::error::the first site run did not see the old server's port refused before the Start"
             exit 1
           }
 
+          Write-Host "data_directory: $(& $psql -h 127.0.0.1 -U postgres -d postgres -tAc 'SHOW data_directory')"
           $listen = & $psql -h 127.0.0.1 -U postgres -d postgres -tAc 'SHOW listen_addresses'
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $pending = & $psql -h 127.0.0.1 -U postgres -d postgres -tAc `
