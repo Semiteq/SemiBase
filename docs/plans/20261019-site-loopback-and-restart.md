@@ -168,8 +168,13 @@
 - [x] push the branch and read the CI run - both jobs green before task 5
 
 ### Task 5: Verify acceptance criteria
-- [ ] every item in Acceptance Evidence holds on the CI run
-- [ ] `go test -race ./...`, `go vet ./...`, `golangci-lint run`, `gofmt -l .` prints nothing
+- [x] every item in Acceptance Evidence holds on the CI run (run 39249102852 at `9577716`, both
+      jobs green: Linux `Require the listen_addresses delta` passed; Windows first `site` printed
+      `restarting service postgresql-x64-17: listen_addresses, shared_buffers waiting for a
+      restart`, the `SHOW`/`count(*)` check passed, the second run printed no restart line)
+- [x] `go test -race ./...`, `go vet ./...`, `golangci-lint run`, `gofmt -l .` prints nothing
+      (locally `-race` needs cgo and this host has no C compiler, so `go test ./...` ran without
+      it; both CI jobs run `go test -race ./...` green; `GOOS=linux go vet ./...` clean)
 
 ### Task 6: [Final] Update documentation
 - [ ] `docs/architecture/provisioning.md:160-165`: the opt-in restart, where it runs, the
