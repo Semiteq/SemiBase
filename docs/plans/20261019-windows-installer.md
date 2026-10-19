@@ -272,17 +272,17 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 - Create: `Installer/SemiBase.iss`
 - Modify: `.github/workflows/ci.yml`
 
-- [ ] `[Setup]` after `SemiPlot.iss`: own `AppId`, `PrivilegesRequired=admin`, x64 only,
+- [x] `[Setup]` after `SemiPlot.iss`: own `AppId`, `PrivilegesRequired=admin`, x64 only,
       `{autopf}\SemiBase`, `OutputBaseFilename=SemiBase-Setup`, the three `/D` defines required
-- [ ] `[Languages]` ru and en; `[Dirs]` `C:\DISTR\Logs\SemiBase` with `uninsneveruninstall`;
+- [x] `[Languages]` ru and en; `[Dirs]` `C:\DISTR\Logs\SemiBase` with `uninsneveruninstall`;
       `[Files]` as in Solution Overview
-- [ ] resolve the superuser and writer passwords from the parameter, else the `SEMIBASE_*`
+- [x] resolve the superuser and writer passwords from the parameter, else the `SEMIBASE_*`
       variable; refuse an empty superuser password in silent mode, any password that is not
       printable ASCII, and a superuser password that contains `"` or ends in `\`, from
       `PrepareToInstall`
-- [ ] new CI job `installer` on `windows-latest`: `go build`, cache `Installer/payload/` keyed
+- [x] new CI job `installer` on `windows-latest`: `go build`, cache `Installer/payload/` keyed
       on the fetch script's hash, fetch, install Inno Setup via `winget`, `iscc`, Acceptance case 1
-- [ ] push and read the CI run - green before task 4
+- [x] push and read the CI run - green before task 4 (run 39278350797)
 
 ### Task 4: Engine state detection
 
