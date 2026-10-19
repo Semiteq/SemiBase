@@ -105,6 +105,203 @@ jobs:
           # the runner exits with the last native exit code, which the refusal left at 1
           exit 0
 
+  # Throwaway probe for task 1 of docs/plans/20261019-windows-installer.md.
+  edb-probe:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: Probe the EDB PostgreSQL 17 installer
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $url = 'https://get.enterprisedb.com/postgresql/postgresql-17.11-5-windows-x64.exe'
+          $wantHash = '612C7F5400A003AAFFA0372CB273EED52278F93C680AB911EB9CB2229E329072'
+          $work = "$env:RUNNER_TEMP\edb"
+          New-Item -ItemType Directory -Path $work | Out-Null
+          $exe = "$work\postgresql-17.11-5-windows-x64.exe"
+          $root = 'C:\Program Files\PostgreSQL\17'
+          $data = "$root\data"
+
+          function Section([string] $title) { Write-Host "`n===== $title" }
+          function Dump-Registry {
+            foreach ($key in 'HKLM:\SOFTWARE\PostgreSQL', 'HKLM:\SOFTWARE\WOW6432Node\PostgreSQL') {
+              if (-not (Test-Path $key)) { Write-Host "$key absent"; continue }
+              Get-ChildItem $key -Recurse | ForEach-Object {
+                $k = $_
+                Write-Host $k.Name
+                foreach ($n in $k.GetValueNames()) {
+                  Write-Host ("  {0} = {1} ({2})" -f $n, $k.GetValue($n), $k.GetValueKind($n))
+                }
+              }
+            }
+            Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' |
+              Where-Object { $_.PSChildName -like '*PostgreSQL*' } |
+              ForEach-Object { Write-Host "uninstall entry: $($_.Name)" }
+          }
+          function Dump-Services {
+            Get-CimInstance Win32_Service -Filter "Name LIKE 'postgresql%'" |
+              Select-Object Name, State, StartMode, StartName, PathName | Format-List | Out-String | Write-Host
+          }
+          function Run-Exe([string] $file, [string] $arguments, [int] $timeoutSeconds, [string] $stdout) {
+            $start = Get-Date
+            $p = if ($stdout) {
+              Start-Process -FilePath $file -ArgumentList $arguments -PassThru -NoNewWindow `
+                -RedirectStandardOutput $stdout -RedirectStandardError "$stdout.err"
+            } else {
+              Start-Process -FilePath $file -ArgumentList $arguments -PassThru
+            }
+            $null = $p.Handle
+            if (-not $p.WaitForExit($timeoutSeconds * 1000)) {
+              Stop-Process -Id $p.Id -Force
+              Write-Host "TIMEOUT after $timeoutSeconds s: $file $arguments"
+              return 'timeout'
+            }
+            Write-Host ("exit {0} after {1:n0} s: {2}" -f $p.ExitCode, ((Get-Date) - $start).TotalSeconds, $arguments)
+            return $p.ExitCode
+          }
+          function Find-Token([string] $token) {
+            $roots = @($env:TEMP, 'C:\Windows\Temp', $work, "$root\installer", "$data\log")
+            $files = @("$data\postgresql.conf", "$data\postgresql.auto.conf", "$data\pg_hba.conf")
+            foreach ($r in $roots) {
+              if (Test-Path $r) {
+                $files += (Get-ChildItem $r -Recurse -File -Force -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Extension -ne '.exe' }).FullName
+              }
+            }
+            $existing = @($files | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+            $hits = Select-String -LiteralPath $existing -SimpleMatch -Pattern $token -ErrorAction SilentlyContinue
+            $control = Select-String -LiteralPath $existing -SimpleMatch -Pattern 'initcluster' -List -ErrorAction SilentlyContinue
+            Write-Host "token hits: $(@($hits).Count) over $($existing.Count) files; files naming initcluster (control): $(@($control).Count)"
+            $control | ForEach-Object { Write-Host "  control file: $($_.Path)" }
+            $hits | ForEach-Object { Write-Host "TOKEN HIT $($_.Path):$($_.LineNumber)" }
+          }
+          function Start-CommandLineWatch([string] $token) {
+            Start-Job -ArgumentList $token -ScriptBlock {
+              param($t)
+              $seen = @{}
+              while ($true) {
+                Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                  Where-Object { $_.CommandLine -and $_.CommandLine.Contains($t) } |
+                  ForEach-Object {
+                    $line = "$($_.Name): $($_.CommandLine.Replace($t, '<TOKEN>'))"
+                    if (-not $seen[$line]) { $seen[$line] = 1; $line }
+                  }
+                Start-Sleep -Milliseconds 200
+              }
+            }
+          }
+          function Install-Edb([string] $token, [string] $label) {
+            Section "install $label"
+            $optionFile = "$work\options-$label.txt"
+            @(
+              "superpassword=$token",
+              'serverport=5432',
+              'servicename=postgresql-x64-17',
+              'locale=C',
+              "datadir=$data"
+            ) | Set-Content -Path $optionFile -Encoding ascii
+            $watch = Start-CommandLineWatch $token
+            Run-Exe $exe "--mode unattended --unattendedmodeui none --optionfile `"$optionFile`" --disable-components pgAdmin,stackbuilder" 1500 | Out-Null
+            if (-not (Get-Service postgresql* -ErrorAction SilentlyContinue)) {
+              Write-Host 'no service after the install: retrying without --disable-components'
+              Run-Exe $exe "--mode unattended --unattendedmodeui none --optionfile `"$optionFile`"" 1500 | Out-Null
+            }
+            Stop-Job $watch
+            $pending = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager').PendingFileRenameOperations
+            Write-Host "PendingFileRenameOperations entries: $(@($pending).Count)"
+            Write-Host "command lines carrying the password during the install:"
+            Receive-Job $watch | ForEach-Object { Write-Host "  $_" }
+            Write-Host "option file still exists: $(Test-Path $optionFile)"
+            Dump-Services
+            Dump-Registry
+            Write-Host "components: $((Get-ChildItem $root -Name) -join ', ')"
+            Get-ChildItem $env:TEMP, 'C:\Windows\Temp' -Recurse -File -Force -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like '*postgres*' -or $_.Name -like 'bitrock*' -or $_.Name -like '*.log' } |
+              ForEach-Object { Write-Host "temp file: $($_.FullName) $($_.Length)" }
+            Find-Token $token
+            $env:PGPASSWORD = $token
+            $psql = "$root\bin\psql.exe"
+            & $psql -h 127.0.0.1 -U postgres -d postgres -c 'SELECT version()' -c 'SHOW server_encoding' `
+              -c 'SHOW listen_addresses' -c 'SHOW port' -c 'SHOW data_directory' -c 'SHOW lc_messages' `
+              -c 'SELECT datname, datcollate, datctype, datlocprovider, pg_encoding_to_char(encoding) FROM pg_database' `
+              -c 'SELECT rolname, rolsuper FROM pg_roles WHERE rolname !~ ''^pg_''' 2>&1 |
+              ForEach-Object { Write-Host "  $_" }
+            Write-Host "psql exit: $LASTEXITCODE"
+            Write-Host "pg_hba.conf rules:"
+            Get-Content "$data\pg_hba.conf" | Where-Object { $_ -and $_ -notmatch '^\s*#' } | ForEach-Object { Write-Host "  $_" }
+          }
+          function Remove-Edb([string] $label) {
+            Section "remove $label"
+            Write-Host "files in ${root}: $((Get-ChildItem $root -Name -ErrorAction SilentlyContinue) -join ', ')"
+            Run-Exe "$root\uninstall-postgresql.exe" '--mode unattended --unattendedmodeui none' 900 | Out-Null
+            Write-Host 'after the uninstaller:'
+            Dump-Services
+            Dump-Registry
+            foreach ($p in $data, $root, 'C:\PostgreSQL\17\data') {
+              if (Test-Path $p) { Write-Host "left: $p ($((Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object).Count) entries)" }
+            }
+            Remove-Item -Recurse -Force 'C:\PostgreSQL', 'C:\Program Files\PostgreSQL', 'HKLM:\SOFTWARE\PostgreSQL' -ErrorAction SilentlyContinue
+            Write-Host "after cleanup: services $(@(Get-Service postgresql* -ErrorAction SilentlyContinue).Count), registry $(Test-Path HKLM:\SOFTWARE\PostgreSQL), program files $(Test-Path 'C:\Program Files\PostgreSQL')"
+          }
+
+          Section 'runner state'
+          [System.Environment]::OSVersion.VersionString
+          Write-Host "machine PGUSER=$([Environment]::GetEnvironmentVariable('PGUSER', 'Machine')) PGPASSWORD set: $([bool][Environment]::GetEnvironmentVariable('PGPASSWORD', 'Machine'))"
+          Write-Host "ANSI code page: $((Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage).ACP)"
+          Dump-Services
+          Dump-Registry
+
+          Section 'download'
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          Write-Host "sha256 $hash, matches the pin: $($hash -eq $wantHash), size $((Get-Item $exe).Length)"
+          $sig = Get-AuthenticodeSignature $exe
+          Write-Host "signature $($sig.Status): $($sig.SignerCertificate.Subject)"
+
+          Section '--help'
+          Run-Exe $exe '--help' 120 "$work\help.txt" | Out-Null
+          Get-Content "$work\help.txt", "$work\help.txt.err" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
+          Section '--version'
+          Run-Exe $exe '--version' 120 "$work\version.txt" | Out-Null
+          Get-Content "$work\version.txt", "$work\version.txt.err" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
+
+          Remove-Edb 'the runner install'
+
+          $plain = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+          Install-Edb $plain 'plain'
+
+          Section 'initcluster.ps1'
+          $n = 0
+          Get-Content "$root\installer\server\initcluster.ps1" | ForEach-Object { $n++; Write-Host ("{0,4}: {1}" -f $n, $_) }
+          Section 'install-postgresql.log, initcluster lines'
+          Get-ChildItem $env:TEMP -Recurse -Filter 'install-postgresql.log' -ErrorAction SilentlyContinue |
+            Select-Object -First 1 | Get-Content |
+            Select-String -Pattern 'initcluster|Executing|exit code|vcredist|reboot|runtime|Password' |
+            ForEach-Object { Write-Host "  $($_.Line.Replace($plain, '<TOKEN>'))" }
+          Section 'bitrock_installer log, head'
+          Get-ChildItem $env:TEMP -Recurse -Filter 'bitrock_installer*.log' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Write-Host "  file: $($_.FullName)"
+              Get-Content $_.FullName -TotalCount 80 | ForEach-Object { Write-Host "  $($_.Replace($plain, '<TOKEN>'))" }
+            }
+
+          Remove-Edb 'the plain install'
+
+          $special = 'Q"w e%PATH%^&|<>''`$x!;z'
+          Install-Edb $special 'special'
+          Remove-Edb 'the special install'
+
+          Section 'unknown option'
+          Run-Exe $exe '--mode unattended --unattendedmodeui none --no-such-option 1' 300 | Out-Null
+          Dump-Services
+          Section 'missing option file'
+          Run-Exe $exe "--mode unattended --unattendedmodeui none --optionfile `"$work\absent.txt`"" 300 | Out-Null
+          Dump-Services
+          Section 'no superpassword'
+          Run-Exe $exe '--mode unattended --unattendedmodeui none --disable-components pgAdmin,stackbuilder' 1500 | Out-Null
+          Dump-Services
+          exit 0
+
   linux:
     runs-on: ubuntu-latest
     env:
