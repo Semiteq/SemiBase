@@ -80,7 +80,7 @@
 - [x] write a test over the session-settings list that `connect` builds for the superuser and
       for `semiplot`
 - [x] add the Linux CI step from Acceptance Evidence
-- [ ] run `go test ./...` and read the CI run - green before task 3
+- [x] run `go test ./...` and read the CI run - green before task 3
 
 ### Task 3: [Final] Update documentation
 - [ ] `CLAUDE.md` (Run section) and `docs/deployment.md:47-49,152`: passwords come from flags or
