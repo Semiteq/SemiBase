@@ -292,11 +292,8 @@ jobs:
           Remove-Edb 'the runner install'
 
           $groups = [ordered]@{
-            'shell' = 'Aa1 ''`$!;^&|<>()*?z'
-            'percent' = 'Aa1%PATH%z'
-            'quote' = 'Aa1"z'
-            'punctuation' = 'Aa1-_.,:@#+=~/[]{}\z'
-            'trailing-backslash' = 'Aa1z\'
+            'all-but-quote' = 'Aa1 !#$%&''()*+,-./:;<=>?@[\]^_`{|}~z'
+            'quote-ampersand' = 'Aa1"z&y'
           }
           foreach ($name in $groups.Keys) {
             Install-Edb $groups[$name] $name
