@@ -115,14 +115,14 @@ func (o Options) connect(ctx context.Context, database, user, password string) (
 	for _, setting := range o.sessionSettings(user) {
 		if _, err := conn.Exec(ctx, setting); err != nil {
 			_ = conn.Close(ctx)
-			return nil, fmt.Errorf("%s: %w", setting, err)
+			return nil, sessionSettingFailure(setting, user, err)
 		}
 	}
 	return conn, nil
 }
 
 // The first two are USERSET: escapeLiteral relies on standard_conforming_strings, and
-// search_path pins where an unqualified semiplot_* name resolves. The logging three are SUSET
+// search_path pins where an unqualified semiplot_* name resolves. The logging five are SUSET
 // and keep the text of CREATE ROLE ... PASSWORD and ALTER ROLE ... PASSWORD out of the server
 // log; only a superuser connection may set them, and only it issues those statements.
 func (o Options) sessionSettings(user string) []string {
@@ -134,7 +134,18 @@ func (o Options) sessionSettings(user string) []string {
 		"SET log_statement = 'none'",
 		"SET log_min_error_statement = 'panic'",
 		"SET log_min_duration_statement = -1",
+		"SET log_min_duration_sample = -1",
+		"SET log_transaction_sample_rate = 0",
 	)
+}
+
+// only the SUSET logging settings can be refused, and only a role without rolsuper is refused them
+func sessionSettingFailure(setting, user string, err error) error {
+	if hasSQLState(err, insufficientPrivilege) {
+		return fmt.Errorf("%s: %w. The --superuser role %s must be a superuser: only a superuser may "+
+			"keep the password statements out of the server log", setting, err, user)
+	}
+	return fmt.Errorf("%s: %w", setting, err)
 }
 
 // quote doubling alone is safe only because connect sets standard_conforming_strings = on,

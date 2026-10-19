@@ -9,6 +9,9 @@ Thumbs.db
 /semibase.exe
 /dist/
 
+# Local secrets
+.env
+
 # Container image build context
 /image/
 

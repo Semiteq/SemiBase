@@ -1,7 +1,9 @@
 package provision
 
 import (
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -207,30 +209,68 @@ func TestEndpoint(t *testing.T) {
 	}
 }
 
-// the semiplot login check connects through the same function and may not set a SUSET parameter
+// the semiplot login check connects through the same function and may not set a SUSET parameter;
+// the superuser list pins every parameter that would print a password statement's text
 func TestSessionSettings(t *testing.T) {
-	userSettings := []string{"SET standard_conforming_strings = on", "SET search_path = public"}
-	superuserSettings := append(slices.Clone(userSettings),
-		"SET log_statement = 'none'",
-		"SET log_min_error_statement = 'panic'",
-		"SET log_min_duration_statement = -1",
-	)
+	userParameters := []string{"standard_conforming_strings", "search_path"}
+	superuserParameters := slices.Concat(userParameters, []string{
+		"log_statement",
+		"log_min_error_statement",
+		"log_min_duration_statement",
+		"log_min_duration_sample",
+		"log_transaction_sample_rate",
+	})
 	tests := []struct {
 		name      string
 		superUser string
 		user      string
 		want      []string
 	}{
-		{"default superuser", "postgres", "postgres", superuserSettings},
-		{"renamed superuser", "dbadmin", "dbadmin", superuserSettings},
-		{"plot role", "postgres", PlotRole, userSettings},
-		{"default name when the superuser is renamed", "dbadmin", "postgres", userSettings},
+		{"default superuser", "postgres", "postgres", superuserParameters},
+		{"renamed superuser", "dbadmin", "dbadmin", superuserParameters},
+		{"plot role", "postgres", PlotRole, userParameters},
+		{"default name when the superuser is renamed", "dbadmin", "postgres", userParameters},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Options{SuperUser: tt.superUser}.sessionSettings(tt.user)
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("sessionSettings(%q) with superuser %q = %q, want %q", tt.user, tt.superUser, got, tt.want)
+			settings := Options{SuperUser: tt.superUser}.sessionSettings(tt.user)
+			if got := settingParameters(t, settings); !slices.Equal(got, tt.want) {
+				t.Errorf("sessionSettings(%q) with superuser %q sets %q, want %q", tt.user, tt.superUser, got, tt.want)
+			}
+		})
+	}
+}
+
+func settingParameters(t *testing.T, settings []string) []string {
+	t.Helper()
+	parameters := make([]string, 0, len(settings))
+	for _, setting := range settings {
+		fields := strings.Fields(setting)
+		if len(fields) < 4 || fields[0] != "SET" || fields[2] != "=" {
+			t.Fatalf("session setting %q is not SET <parameter> = <value>", setting)
+		}
+		parameters = append(parameters, fields[1])
+	}
+	return parameters
+}
+
+func TestSessionSettingFailure(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantHint bool
+	}{
+		{"refused to an ordinary role", &pgconn.PgError{Code: "42501", Message: "permission denied"}, true},
+		{"lost connection", errors.New("unexpected EOF"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sessionSettingFailure("SET log_statement = 'none'", "dbadmin", tt.err)
+			if !errors.Is(got, tt.err) {
+				t.Errorf("sessionSettingFailure() = %v, does not wrap %v", got, tt.err)
+			}
+			if hasHint := strings.Contains(got.Error(), "dbadmin must be a superuser"); hasHint != tt.wantHint {
+				t.Errorf("sessionSettingFailure() = %q, superuser hint %v, want %v", got, hasHint, tt.wantHint)
 			}
 		})
 	}

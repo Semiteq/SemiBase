@@ -123,53 +123,38 @@ jobs:
           as_plot "$constraints"
 
       # Runs after the pens step because it changes the semiplot password, which
-      # that step logs in with. The probe proves the server logs every statement,
-      # so finding no token means semibase's own sessions kept it out.
+      # that step logs in with. This is the ALTER ROLE ... PASSWORD path.
       - name: Keep the password statements out of the server log
         env:
           PGHOST: localhost
           PGUSER: postgres
           PGPASSWORD: ci-super
           PGDATABASE: postgres
-          CONTAINER: ${{ job.services.postgres.id }}
         run: |
           set -euo pipefail
           as_super() { psql -v ON_ERROR_STOP=1 -qtAc "$1"; }
           as_super "ALTER SYSTEM SET log_statement = 'all'"
           as_super 'SELECT pg_reload_conf()'
           as_super 'SELECT pg_sleep(0.5)'
-          probe="log-probe-$(openssl rand -hex 16)"
-          as_super "SELECT '$probe'"
           token="log-token-$(openssl rand -hex 16)"
           SEMIBASE_PLOT_PASSWORD="$token" ./semibase site --database semiplot_dev --expected-major 17
-          # a file, not a pipe: grep -q closing early fails docker logs under pipefail
-          docker logs "$CONTAINER" > server.log 2>&1
-          if ! grep -qF -- "$probe" server.log; then
-            echo "::error::the server log lacks the probe statement, so log_statement = 'all' is not in effect"
-            exit 1
-          fi
-          if grep -qF -- "$token" server.log; then
-            echo "::error::the semiplot password reached docker logs"
-            exit 1
-          fi
-          log_dir=$(as_super "SELECT CASE WHEN current_setting('log_directory') LIKE '/%'
-            THEN current_setting('log_directory')
-            ELSE current_setting('data_directory') || '/' || current_setting('log_directory') END")
-          if docker exec "$CONTAINER" sh -c '[ -d "$1" ] && grep -rqF -- "$2" "$1"' sh "$log_dir" "$token"; then
-            echo "::error::the semiplot password reached $log_dir"
-            exit 1
-          fi
+          bash .github/scripts/check-server-log.sh "${{ job.services.postgres.id }}" "$token"
 
+      # The server starts with every statement-logging parameter on, so the
+      # CREATE ROLE ... PASSWORD path runs under all five that semibase turns off.
       - name: Provision a PostgreSQL 14 container, where the REVOKE bites
         env:
           SEMIBASE_PLOT_PASSWORD: ci-plot
         run: |
           set -euo pipefail
           docker run -d --name semibase-pg14 -e POSTGRES_PASSWORD=ci-super \
-            -p 15434:5432 postgres:14-alpine
+            -p 15434:5432 postgres:14-alpine \
+            -c log_statement=all -c log_min_duration_statement=0 \
+            -c log_min_duration_sample=0 -c log_transaction_sample_rate=1
           bash .github/scripts/wait-for-postgres.sh semibase-pg14
           # ./semibase is the binary the service-container step built
           ./semibase bench --host 127.0.0.1 --port 15434 --database semiplot_dev --expected-major 14
+          bash .github/scripts/check-server-log.sh semibase-pg14 ci-writer ci-plot
 
       # The socket path, which nothing else covers: the same binary, run the way
       # the official image runs an init script. During init the server has

@@ -5,7 +5,7 @@
   file reader goes: no caller remains once the installer passes passwords through its process
   environment, and the file would leave the superuser password in plaintext beside
   `{app}\semibase.exe`.
-- Every connection `semibase` opens keeps its statements out of the server log, so
+- Every superuser connection `semibase` opens keeps its statements out of the server log, so
   `CREATE ROLE ... PASSWORD` and `ALTER ROLE ... PASSWORD` never reach `data\log`.
 - A prerequisite of `20261019-windows-installer.md`, task 7.
 
@@ -21,7 +21,7 @@
   process; CI sets them at job level (`.github/workflows/ci.yml:33-35,67`); SemiPlot's bench
   passes them with `docker -e` (`SemiPlot/SemiPlot.AppHost/AppHost.cs:31-32`,
   `SemiPlot/bench/provision.sh:18`). None reads a `.env`.
-- `internal/provision/provision.go:110-124` — `connect` already sets two session settings in a
+- `internal/provision/provision.go:110-124`: `connect` already sets two session settings in a
   loop (`provision.go:117`).
 - PostgreSQL defaults `log_min_error_statement` to `error`, so the text of a failing statement is
   logged; `docs/deployment.md:174` recommends `log_statement = 'all'` for the SCADA's first
@@ -33,24 +33,28 @@
 - all tests pass before the next task starts
 
 ## Testing Strategy
-- unit tests beside the source; the server-log behaviour is checked by a CI step against the
-  Linux service container
+- unit tests beside the source; the server-log behaviour is checked by two CI steps against
+  Linux containers, through `.github/scripts/check-server-log.sh`
 
 ## Acceptance Evidence
-- `grep -rn "dotEnv\|\.env" cmd/ internal/` prints nothing; `.env.example` does not exist.
+- `grep -rnE 'dotEnv|\.env\b' cmd/ internal/` prints nothing; `.env.example` does not exist.
 - Linux CI, new step after the `site` runs: `ALTER SYSTEM SET log_statement = 'all'`, reload,
-  run `semibase site` with `SEMIBASE_PLOT_PASSWORD` set to a random token, then
-  `docker exec` into the service container and grep its log directory and `docker logs` for the
-  token: no match.
+  run `semibase site` with `SEMIBASE_PLOT_PASSWORD` set to a random token, then require
+  `logging_collector = off`, the `semiplot` login's probe statement in `docker logs`, and no
+  token in it.
+- Linux CI, the PostgreSQL 14 step: the server starts with all five statement-logging settings
+  on, `bench` creates the roles, and the same script finds neither role password in `docker logs`.
 
 ## Solution Overview
 - Delete the reader outright; no flag or fallback replaces it. A hand run sets the variables in
   its shell, as `docs/deployment.md`'s recovery section shows.
-- `connect` appends `SET log_statement = 'none'` and `SET log_min_error_statement = 'panic'` to
-  its session settings. Both are superuser-settable; every `semibase` connection that issues a
-  password statement is a superuser connection. The `semiplot` login check also goes through
-  `connect` (`check.go:408`), as `semiplot`, which may not set either parameter and issues no
-  password statement: the two settings apply to superuser connections only.
+- `connect` appends `SET log_statement = 'none'`, `SET log_min_error_statement = 'panic'`,
+  `SET log_min_duration_statement = -1`, `SET log_min_duration_sample = -1` and
+  `SET log_transaction_sample_rate = 0` to its session settings. All five are
+  superuser-settable; every `semibase` connection that issues a password statement is a
+  superuser connection. The `semiplot` login check also goes through `connect` (`check.go:408`),
+  as `semiplot`, which may not set any of them and issues no password statement: the five
+  settings apply to superuser connections only.
 
 ## Implementation Steps
 
@@ -63,7 +67,8 @@
 
 - [x] delete the `loadDotEnv` call (`main.go:75`) and `main.go:203-253`
 - [x] rewrite the usage text at `main.go:42-43`: flag wins over environment
-- [x] delete `env_test.go`, `.env.example`, the `.env` line of `.gitignore`
+- [x] delete `env_test.go` and `.env.example`; the `.env` line of `.gitignore` stays, so a
+      leftover file from the removed reader is never committed
 - [x] the existing tests in `main_test.go`, `TestFlagUsageHidesPasswordValues` among them, still
       pass
 - [x] run `go test ./...`, `go vet ./...`, `golangci-lint run` - must pass before task 2
@@ -74,18 +79,20 @@
 - Modify: `internal/provision/provision.go`
 - Modify: `internal/provision/provision_test.go`
 - Modify: `.github/workflows/ci.yml`
+- Create: `.github/scripts/check-server-log.sh`
 
-- [x] in `connect` (`provision.go:110-124`), add the two `SET` statements for superuser
-      connections (plus `SET log_min_duration_statement = -1`: `config.go` sets it to 1000)
+- [x] in `connect` (`provision.go:110-124`), add the five `SET` statements for superuser
+      connections (`config.go` sets `log_min_duration_statement` to 1000), and name the cause
+      when a `--superuser` role without `rolsuper` is refused them
 - [x] write a test over the session-settings list that `connect` builds for the superuser and
       for `semiplot`
-- [x] add the Linux CI step from Acceptance Evidence
+- [x] add the Linux CI steps from Acceptance Evidence
 - [x] run `go test ./...` and read the CI run - green before task 3
 
 ### Task 3: [Final] Update documentation
 - [x] `CLAUDE.md` (Run section) and `docs/deployment.md:47-49,152`: passwords come from flags or
       environment; the `.env` sentences go
 - [x] `CLAUDE.md` (Test section): the CI step list gains the server-log step
-- [x] `docs/architecture/provisioning.md:103-108`: the same, plus the two session settings and
+- [x] `docs/architecture/provisioning.md:103-108`: the same, plus the five session settings and
       why
-- [x] move this plan to `docs/plans/completed/` (left for the delivery step)
+- [ ] move this plan to `docs/plans/completed/` (left for the delivery step)

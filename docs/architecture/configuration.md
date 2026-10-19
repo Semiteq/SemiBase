@@ -35,7 +35,7 @@ machine's hardware floor and mean nothing to a throwaway container.
 | `checkpoint_completion_target` | 0.9 | 0.9 | Already the default in 14+; set explicitly because it matters and must not be lowered. |
 | `wal_compression` | off | on | Cuts write-ahead log volume on a partitioned insert workload for a small CPU cost. |
 | `random_page_cost` | 4.0 | 1.1 | The default assumes a spinning disk and discourages index scans. The machine has a solid-state drive. |
-| `log_min_duration_statement` | off | 1000 ms | A slow query must leave a trace; the only diagnostic that survives an operator restarting the client. |
+| `log_min_duration_statement` | off | 1000 ms | A slow query must leave a trace; the only diagnostic that survives an operator restarting the client. The exception is `semibase`'s own superuser sessions, which set it to -1 to keep password statements out of the log ([provisioning.md](./provisioning.md#invariants-the-provision-package-owns)). |
 | `track_io_timing` | off | on | Makes `EXPLAIN (ANALYZE, BUFFERS)` usable when a query is slow in the field. |
 
 Left at defaults deliberately: `max_connections` (a handful of clients), autovacuum

@@ -93,10 +93,12 @@ and the three rows it added: the only place the function body runs over a non-em
 `semiplot` it then updates pen 0 and requires the scale-pair `CHECK` to refuse unpaired and
 inverted bounds (23514) and the log flag to refuse `NULL` (23502). The
 `Keep the password statements out of the server log` step follows it: it sets
-`log_statement = 'all'` on the service container, proves with a probe statement that the server
-logs it, runs `site` again with a random `semiplot` password, and requires that password in
-neither `docker logs` nor the server's log directory. Both steps need `psql` on the runner; to run
-them locally, point `psql` at a container.
+`log_statement = 'all'` on the service container and runs `site` again with a random `semiplot`
+password. The 14 step starts its server with all five statement-logging parameters on before
+`bench` creates the roles. Both then run `.github/scripts/check-server-log.sh`, which requires
+`logging_collector = off`, so `docker logs` is the whole server log, requires the `semiplot`
+login's probe statement in it, and requires the passwords absent. The pens and the log steps need
+`psql` on the runner; to run them locally, point `psql` at a container.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests in the repository; the integration checks are
@@ -147,16 +149,18 @@ above. Until the first installation, a schema change, a rename included, edits t
 alone and keeps `1` (`docs/architecture/provisioning.md#the-schema-version-is-a-floor`).
 
 Passwords come from flags or env (flag > env), never from a file: `SEMIBASE_SUPER_PASSWORD`,
-`SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD`. Every superuser connection sets
-`log_statement = 'none'`, `log_min_error_statement = 'panic'` and
-`log_min_duration_statement = -1`, so `CREATE ROLE ... PASSWORD` and `ALTER ROLE ... PASSWORD`
-never reach the server log; the `semiplot` connection sets none of them, since it may not and
-issues no password statement
-(`docs/architecture/provisioning.md#invariants-the-provision-package-owns`). The writer and `semiplot` passwords are needed on a first run, which
-creates those roles. Otherwise the superuser password alone carries a run, and the `semiplot` password only decides
-whether the run also tests that role's TCP login. `public.trends` is created under
-`SET ROLE scada_writer` on the superuser connection, so the table's owner is the role the SCADA
-writes with and no `pg_hba.conf` line has to admit a `scada_writer` login.
+`SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD`. Every superuser connection turns off the
+five log settings that print a statement's text (`log_statement`, `log_min_error_statement`,
+`log_min_duration_statement`, `log_min_duration_sample`, `log_transaction_sample_rate`), so
+`CREATE ROLE ... PASSWORD` and `ALTER ROLE ... PASSWORD` stay out of the server log and
+`--superuser` must name a real superuser. The `semiplot` connection sets none of them, since it
+may not and issues no password statement
+(`docs/architecture/provisioning.md#invariants-the-provision-package-owns`). The writer and
+`semiplot` passwords are needed on a first run, which creates those roles. Otherwise the
+superuser password alone carries a run, and the `semiplot` password only decides whether the run
+also tests that role's TCP login. `public.trends` is created under `SET ROLE scada_writer` on the
+superuser connection, so the table's owner is the role the SCADA writes with and no
+`pg_hba.conf` line has to admit a `scada_writer` login.
 
 ## Layout
 
