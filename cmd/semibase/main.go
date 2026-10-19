@@ -1,17 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/signal"
 	"runtime/debug"
-	"strings"
 	"time"
 
 	"github.com/Semiteq/SemiBase/internal/provision"
@@ -39,8 +36,7 @@ non-zero exit.
 Every step checks before it creates; re-running either command is safe. Passwords of
 existing roles change only when the corresponding flag or variable is set.
 
-Passwords come from flags, environment variables, or a .env file in the working
-directory (flag wins over environment, environment wins over .env):
+Passwords come from flags or environment variables (flag wins over environment):
   --super-password    SEMIBASE_SUPER_PASSWORD    superuser
   --writer-password   SEMIBASE_WRITER_PASSWORD   scada_writer
   --plot-password     SEMIBASE_PLOT_PASSWORD     semiplot
@@ -72,7 +68,6 @@ var commands = map[string]func(context.Context, provision.Options) error{
 }
 
 func main() {
-	loadDotEnv()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	exitCode := run(ctx, os.Args[1:])
 	stop()
@@ -198,56 +193,4 @@ func resolvePasswordsFromEnvironment(options *provision.Options) {
 	if options.PlotPassword == "" {
 		options.PlotPassword = os.Getenv("SEMIBASE_PLOT_PASSWORD")
 	}
-}
-
-const dotEnvName = ".env"
-
-// an unreadable file is reported so it does not degrade into a misleading
-// missing-password error later
-func loadDotEnv() {
-	file, err := os.Open(dotEnvName)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			fmt.Fprintf(errorOutput, "warning: cannot open %s: %v\n", dotEnvName, err)
-		}
-		return
-	}
-	defer file.Close()
-	if err := applyEnv(file); err != nil {
-		fmt.Fprintf(errorOutput, "warning: cannot apply %s: %v\n", dotEnvName, err)
-	}
-}
-
-func applyEnv(reader io.Reader) error {
-	scanner := bufio.NewScanner(reader)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		name, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-		name = strings.TrimSpace(name)
-		value = trimMatchingQuotes(strings.TrimSpace(value))
-		if name == "" {
-			continue
-		}
-		if _, exists := os.LookupEnv(name); !exists {
-			if err := os.Setenv(name, value); err != nil {
-				return fmt.Errorf("setting %s: %w", name, err)
-			}
-		}
-	}
-	return scanner.Err()
-}
-
-// only a matching pair is removed, so a password that legitimately starts or
-// ends with a quote passes intact
-func trimMatchingQuotes(value string) string {
-	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
-		return value[1 : len(value)-1]
-	}
-	return value
 }
