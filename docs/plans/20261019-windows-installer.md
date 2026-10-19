@@ -312,13 +312,14 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 **Files:**
 - Modify: `Installer/SemiBase.iss`, `.github/workflows/ci.yml`
 
-- [ ] install EDB through the option file when the state requires it; delete the option file as
-      soon as the EDB `Exec` returns; handle its exit codes as in Technical Details
-- [ ] set a Disabled service to Automatic, start a stopped one, wait for the port
-- [ ] set the three password variables, run `semibase site` as in Technical Details, keep the
+- [x] install EDB through the option file when the state requires it; delete the option file as
+      soon as the EDB `Exec` returns; handle its exit codes as in Technical Details (the EDB path
+      first runs in CI with case 6, task 7)
+- [x] set a Disabled service to Automatic, start a stopped one, wait for the port
+- [x] set the three password variables, run `semibase site` as in Technical Details, keep the
       log; a non-zero exit code is a refusal naming the log
-- [ ] extend the CI job with Acceptance case 2
-- [ ] push and read the CI run - green before task 6
+- [x] extend the CI job with Acceptance case 2
+- [x] push and read the CI run - green before task 6 (run 39288473310)
 
 ### Task 6: Password page for an interactive install
 
