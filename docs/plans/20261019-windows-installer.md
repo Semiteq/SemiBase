@@ -254,12 +254,14 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 - Create: `Installer/fetch-postgresql.sh`
 - Modify: `.gitignore`, `.github/workflows/ci.yml`
 
-- [ ] write the script: `set -euo pipefail`, version, URL and SHA256 constants (17.11-5, values in
+- [x] write the script: `set -euo pipefail`, version, URL and SHA256 constants (17.11-5, values in
       `installer.md#the-pinned-payload`), download to
-      `Installer/payload/`, `sha256sum -c`, skip the download when the file already matches
-- [ ] add `Installer/payload/` and `Installer/Output/` to `.gitignore`
-- [ ] add `shellcheck Installer/fetch-postgresql.sh` to the Linux CI job
-- [ ] run it twice locally: the second run downloads nothing; a corrupted file fails the run
+      `Installer/payload/`, `sha256sum -c`, skip the download when the file already matches; a
+      present file that does not match fails the run and is left for the operator to delete,
+      because a download lands under its final name only after it matched
+- [x] add `Installer/payload/` and `Installer/Output/` to `.gitignore`
+- [x] add `shellcheck Installer/fetch-postgresql.sh` to the Linux CI job
+- [x] run it twice locally: the second run downloads nothing; a corrupted file fails the run
 
 ### Task 3: Installer skeleton and its CI job
 

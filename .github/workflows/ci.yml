@@ -135,6 +135,9 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - name: Shellcheck the payload fetch script
+        run: shellcheck Installer/fetch-postgresql.sh
+
       # The site path, the only thing that covers the ALTER SYSTEM tuning: the
       # same binary provisions the service container the way it provisions an
       # installation machine. Run twice to prove idempotency - the second run

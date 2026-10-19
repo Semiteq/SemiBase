@@ -15,5 +15,9 @@ Thumbs.db
 # Container image build context
 /image/
 
+# Installer: the fetched EDB payload and the iscc output
+/Installer/payload/
+/Installer/Output/
+
 # Archive dumps taken from a customer installation. The repository is public.
 /samples/
