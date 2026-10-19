@@ -11,7 +11,7 @@ import (
 
 type managedService struct{}
 
-func openService(name string) (*managedService, error) {
+func openService(_ context.Context, name string) (*managedService, error) {
 	return nil, fmt.Errorf("--restart-service %s: service restart is not supported on %s", name, runtime.GOOS)
 }
 

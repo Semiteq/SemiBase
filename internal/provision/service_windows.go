@@ -13,22 +13,34 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
-const (
+// serviceControl is the part of *mgr.Service the restart drives, so tests can script the states.
+type serviceControl interface {
+	Query() (svc.Status, error)
+	Control(c svc.Cmd) (svc.Status, error)
+	Start(args ...string) error
+}
+
+type serviceTimings struct {
 	// a shutdown checkpoint with max_wal_size = 8GB can be long
-	stopTimeout       = 3 * time.Minute
-	startTimeout      = 2 * time.Minute
-	statePollInterval = 500 * time.Millisecond
-)
+	stop  time.Duration
+	start time.Duration
+	poll  time.Duration
+}
+
+func defaultServiceTimings() serviceTimings {
+	return serviceTimings{stop: 3 * time.Minute, start: 2 * time.Minute, poll: 500 * time.Millisecond}
+}
 
 type managedService struct {
 	name    string
-	manager *mgr.Mgr
-	handle  *mgr.Service
+	control serviceControl
+	timings serviceTimings
+	release func()
 }
 
 // openService refuses a service the restart could not complete: missing, out of reach,
-// Disabled, or not running, which means it is not the server the run connects to.
-func openService(name string) (*managedService, error) {
+// Disabled, or not running once a start in progress has finished.
+func openService(ctx context.Context, name string) (*managedService, error) {
 	manager, err := mgr.Connect()
 	if err != nil {
 		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
@@ -48,86 +60,143 @@ func openService(name string) (*managedService, error) {
 		}
 		return nil, fmt.Errorf("opening service %s: %w", name, err)
 	}
-	service := &managedService{name: name, manager: manager, handle: handle}
-	if err := service.checkRestartable(); err != nil {
+	service := &managedService{
+		name:    name,
+		control: handle,
+		timings: defaultServiceTimings(),
+		release: func() {
+			_ = handle.Close()
+			_ = manager.Disconnect()
+		},
+	}
+	if err := refuseDisabled(handle, name); err != nil {
+		service.close()
+		return nil, err
+	}
+	if err := service.awaitRunning(ctx); err != nil {
 		service.close()
 		return nil, err
 	}
 	return service, nil
 }
 
-func (s *managedService) checkRestartable() error {
-	config, err := s.handle.Config()
+func refuseDisabled(handle *mgr.Service, name string) error {
+	config, err := handle.Config()
 	if err != nil {
-		return fmt.Errorf("reading the configuration of service %s: %w", s.name, err)
+		return fmt.Errorf("reading the configuration of service %s: %w", name, err)
 	}
 	if config.StartType == mgr.StartDisabled {
 		return fmt.Errorf("service %s is Disabled, so it could not be started again after the stop; "+
-			"set its start type to Automatic or Manual", s.name)
+			"set its start type to Automatic or Manual", name)
 	}
-	status, err := s.handle.Query()
-	if err != nil {
-		return fmt.Errorf("querying service %s: %w", s.name, err)
-	}
-	if status.State != svc.Running {
-		return fmt.Errorf("service %s is %s, not running, so it is not the server this run "+
-			"connects to", s.name, stateName(status.State))
+	return nil
+}
+
+// awaitRunning lets a start in progress finish: an installer may run site right after it started
+// the service, and an EDB service reports Running only once the server accepts connections.
+func (s *managedService) awaitRunning(ctx context.Context) error {
+	waitCtx, cancel := context.WithTimeout(ctx, s.timings.start)
+	defer cancel()
+	state, err := s.pollUntil(waitCtx, func(state svc.State) bool { return state != svc.StartPending })
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("service %s is still start pending after %s: %w", s.name, s.timings.start, err)
+	case err != nil:
+		return err
+	case state != svc.Running:
+		return fmt.Errorf("service %s is %s, not running; site restarts a running service only",
+			s.name, stateName(state))
 	}
 	return nil
 }
 
 func (s *managedService) close() {
-	_ = s.handle.Close()
-	_ = s.manager.Disconnect()
+	s.release()
 }
 
-// restart sends Start whenever Stop was accepted, detached from the command's cancellation,
-// so an interrupt or a timeout never leaves the service stopped.
+// restart detaches from the command's cancellation once the Stop is accepted: the Stopped wait,
+// the Start and the Running wait each run to their own bound, so an interrupt or the command
+// timeout does not leave the service stopped. Residual cases: docs/architecture/provisioning.md.
 func (s *managedService) restart(ctx context.Context) error {
-	if _, err := s.handle.Control(svc.Stop); err != nil {
+	if _, err := s.control.Control(svc.Stop); err != nil {
 		return fmt.Errorf("stopping service %s: %w", s.name, err)
 	}
-	stopErr := s.waitFor(ctx, svc.Stopped, stopTimeout)
-	if stopErr == nil {
-		ok("service %s stopped", s.name)
-	}
-	startErr := s.start(context.WithoutCancel(ctx))
-	return errors.Join(stopErr, startErr)
-}
-
-// start first waits out a stop the caller abandoned: StartService refuses a stopping service.
-func (s *managedService) start(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, startTimeout)
-	defer cancel()
-	if err := s.waitFor(ctx, svc.Stopped, startTimeout); err != nil {
+	detached := context.WithoutCancel(ctx)
+	if err := s.awaitStopped(detached); err != nil {
 		return err
 	}
-	if err := s.handle.Start(); err != nil {
-		return fmt.Errorf("starting service %s: %w", s.name, err)
+	ok("service %s stopped", s.name)
+	if err := s.control.Start(); err != nil {
+		return fmt.Errorf("starting service %s: %w; it stays stopped: start it with Start-Service %s",
+			s.name, err, s.name)
 	}
-	if err := s.waitFor(ctx, svc.Running, startTimeout); err != nil {
+	if err := s.awaitStarted(detached); err != nil {
 		return err
 	}
 	ok("service %s running", s.name)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("service %s restarted, then the run stopped: %w", s.name, err)
+	}
 	return nil
 }
 
-func (s *managedService) waitFor(ctx context.Context, want svc.State, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func (s *managedService) awaitStopped(ctx context.Context) error {
+	waitCtx, cancel := context.WithTimeout(ctx, s.timings.stop)
 	defer cancel()
+	state, err := s.pollUntil(waitCtx, func(state svc.State) bool { return state == svc.Stopped })
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("service %s is still %s %s after the Stop and will stay stopped; once "+
+			"Get-Service %s shows Stopped, start it with Start-Service %s: %w",
+			s.name, stateName(state), s.timings.stop, s.name, s.name, err)
+	case err != nil:
+		return fmt.Errorf("%w after the Stop; check it with Get-Service %s and, if it is stopped, "+
+			"start it with Start-Service %s", err, s.name, s.name)
+	}
+	return nil
+}
+
+// awaitStarted fails at once on Stopped from the second query on: a postmaster that cannot start
+// on the new settings exits, and the service falls back to Stopped.
+func (s *managedService) awaitStarted(ctx context.Context) error {
+	waitCtx, cancel := context.WithTimeout(ctx, s.timings.start)
+	defer cancel()
+	queries := 0
+	state, err := s.pollUntil(waitCtx, func(state svc.State) bool {
+		queries++
+		return state == svc.Running || (state == svc.Stopped && queries > 1)
+	})
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("service %s did not reach running within %s, last state %s: %w",
+			s.name, s.timings.start, stateName(state), err)
+	case err != nil:
+		return err
+	case state == svc.Stopped:
+		return fmt.Errorf("service %s stopped again after the Start: the server did not start on the "+
+			"new settings, which stay in postgresql.auto.conf. Read the server log in the data "+
+			"directory's log folder and the Windows Application event log", s.name)
+	}
+	return nil
+}
+
+// pollUntil queries the service until done accepts its state or ctx ends, and returns the last
+// state it saw.
+func (s *managedService) pollUntil(ctx context.Context, done func(svc.State) bool) (svc.State, error) {
+	var last svc.State
 	for {
-		status, err := s.handle.Query()
+		status, err := s.control.Query()
 		if err != nil {
-			return fmt.Errorf("querying service %s: %w", s.name, err)
+			return last, fmt.Errorf("querying service %s: %w", s.name, err)
 		}
-		if status.State == want {
-			return nil
+		last = status.State
+		if done(last) {
+			return last, nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("service %s did not reach %s within %s, last state %s: %w",
-				s.name, stateName(want), timeout, stateName(status.State), ctx.Err())
-		case <-time.After(statePollInterval):
+			return last, ctx.Err()
+		case <-time.After(s.timings.poll):
 		}
 	}
 }

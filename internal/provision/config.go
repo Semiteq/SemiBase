@@ -2,11 +2,14 @@ package provision
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type setting struct {
@@ -44,7 +47,7 @@ func (o Options) config(ctx context.Context) error {
 	if o.RestartService != "" {
 		var err error
 		// SA4023: off Windows openService always fails, by design
-		if service, err = openService(o.RestartService); err != nil { //nolint:staticcheck
+		if service, err = openService(ctx, o.RestartService); err != nil { //nolint:staticcheck
 			return err
 		}
 		defer service.close()
@@ -55,11 +58,10 @@ func (o Options) config(ctx context.Context) error {
 		return err
 	}
 	switch {
-	case restartNeeded(pending, o.RestartService):
+	case len(pending) > 0 && service != nil:
 		return o.restartService(ctx, service, pending)
 	case len(pending) > 0:
-		note("waiting for a service restart: %s. Restart the PostgreSQL service or reboot the machine.",
-			strings.Join(pending, ", "))
+		note("waiting for a service restart: %s. %s", strings.Join(pending, ", "), restartAdvice(pending))
 	default:
 		ok("all settings active")
 	}
@@ -95,8 +97,13 @@ func (o Options) applySettings(ctx context.Context) ([]string, error) {
 	return pendingRestartSettings(ctx, conn)
 }
 
-func restartNeeded(pending []string, service string) bool {
-	return len(pending) > 0 && service != ""
+// restartAdvice is the operator's next step for settings that wait for a restart.
+func restartAdvice(pending []string) string {
+	advice := "Restart the PostgreSQL service or reboot the machine."
+	if slices.Contains(pending, "listen_addresses") {
+		advice += " After the restart the server accepts connections from this machine only."
+	}
+	return advice
 }
 
 func (o Options) restartService(ctx context.Context, service *managedService, pending []string) error {
@@ -118,14 +125,17 @@ func (o Options) restartService(ctx context.Context, service *managedService, pe
 		return err
 	}
 	if len(stillPending) > 0 {
-		return fmt.Errorf("after restarting service %s, settings still wait for a restart: %s",
-			o.RestartService, strings.Join(stillPending, ", "))
+		return fmt.Errorf("after restarting service %s, settings still wait for a restart: %s. "+
+			"The service may belong to another server than the one on port %d: compare the -D in "+
+			"its PathName (Get-CimInstance Win32_Service) with SHOW data_directory",
+			o.RestartService, strings.Join(stillPending, ", "), o.Port)
 	}
 	ok("all settings active")
 	return nil
 }
 
-// waitReady dials at once, then every interval, until a dial succeeds or timeout elapses.
+// waitReady dials at once, then every interval, until a dial succeeds or timeout elapses. Network
+// errors and 57P03 are retried; any other server error is final.
 func waitReady(
 	ctx context.Context,
 	timeout, interval time.Duration,
@@ -133,20 +143,44 @@ func waitReady(
 ) (*pgx.Conn, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var lastErr error
 	for {
 		conn, err := dial(waitCtx)
 		if err == nil {
 			return conn, nil
 		}
+		if waitCtx.Err() != nil {
+			// a dial cut short by the deadline reports the context, not why the server refused
+			if lastErr == nil {
+				lastErr = err
+			}
+			return nil, waitReadyFailure(ctx, timeout, lastErr)
+		}
+		if !retryableConnectError(err) {
+			return nil, err
+		}
+		lastErr = err
 		select {
 		case <-waitCtx.Done():
-			if ctx.Err() != nil {
-				return nil, fmt.Errorf("waiting for the server to accept connections: %w", ctx.Err())
-			}
-			return nil, fmt.Errorf("the server accepted no connection within %s: %w", timeout, err)
+			return nil, waitReadyFailure(ctx, timeout, lastErr)
 		case <-time.After(interval):
 		}
 	}
+}
+
+func waitReadyFailure(ctx context.Context, timeout time.Duration, lastErr error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("waiting for the server to accept connections: %w; last connect error: %w",
+			ctx.Err(), lastErr)
+	}
+	return fmt.Errorf("the server accepted no connection within %s: %w", timeout, lastErr)
+}
+
+const cannotConnectNow = "57P03"
+
+func retryableConnectError(err error) bool {
+	var pgErr *pgconn.PgError
+	return !errors.As(err, &pgErr) || pgErr.Code == cannotConnectNow
 }
 
 func pendingRestartSettings(ctx context.Context, conn *pgx.Conn) ([]string, error) {

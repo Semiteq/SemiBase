@@ -113,6 +113,10 @@ func run(ctx context.Context, arguments []string) int {
 	defer cancel()
 	if err := execute(commandContext, options); err != nil {
 		fmt.Fprintln(errorOutput, "error:", err)
+		if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
+			fmt.Fprintf(errorOutput, "%s ran out of its %s limit; every step checks before it creates, "+
+				"so re-running it continues from where it stopped\n", command, phaseTimeout)
+		}
 		return 1
 	}
 	fmt.Fprintf(output, "\nDone: %s completed against %s.\n",
@@ -151,10 +155,9 @@ func revisionFromSettings(settings []debug.BuildSetting) string {
 	return vcsRevision
 }
 
-// One flag set serves both commands, which differ only in the tuning phase. The tuning
-// phase's one flag, --restart-service, is refused for bench by Options.Validate.
-// Password flags default to empty so the usage output can only ever show the variable
-// names, never their values.
+// One flag set serves both commands, which differ only in the tuning phase; its one flag,
+// --restart-service, is registered for site alone. Password flags default to empty so the
+// usage output can only ever show the variable names, never their values.
 func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
@@ -171,14 +174,16 @@ func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 		"semiplot password (env SEMIBASE_PLOT_PASSWORD)")
 	flags.IntVar(&options.ExpectedMajor, "expected-major", 0,
 		"required server major version; 0 accepts any major >= 14")
-	flags.StringVar(&options.RestartService, "restart-service", "",
-		"site only: Windows service to restart when the server settings wait for a restart; "+
-			"needs a loopback --host")
+	if command == "site" {
+		flags.StringVar(&options.RestartService, "restart-service", "",
+			"Windows service to restart when the server settings wait for a restart; "+
+				"needs a loopback --host")
+	}
 	return flags
 }
 
 func parseOptions(command string, arguments []string) (provision.Options, error) {
-	options := provision.Options{Command: command}
+	options := provision.Options{}
 	flags := newFlagSet(command, &options)
 	if err := flags.Parse(arguments); err != nil {
 		return provision.Options{}, err

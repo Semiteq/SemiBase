@@ -3,13 +3,14 @@
 package provision
 
 import (
+	"context"
 	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestOpenServiceIsRefusedOffWindows(t *testing.T) {
-	service, err := openService("postgresql-x64-17")
+	service, err := openService(context.Background(), "postgresql-x64-17")
 	if err == nil {
 		service.close()
 		t.Fatal("openService() succeeded off Windows")
