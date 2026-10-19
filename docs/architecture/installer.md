@@ -199,3 +199,14 @@ Measured 2026-10-19 the same way, with a scratch setup that extracts two text fi
   found`. An entry without `DestName` matches by its source file name.
 - It extracts an ordinary `DestDir: "{app}"` entry as well as a `dontcopy` one. So the setup
   extracts `semibase.exe` by that name, whatever file `/DSemibaseExe` names.
+
+Measured 2026-10-19 the same way, with a copy of the setup that has the password page and a
+refusal right after the password checks:
+
+- Under `/SILENT` and `/VERYSILENT` Setup calls `NextButtonClick` for the welcome page, the
+  custom password page and the Ready page, although it shows none of them. So the page's check
+  returns `True` under `WizardSilent`; a `False` would end Setup without exit code 7 and without
+  a setup log.
+- A value written to `TInputQueryWizardPage.Values` and read back is unchanged, a tab, CR LF and
+  Cyrillic included. So `PrepareToInstall` reads the passwords from the page in every mode, and
+  under `/VERYSILENT` it sees exactly the parameter or `SEMIBASE_*` value.

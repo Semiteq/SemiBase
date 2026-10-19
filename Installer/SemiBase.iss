@@ -317,10 +317,15 @@ begin
       'scada_writer role. Pass /WRITERPASSWORD=<password> or set SEMIBASE_WRITER_PASSWORD.';
 end;
 
+function EngineIsFresh: Boolean;
+begin
+  Result := not RegKeyExists(HKLM64, InstallationsKey + '\{#PgInstallation}');
+end;
+
 // The first matching state wins. An empty result fills Engine.
 function EngineRefusal(const WriterPassword: String; var Engine: TEngine): String;
 begin
-  Engine.Fresh := not RegKeyExists(HKLM64, InstallationsKey + '\{#PgInstallation}');
+  Engine.Fresh := EngineIsFresh;
   if not Engine.Fresh then
     Result := RegisteredEngineRefusal(Engine)
   else
@@ -446,6 +451,47 @@ begin
       '.';
 end;
 
+var
+  PasswordPage: TInputQueryWizardPage;
+
+// The page holds the resolved passwords in every mode; under /SILENT nothing edits them
+procedure InitializeWizard;
+begin
+  PasswordPage := CreateInputQueryPage(wpSelectDir, 'PostgreSQL passwords',
+    'Setup provisions PostgreSQL 17 with these passwords.',
+    'The superuser password is required on every run. The scada_writer password is required ' +
+    'when Setup installs PostgreSQL 17; leave it empty on a server where scada_writer exists ' +
+    'to keep its current password.');
+  PasswordPage.Add('&Superuser password:', True);
+  PasswordPage.Add('scada_&writer password:', True);
+  PasswordPage.Values[0] := ResolvePassword('SUPERPASSWORD', 'SEMIBASE_SUPER_PASSWORD');
+  PasswordPage.Values[1] := ResolvePassword('WRITERPASSWORD', 'SEMIBASE_WRITER_PASSWORD');
+end;
+
+// PrepareToInstall enforces every rule again; this only lets the user correct a field. A silent
+// install simulates Next, and a False here would end it without exit code 7 or a setup log.
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Refusal: String;
+begin
+  Result := True;
+  if WizardSilent or (CurPageID <> PasswordPage.ID) then
+    Exit;
+  if PasswordPage.Values[0] = '' then
+    Refusal := 'Enter the superuser password.'
+  else
+    Refusal := PasswordRefusal(PasswordPage.Values[0], PasswordPage.Values[1]);
+  if (Refusal = '') and (PasswordPage.Values[1] = '') and EngineIsFresh and
+    (OtherMajorRefusal = '') then
+    Refusal := 'Enter the scada_writer password: no PostgreSQL 17 is registered, so Setup ' +
+      'installs it and creates the scada_writer role.';
+  if Refusal <> '' then
+  begin
+    MsgBox(Refusal, mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
 // A refusal returned here comes before Inno copies a file and exits 7 under /VERYSILENT; one
 // raised later comes after the uninstaller is registered and may still exit 0.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -453,8 +499,8 @@ var
   SuperPassword, WriterPassword: String;
   Engine: TEngine;
 begin
-  SuperPassword := ResolvePassword('SUPERPASSWORD', 'SEMIBASE_SUPER_PASSWORD');
-  WriterPassword := ResolvePassword('WRITERPASSWORD', 'SEMIBASE_WRITER_PASSWORD');
+  SuperPassword := PasswordPage.Values[0];
+  WriterPassword := PasswordPage.Values[1];
   Result := ParameterRefusal('SUPERPASSWORD', 'SEMIBASE_SUPER_PASSWORD');
   if Result = '' then
     Result := ParameterRefusal('WRITERPASSWORD', 'SEMIBASE_WRITER_PASSWORD');

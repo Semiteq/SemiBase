@@ -326,11 +326,13 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 **Files:**
 - Modify: `Installer/SemiBase.iss`
 
-- [ ] a `CreateInputQueryPage` with the superuser and writer password fields, prefilled from the
+- [x] a `CreateInputQueryPage` with the superuser and writer password fields, prefilled from the
       parameters or variables; not shown under `/SILENT` or `/VERYSILENT`
-- [ ] the superuser field is required; the writer field is required when the engine state is the
-      fresh-install row
-- [ ] build and click through once in a VM
+- [x] the superuser field is required; the writer field is required when the engine state is the
+      fresh-install row (checked on Next from the registry alone: no 17 key and no other major;
+      `PrepareToInstall` stays the enforcement)
+- [x] build and click through once in a VM (skipped - no VM in this run; manual check listed in
+      Post-Completion)
 
 ### Task 7: Full CI case list
 
@@ -397,6 +399,11 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
   (`:1017-1021`, `:1092`, `:1342`) and in `SemiPlot.UI/Localization/Resources.resx` and
   `Resources.ru.resx` (`:316`, `:322`, `:340`); each becomes "run the SemiBase setup again".
 - SemiPlot `docs/architecture/testing-strategy.md:417` names the `winget` install.
+- Click through `SemiBase-Setup.exe` once, interactively, in a clean Windows VM: the password page
+  appears after the folder page; Next with an empty superuser field shows an error and stays;
+  with no PostgreSQL registered, Next with an empty writer field shows an error and stays; with
+  both fields typed, Setup installs PostgreSQL 17, provisions it, and `semiplot` logs in with
+  password `semiplot`.
 - The suite installer passes the superuser password to every SemiBase run, through
   `SEMIBASE_SUPER_PASSWORD` rather than the command line, and stops the SCADA before an upgrade
   that may restart the service.
