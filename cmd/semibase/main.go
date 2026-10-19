@@ -155,9 +155,8 @@ func revisionFromSettings(settings []debug.BuildSetting) string {
 	return vcsRevision
 }
 
-// One flag set serves both commands, which differ only in the tuning phase; its one flag,
-// --restart-service, is registered for site alone. Password flags default to empty so the
-// usage output can only ever show the variable names, never their values.
+// Password flags default to empty so the usage output can only ever show the variable names,
+// never their values.
 func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(errorOutput)

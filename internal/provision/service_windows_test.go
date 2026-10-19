@@ -28,16 +28,15 @@ var (
 // fakeService answers Query with states and the listener probe with probes, each in order and
 // repeating its last entry; no probes means a refused connect.
 type fakeService struct {
-	config     mgr.Config
-	states     []svc.State
-	probes     []probeResult
-	queries    int
-	probeCalls int
-	controlErr error
-	startErr   error
-	stops      int
-	starts     int
-	// probe calls made before the Start, and whether the last of them saw the port refused
+	config            mgr.Config
+	states            []svc.State
+	probes            []probeResult
+	queries           int
+	probeCalls        int
+	controlErr        error
+	startErr          error
+	stops             int
+	starts            int
 	probesAtStart     int
 	startAfterRefusal bool
 }

@@ -28,17 +28,9 @@ jobs:
         with:
           version: v2.12.2
 
-      # The only test of the service sequence itself. The runner image ships
-      # PostgreSQL 17 as service postgresql-x64-17, Stopped and Disabled, so the
-      # first run must refuse it with nothing changed. sc.exe start returns
-      # while the service is still start pending, so the restart run begins
-      # with openService waiting for Running, the way an installer that has
-      # just started the service runs site; no other readiness wait precedes
-      # it. That run ties the service to the server on port 5432 through the
-      # -D in its PathName, finds settings pending and restarts the service,
-      # sending the Start only once the old server's address refuses; the next
-      # finds nothing pending and must not restart it; a service that does not
-      # exist is refused before any change.
+      # sc.exe start returns while the service is Start Pending; run site at once
+      # with no readiness wait, so openService's own wait is what runs. The
+      # sequence is in docs/architecture/provisioning.md#the-service-restart.
       - name: Restart the runner's PostgreSQL service through site
         env:
           SEMIBASE_SUPER_PASSWORD: root
@@ -156,8 +148,7 @@ jobs:
           ./semibase site --database semiplot_dev --expected-major 17
 
       # The service container is never restarted, so the loopback-only value
-      # stays pending; a pending value proves site wrote a delta, and the
-      # postgresql.auto.conf line proves it wrote 'localhost'.
+      # stays pending.
       - name: Require the listen_addresses delta
         env:
           PGHOST: localhost

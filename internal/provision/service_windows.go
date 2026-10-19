@@ -48,7 +48,6 @@ const listenerDialTimeout = 15 * time.Second
 type managedService struct {
 	name    string
 	control serviceControl
-	// address is the IP:port the run's connection reached, which listening dials
 	address string
 	// listening reports whether a TCP connect to address succeeds; false with a nil error means
 	// the connect was refused, so no postmaster listens there
@@ -58,9 +57,7 @@ type managedService struct {
 }
 
 // openService refuses a service the restart could not complete or that is not the server the run
-// connects to: missing, out of reach, Disabled, not running once a start in progress has
-// finished, with no -D in its PathName, or registered for another data directory than the one
-// describe reads.
+// connects to.
 func openService(
 	ctx context.Context,
 	name string,
@@ -336,8 +333,6 @@ func (s *managedService) stoppedAfterStart(ctx context.Context) error {
 		s.name, s.address, s.name)
 }
 
-// pollUntil queries the service until done accepts its state or ctx ends, and returns the last
-// state it saw.
 func (s *managedService) pollUntil(ctx context.Context, done func(svc.State) bool) (svc.State, error) {
 	var last svc.State
 	for {

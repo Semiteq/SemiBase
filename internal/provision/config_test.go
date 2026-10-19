@@ -36,17 +36,20 @@ func TestRestartAdvice(t *testing.T) {
 
 var errRefused = errors.New("connection refused")
 
-// scriptedDialer returns a dialer that fails with failure failures times, then returns conn, and
-// its call count.
-func scriptedDialer(failures int, failure error, conn *pgx.Conn) (func(context.Context) (*pgx.Conn, error), *int) {
-	calls := 0
-	return func(context.Context) (*pgx.Conn, error) {
-		calls++
-		if calls <= failures {
+func scriptedDialer(
+	failures int,
+	failure error,
+	conn *pgx.Conn,
+) (dial func(context.Context) (*pgx.Conn, error), calls *int) {
+	calls = new(int)
+	dial = func(context.Context) (*pgx.Conn, error) {
+		*calls++
+		if *calls <= failures {
 			return nil, failure
 		}
 		return conn, nil
-	}, &calls
+	}
+	return dial, calls
 }
 
 func TestWaitReady(t *testing.T) {
@@ -99,7 +102,6 @@ func TestWaitReady(t *testing.T) {
 	}
 }
 
-// a dial in flight at the deadline fails with the context's error; the message keeps the refusal
 func TestWaitReadyKeepsTheLastRealErrorAtTheDeadline(t *testing.T) {
 	calls := 0
 	dial := func(ctx context.Context) (*pgx.Conn, error) {

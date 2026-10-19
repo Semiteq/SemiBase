@@ -120,7 +120,6 @@ func (o Options) applySettings(ctx context.Context) ([]string, error) {
 	return pendingRestartSettings(ctx, conn)
 }
 
-// restartAdvice is the operator's next step for settings that wait for a restart.
 func restartAdvice(pending []string) string {
 	advice := "Restart the PostgreSQL service or reboot the machine."
 	if slices.Contains(pending, "listen_addresses") {
@@ -155,8 +154,6 @@ func (o Options) restartService(ctx context.Context, service *managedService, pe
 	return nil
 }
 
-// waitReady dials at once, then every interval, until a dial succeeds or timeout elapses. Every
-// error that is not a server error is retried, and so is 57P03; any other server error is final.
 func waitReady(
 	ctx context.Context,
 	timeout, interval time.Duration,
