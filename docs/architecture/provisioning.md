@@ -242,8 +242,9 @@ Stopped does not mean that the postmaster has exited. What follows was read in
 - A Start in that window launches a postmaster that finds the old one's live PID in
   `postmaster.pid` and exits FATAL "lock file already exists" (`CreateLockFile` in `miscinit.c`).
 - The postmaster keeps its listening sockets until its exit callbacks close them, just before
-  they remove `postmaster.pid`. A shutting-down postmaster that no longer accepts still completes
-  the TCP handshake through the listen backlog. So a refused connect (`WSAECONNREFUSED`) means the
+  they remove `postmaster.pid` (`CloseServerPorts`). In `PM_WAIT_DEAD_END` it stops accepting
+  but keeps the sockets open, and the kernel still completes a TCP handshake into the listen
+  backlog. So a refused connect (`WSAECONNREFUSED`) means the
   postmaster is gone, and step 1 waits for it. Any other connect error is retried.
 - Step 1 probes once a second, because each accepted connect costs the server a process. The
   probe dials the address the run connects to. `Validate` already restricts it to loopback, so it
