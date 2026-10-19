@@ -114,8 +114,9 @@ Builder present, and machine-level `PGUSER=postgres` and `PGPASSWORD` set.
   page.
 - The `initdb` call (`initcluster.ps1:257-266`): `--pgdata="<datadir>" --username="postgres"
   --encoding=UTF8 --pwfile="<file>" --auth=scram-sha-256 --locale="C"`.
-- 17.11-5's `initcluster.ps1` equals the EDB 14.24 file on the development machine except for the
-  Authenticode signature block.
+- 17.11-5's `initcluster.ps1` has the same code, line for line, as the EDB 14.24 file on the
+  development machine; only the signature block differs. The 17 copy was compared as printed in
+  the CI log, so whitespace and line endings were not compared.
 
 ## Password characters
 
