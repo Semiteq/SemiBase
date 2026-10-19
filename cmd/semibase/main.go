@@ -33,6 +33,11 @@ refused an insert, a delete or a key change on semiplot_tags; it writes neither 
 archive nor semiplot_meta and holds no CREATE on schema public. A failed check is a
 non-zero exit.
 
+The tuning includes settings that take effect only after a server restart. site
+reports them and leaves the restart to the operator, unless --restart-service names
+the Windows service to restart; the restart needs a loopback --host, because the
+server then listens on the loopback interface only.
+
 Every step checks before it creates; re-running either command is safe. Passwords of
 existing roles change only when the corresponding flag or variable is set.
 
@@ -146,8 +151,8 @@ func revisionFromSettings(settings []debug.BuildSetting) string {
 	return vcsRevision
 }
 
-// One flag set serves both commands: site and bench differ only in the tuning phase,
-// which reads no flag of its own, so every flag below is used by either command.
+// One flag set serves both commands, which differ only in the tuning phase. The tuning
+// phase's one flag, --restart-service, is refused for bench by Options.Validate.
 // Password flags default to empty so the usage output can only ever show the variable
 // names, never their values.
 func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
@@ -166,11 +171,14 @@ func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 		"semiplot password (env SEMIBASE_PLOT_PASSWORD)")
 	flags.IntVar(&options.ExpectedMajor, "expected-major", 0,
 		"required server major version; 0 accepts any major >= 14")
+	flags.StringVar(&options.RestartService, "restart-service", "",
+		"site only: Windows service to restart when the server settings wait for a restart; "+
+			"needs a loopback --host")
 	return flags
 }
 
 func parseOptions(command string, arguments []string) (provision.Options, error) {
-	options := provision.Options{}
+	options := provision.Options{Command: command}
 	flags := newFlagSet(command, &options)
 	if err := flags.Parse(arguments); err != nil {
 		return provision.Options{}, err

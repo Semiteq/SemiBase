@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -26,6 +27,7 @@ const versionFloor = 140000
 const archiveTable = "public.trends"
 
 type Options struct {
+	Command        string
 	Host           string
 	Port           int
 	Database       string
@@ -34,13 +36,28 @@ type Options struct {
 	WriterPassword string
 	PlotPassword   string
 	ExpectedMajor  int
+	RestartService string
 }
 
 var databaseNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
+var loopbackHosts = []string{"localhost", "127.0.0.1", "::1"}
+
 func (o Options) Validate() error {
 	if !databaseNamePattern.MatchString(o.Database) {
 		return fmt.Errorf("database name %q must match %s", o.Database, databaseNamePattern)
+	}
+	if o.RestartService == "" {
+		return nil
+	}
+	if o.Command != "site" {
+		return fmt.Errorf("--restart-service is accepted by site only: %s applies no server "+
+			"settings, so nothing it does waits for a restart", o.Command)
+	}
+	if !slices.Contains(loopbackHosts, o.Host) {
+		return fmt.Errorf("--restart-service needs --host to be one of %s, not %q: after the "+
+			"restart the server listens on the loopback interface only",
+			strings.Join(loopbackHosts, ", "), o.Host)
 	}
 	return nil
 }

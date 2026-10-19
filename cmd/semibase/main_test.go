@@ -85,12 +85,58 @@ func TestFlagUsageHidesPasswordValues(t *testing.T) {
 func TestParseOptions(t *testing.T) {
 	tests := []struct {
 		name        string
+		command     string
 		arguments   []string
 		environment map[string]string
 		wantErr     error
 		wantAnyErr  bool
 		check       func(t *testing.T, options provision.Options)
 	}{
+		{
+			name: "no restart flag parses as before",
+			check: func(t *testing.T, options provision.Options) {
+				if options.RestartService != "" {
+					t.Errorf("RestartService = %q, want empty", options.RestartService)
+				}
+			},
+		},
+		{
+			name:       "bench rejects --restart-service",
+			arguments:  []string{"--restart-service", "x"},
+			wantAnyErr: true,
+		},
+		{
+			name:       "site rejects --restart-service with a non-loopback host",
+			command:    "site",
+			arguments:  []string{"--restart-service", "x", "--host", "db.internal"},
+			wantAnyErr: true,
+		},
+		{
+			name:       "site rejects --restart-service with a socket host",
+			command:    "site",
+			arguments:  []string{"--restart-service", "x", "--host", "/var/run/postgresql"},
+			wantAnyErr: true,
+		},
+		{
+			name:      "site accepts --restart-service with the default host",
+			command:   "site",
+			arguments: []string{"--restart-service", "postgresql-x64-17"},
+			check: func(t *testing.T, options provision.Options) {
+				if options.RestartService != "postgresql-x64-17" {
+					t.Errorf("RestartService = %q, want %q", options.RestartService, "postgresql-x64-17")
+				}
+			},
+		},
+		{
+			name:      "site accepts --restart-service with 127.0.0.1",
+			command:   "site",
+			arguments: []string{"--restart-service", "x", "--host", "127.0.0.1"},
+		},
+		{
+			name:      "site accepts --restart-service with ::1",
+			command:   "site",
+			arguments: []string{"--restart-service", "x", "--host", "::1"},
+		},
 		{
 			name:        "flag beats environment",
 			arguments:   []string{"--super-password", "from-flag"},
@@ -134,7 +180,11 @@ func TestParseOptions(t *testing.T) {
 				t.Setenv(name, value)
 			}
 
-			options, err := parseOptions("bench", tt.arguments)
+			command := tt.command
+			if command == "" {
+				command = "bench"
+			}
+			options, err := parseOptions(command, tt.arguments)
 
 			switch {
 			case tt.wantErr != nil:

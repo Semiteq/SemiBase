@@ -125,14 +125,14 @@
 - Modify: `cmd/semibase/main.go`
 - Modify: `cmd/semibase/main_test.go`
 
-- [ ] add `RestartService` and the command name `Validate` needs to `Options`
+- [x] add `RestartService` and the command name `Validate` needs to `Options`
       (`provision.go:26-35`)
-- [ ] extend `Validate` (`provision.go:39-44`) with the two refusals from Technical Details
-- [ ] register `--restart-service` in `newFlagSet` (`main.go:158`); rewrite the comment at
+- [x] extend `Validate` (`provision.go:39-44`) with the two refusals from Technical Details
+- [x] register `--restart-service` in `newFlagSet` (`main.go:158`); rewrite the comment at
       `main.go:154-155`, which stops being true; add the flag to `usage` (`main.go:20-55`)
-- [ ] write table tests: `bench` rejects the flag, a non-loopback host rejects it, `site` with a
+- [x] write table tests: `bench` rejects the flag, a non-loopback host rejects it, `site` with a
       loopback host accepts it, no flag parses as today
-- [ ] run `go test ./...` - must pass before task 3
+- [x] run `go test ./...` - must pass before task 3
 
 ### Task 3: Restart the service and wait for the server
 
