@@ -363,9 +363,10 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
       actionlint 1.7.12 is clean on `release.yml`)
 
 ### Task 9: Verify acceptance criteria
-- [ ] every case in Acceptance Evidence passes on the CI run
-- [ ] `go test ./...`, `go vet ./...`, `golangci-lint run` are clean; `shellcheck` passes in the
-      Linux job
+- [x] every case in Acceptance Evidence passes on the CI run (run 39302087408 on 2d30572: build,
+      linux and installer green, cases 1 to 10 each asserted by its own installer step)
+- [x] `go test ./...`, `go vet ./...`, `golangci-lint run` are clean; `shellcheck` passes in the
+      Linux job (run 39302087408; locally golangci-lint 2.14.0, CI runs the pinned 2.12.2)
 
 ### Task 10: [Final] Update documentation
 - [ ] `docs/deployment.md`, in Russian: the setup command line, its parameters, environment
