@@ -453,3 +453,44 @@ jobs:
             Write-Host '::error::the runner''s postgresql-x64-17 registration is not back as it was'
             exit 1
           }
+
+      # The runner's 17 is Disabled and stopped here, and nothing has provisioned
+      # it, so scada_writer does not exist and its password has to come too. The
+      # runner image sets a machine-level PGPASSWORD, which the psql check overrides.
+      - name: Provision the runner's existing PostgreSQL 17
+        env:
+          SEMIBASE_SUPER_PASSWORD: root
+        run: |
+          $service = 'postgresql-x64-17'
+          $psql = "$env:PGBIN\psql.exe"
+          $env:SEMIBASE_WRITER_PASSWORD = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char] $_ })
+          $started = Get-Date
+          $setup = Start-Process -FilePath "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe" `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
+          # Both logs are password-free, so they are printed whatever the result
+          Get-ChildItem 'C:\DISTR\Logs\SemiBase\*.log' | Where-Object { $_.LastWriteTime -ge $started.AddSeconds(-1) } |
+            Sort-Object LastWriteTime | ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content -Raw $_.FullName | Write-Host }
+          if ($setup.ExitCode -ne 0) {
+            Write-Host "::error::want exit 0, got $($setup.ExitCode)"
+            exit 1
+          }
+          if (-not (Get-ChildItem 'C:\DISTR\Logs\SemiBase\site-*.log' | Where-Object { $_.LastWriteTime -ge $started.AddSeconds(-1) })) {
+            Write-Host '::error::the run wrote no site log'
+            exit 1
+          }
+          if (-not (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe")) {
+            Write-Host '::error::the run did not install semibase.exe'
+            exit 1
+          }
+          $startMode = (Get-CimInstance Win32_Service -Filter "Name='$service'").StartMode
+          if ($startMode -ne 'Auto') {
+            Write-Host "::error::$service has start type '$startMode' (want Auto)"
+            exit 1
+          }
+          $env:PGPASSWORD = 'semiplot'
+          $tags = & $psql -w -h 127.0.0.1 -U semiplot -d scada_archive -tAc 'SELECT count(*) FROM semiplot_tags'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host '::error::semiplot with password semiplot cannot read semiplot_tags'
+            exit 1
+          }
+          Write-Host "semiplot_tags rows: $tags"
