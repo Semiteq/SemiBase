@@ -255,13 +255,16 @@ A restart drops every open connection to the server, the SCADA's included.
 
 CI's Linux job runs `site` without the flag: its server is a GitHub Actions service container, not
 a Windows service, and nothing in the job restarts it. The `Require the listen_addresses delta`
-step then reads `listen_addresses` still pending, which proves `site` wrote the delta. The Windows
-job's `Restart the runner's PostgreSQL service through site` step is the one test of the restart
-itself. The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and Disabled, so the
-step sets it to Manual and starts it. It then requires the first
-`site --restart-service postgresql-x64-17` run to print `restarting service postgresql-x64-17`
-and to leave `listen_addresses = localhost` with no setting pending, and a second run not to
-restart the service.
+step then reads `listen_addresses` still pending and `localhost` in `postgresql.auto.conf`
+through `pg_file_settings`, which proves `site` wrote the delta. The Windows job's
+`Restart the runner's PostgreSQL service through site` step is the one test of the restart
+itself. The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and Disabled. The
+step first requires `site --restart-service postgresql-x64-17` to refuse the Disabled service
+with no `ALTER SYSTEM SET` line in its output. It then sets the service to Manual, starts it with
+`sc.exe start`, and runs `site` at once, while the service is Start Pending. That run must print
+`restarting service postgresql-x64-17` and leave `listen_addresses = localhost` with no setting
+pending. A second run must not restart the service, and `--restart-service no-such-service` must
+be refused with no `ALTER SYSTEM SET` line.
 
 ## The roles
 

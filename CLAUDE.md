@@ -82,14 +82,17 @@ golangci-lint is pinned to 2.12.2 (`winget install GolangCI.golangci-lint --vers
 config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build`, `go test -race`,
 and the same lint on `windows-latest` and `ubuntu-latest` for every push and pull request.
 The Windows job then runs the `Restart the runner's PostgreSQL service through site` step, the
-only test of the service restart: it sets the runner's Stopped and Disabled `postgresql-x64-17`
-to Manual and starts it, requires the first `site --restart-service postgresql-x64-17` run to
-print `restarting service postgresql-x64-17` and leave `listen_addresses = localhost` with no
-setting pending, and requires a second run not to restart the service.
+only test of the service restart. It requires `site --restart-service postgresql-x64-17` to
+refuse the runner's shipped Disabled service with no `ALTER SYSTEM SET` line, sets it to Manual
+and starts it with `sc.exe start`, which returns while it is Start Pending. It then requires the
+next run, started at once, to print `restarting service postgresql-x64-17` and leave
+`listen_addresses = localhost` with no setting pending, a second run not to restart the service,
+and `--restart-service no-such-service` to be refused with no `ALTER SYSTEM SET` line.
 The Linux job provisions a `postgres:17-alpine` service container by running `site`
 twice — the tuning path and the idempotency check in one step. The
-`Require the listen_addresses delta` step then requires `listen_addresses` still pending: the
-container is never restarted, so a pending value proves `site` wrote the delta.
+`Require the listen_addresses delta` step then requires `listen_addresses` still pending and
+`localhost` in `postgresql.auto.conf` (`pg_file_settings`): the container is never restarted, so
+the pending value and the file line prove `site` wrote the delta.
 The job then runs `bench` against a `postgres:14-alpine` container — the version floor, and the only
 place `REVOKE CREATE ON SCHEMA public FROM PUBLIC` bites, because 15 and later withhold that grant
 by engine default — provisions a third container with `bench` as a `postgres` image init script
