@@ -75,16 +75,17 @@
 - Modify: `internal/provision/provision_test.go`
 - Modify: `.github/workflows/ci.yml`
 
-- [ ] in `connect` (`provision.go:110-124`), add the two `SET` statements for superuser
-      connections
-- [ ] write a test over the session-settings list that `connect` builds for the superuser and
+- [x] in `connect` (`provision.go:110-124`), add the two `SET` statements for superuser
+      connections (plus `SET log_min_duration_statement = -1`: `config.go` sets it to 1000)
+- [x] write a test over the session-settings list that `connect` builds for the superuser and
       for `semiplot`
-- [ ] add the Linux CI step from Acceptance Evidence
+- [x] add the Linux CI step from Acceptance Evidence
 - [ ] run `go test ./...` and read the CI run - green before task 3
 
 ### Task 3: [Final] Update documentation
 - [ ] `CLAUDE.md` (Run section) and `docs/deployment.md:47-49,152`: passwords come from flags or
       environment; the `.env` sentences go
+- [ ] `CLAUDE.md` (Test section): the CI step list gains the server-log step
 - [ ] `docs/architecture/provisioning.md:103-108`: the same, plus the two session settings and
       why
 - [ ] move this plan to `docs/plans/completed/`

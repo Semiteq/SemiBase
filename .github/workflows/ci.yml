@@ -122,6 +122,44 @@ jobs:
           )
           as_plot "$constraints"
 
+      # Runs after the pens step because it changes the semiplot password, which
+      # that step logs in with. The probe proves the server logs every statement,
+      # so finding no token means semibase's own sessions kept it out.
+      - name: Keep the password statements out of the server log
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: ci-super
+          PGDATABASE: postgres
+          CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          as_super() { psql -v ON_ERROR_STOP=1 -qtAc "$1"; }
+          as_super "ALTER SYSTEM SET log_statement = 'all'"
+          as_super 'SELECT pg_reload_conf()'
+          as_super 'SELECT pg_sleep(0.5)'
+          probe="log-probe-$(openssl rand -hex 16)"
+          as_super "SELECT '$probe'"
+          token="log-token-$(openssl rand -hex 16)"
+          SEMIBASE_PLOT_PASSWORD="$token" ./semibase site --database semiplot_dev --expected-major 17
+          # a file, not a pipe: grep -q closing early fails docker logs under pipefail
+          docker logs "$CONTAINER" > server.log 2>&1
+          if ! grep -qF -- "$probe" server.log; then
+            echo "::error::the server log lacks the probe statement, so log_statement = 'all' is not in effect"
+            exit 1
+          fi
+          if grep -qF -- "$token" server.log; then
+            echo "::error::the semiplot password reached docker logs"
+            exit 1
+          fi
+          log_dir=$(as_super "SELECT CASE WHEN current_setting('log_directory') LIKE '/%'
+            THEN current_setting('log_directory')
+            ELSE current_setting('data_directory') || '/' || current_setting('log_directory') END")
+          if docker exec "$CONTAINER" sh -c '[ -d "$1" ] && grep -rqF -- "$2" "$1"' sh "$log_dir" "$token"; then
+            echo "::error::the semiplot password reached $log_dir"
+            exit 1
+          fi
+
       - name: Provision a PostgreSQL 14 container, where the REVOKE bites
         env:
           SEMIBASE_PLOT_PASSWORD: ci-plot

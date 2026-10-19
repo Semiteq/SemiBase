@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -201,6 +202,35 @@ func TestEndpoint(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.options.endpoint("scada_archive"); got != tt.want {
 				t.Errorf("endpoint() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// the semiplot login check connects through the same function and may not set a SUSET parameter
+func TestSessionSettings(t *testing.T) {
+	userSettings := []string{"SET standard_conforming_strings = on", "SET search_path = public"}
+	superuserSettings := append(slices.Clone(userSettings),
+		"SET log_statement = 'none'",
+		"SET log_min_error_statement = 'panic'",
+		"SET log_min_duration_statement = -1",
+	)
+	tests := []struct {
+		name      string
+		superUser string
+		user      string
+		want      []string
+	}{
+		{"default superuser", "postgres", "postgres", superuserSettings},
+		{"renamed superuser", "dbadmin", "dbadmin", superuserSettings},
+		{"plot role", "postgres", PlotRole, userSettings},
+		{"default name when the superuser is renamed", "dbadmin", "postgres", userSettings},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Options{SuperUser: tt.superUser}.sessionSettings(tt.user)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("sessionSettings(%q) with superuser %q = %q, want %q", tt.user, tt.superUser, got, tt.want)
 			}
 		})
 	}

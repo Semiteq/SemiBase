@@ -112,15 +112,29 @@ func (o Options) connect(ctx context.Context, database, user, password string) (
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %s as %s: %w", o.endpoint(database), user, err)
 	}
-	// both are USERSET, so no privilege is needed. escapeLiteral relies on the first, and the
-	// second pins where an unqualified semiplot_* name resolves.
-	for _, setting := range []string{"SET standard_conforming_strings = on", "SET search_path = public"} {
+	for _, setting := range o.sessionSettings(user) {
 		if _, err := conn.Exec(ctx, setting); err != nil {
 			_ = conn.Close(ctx)
 			return nil, fmt.Errorf("%s: %w", setting, err)
 		}
 	}
 	return conn, nil
+}
+
+// The first two are USERSET: escapeLiteral relies on standard_conforming_strings, and
+// search_path pins where an unqualified semiplot_* name resolves. The logging three are SUSET
+// and keep the text of CREATE ROLE ... PASSWORD and ALTER ROLE ... PASSWORD out of the server
+// log; only a superuser connection may set them, and only it issues those statements.
+func (o Options) sessionSettings(user string) []string {
+	settings := []string{"SET standard_conforming_strings = on", "SET search_path = public"}
+	if user != o.SuperUser {
+		return settings
+	}
+	return append(settings,
+		"SET log_statement = 'none'",
+		"SET log_min_error_statement = 'panic'",
+		"SET log_min_duration_statement = -1",
+	)
 }
 
 // quote doubling alone is safe only because connect sets standard_conforming_strings = on,
