@@ -165,7 +165,7 @@
       (the first run creates those roles), and the flags from Acceptance Evidence
 - [x] run the three Windows checks from Acceptance Evidence; this step is the only test of the
       service sequence itself
-- [ ] push the branch and read the CI run - both jobs green before task 5
+- [x] push the branch and read the CI run - both jobs green before task 5
 
 ### Task 5: Verify acceptance criteria
 - [ ] every item in Acceptance Evidence holds on the CI run
