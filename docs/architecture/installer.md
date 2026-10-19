@@ -179,3 +179,14 @@ built by ISCC 6.7.3:
 - `PrepareToInstall` returning a non-empty string under `/VERYSILENT` makes Setup exit with 7.
 - The fourth line of a `/LOG` file is `Setup command line: ...` with every parameter. `Exec`
   command lines from `[Code]` are not logged.
+
+Measured 2026-10-19 the same way, with a copy of `Installer/SemiBase.iss` that has
+`PrivilegesRequired=lowest`, no payload and a refusal in place of success:
+
+- `ParamStr` and `{param:...}` return the same value, and both drop every `"` while keeping `\`:
+  `/SUPERPASSWORD=Aa1"z` and `"/SUPERPASSWORD=Aa1""z"` arrive as `Aa1z`,
+  `"/SUPERPASSWORD=Aa1\"z"` as `Aa1\z`, `"/SUPERPASSWORD=a b"` as `a b`. `{x}|y%PATH%` arrives
+  unchanged. A parameter name matches in any case.
+- `GetCmdTail` returns the command line as typed, quotes included, after a leading
+  `/SL5="..."` that the bootstrapper adds. The setup compares the two and refuses a password
+  parameter whose value does not appear in it verbatim.

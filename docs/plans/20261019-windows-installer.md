@@ -131,7 +131,10 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
   the superuser password in the ANSI code page while `semibase` sends UTF-8, so a non-ASCII
   superuser password produces a cluster nobody can log into. The superuser password also must
   not contain `"` or end in `\`: either one breaks EDB's `initcluster.ps1` command line, and the
-  install fails half-done (`installer.md#password-characters`).
+  install fails half-done (`installer.md#password-characters`). Setup's own command-line parser
+  drops every `"`, so a password parameter whose value does not appear verbatim in
+  `GetCmdTail` is refused too; a password with `"` reaches Setup only through its variable
+  (`installer.md#inno-setup`).
 - The superuser password is required on every run and stored nowhere.
 - Every run sets the `semiplot` role to `semiplot`. SemiPlot's connection file relies on the
   convention, so the role has one writer and no site-specific value to lose on an upgrade.
