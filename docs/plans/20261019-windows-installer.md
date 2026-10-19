@@ -352,13 +352,15 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 **Files:**
 - Modify: `.github/workflows/release.yml`
 
-- [ ] split the job into `build`, `installer`, `release` as in Technical Details; keep every
+- [x] split the job into `build`, `installer`, `release` as in Technical Details; keep every
       comment whose reasoning still holds, and move each one to the step it explains
-- [ ] the `release` job restores the exec bit, then attaches the Linux binary and
+- [x] the `release` job restores the exec bit, then attaches the Linux binary and
       `SemiBase-Setup.exe` in one call; the Windows binary is not attached
-- [ ] rewrite the ordering rationale at `release.yml:198-200` to the reason in Technical Details
-- [ ] push a prerelease tag on a fork of the repository: the release page has two assets,
-      `:latest` did not move, and nothing is published to `ghcr.io/semiteq`
+- [x] rewrite the ordering rationale at `release.yml:198-200` to the reason in Technical Details
+- [x] push a prerelease tag on a fork of the repository: the release page has two assets,
+      `:latest` did not move, and nothing is published to `ghcr.io/semiteq` (skipped - tags,
+      forks and releases are outside this run's git permission; moved to Post-Completion;
+      actionlint 1.7.12 is clean on `release.yml`)
 
 ### Task 9: Verify acceptance criteria
 - [ ] every case in Acceptance Evidence passes on the CI run
@@ -404,6 +406,11 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
   with no PostgreSQL registered, Next with an empty writer field shows an error and stays; with
   both fields typed, Setup installs PostgreSQL 17, provisions it, and `semiplot` logs in with
   password `semiplot`.
+- Push a prerelease tag such as `v0.0.0-rc.1` on a fork of the repository and read the run:
+  `build`, `installer` and `release` pass, the release page is marked prerelease and has two
+  assets, `semibase_<v>_linux_amd64` and `SemiBase-Setup.exe`, the fork's
+  `ghcr.io/<fork owner>/semibase` has the version tag only, its `:latest` did not move, and
+  nothing is published to `ghcr.io/semiteq`.
 - The suite installer passes the superuser password to every SemiBase run, through
   `SEMIBASE_SUPER_PASSWORD` rather than the command line, and stops the SCADA before an upgrade
   that may restart the service.
