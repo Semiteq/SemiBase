@@ -5,6 +5,7 @@ package provision
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -12,14 +13,30 @@ import (
 	"golang.org/x/sys/windows/svc"
 )
 
-// fakeService answers Query with states in order and repeats the last one.
+type probeResult struct {
+	answers bool
+	err     error
+}
+
+var (
+	answering = probeResult{answers: true}
+	refusing  = probeResult{}
+)
+
+// fakeService answers Query with states and the listener probe with probes, each in order and
+// repeating its last entry; no probes means a refused connect.
 type fakeService struct {
 	states     []svc.State
+	probes     []probeResult
 	queries    int
+	probeCalls int
 	controlErr error
 	startErr   error
 	stops      int
 	starts     int
+	// probe calls made before the Start, and whether the last of them saw the port refused
+	probesAtStart     int
+	startAfterRefusal bool
 }
 
 func (f *fakeService) Query() (svc.Status, error) {
@@ -35,14 +52,34 @@ func (f *fakeService) Control(svc.Cmd) (svc.Status, error) {
 
 func (f *fakeService) Start(...string) error {
 	f.starts++
+	f.probesAtStart = f.probeCalls
+	f.startAfterRefusal = f.probeCalls > 0 && f.lastProbe() == refusing
 	return f.startErr
+}
+
+func (f *fakeService) listening(context.Context) (bool, error) {
+	f.probeCalls++
+	result := f.lastProbe()
+	return result.answers, result.err
+}
+
+func (f *fakeService) lastProbe() probeResult {
+	if len(f.probes) == 0 {
+		return refusing
+	}
+	return f.probes[min(f.probeCalls, len(f.probes))-1]
 }
 
 func newFakeManagedService(fake *fakeService) *managedService {
 	return &managedService{
-		name:    "pg",
-		control: fake,
-		timings: serviceTimings{stop: 50 * time.Millisecond, start: 50 * time.Millisecond, poll: time.Millisecond},
+		name:      "pg",
+		control:   fake,
+		address:   "localhost:5432",
+		listening: fake.listening,
+		timings: serviceTimings{
+			stop: 50 * time.Millisecond, start: 50 * time.Millisecond,
+			poll: time.Millisecond, probe: time.Millisecond,
+		},
 		release: func() {},
 	}
 }
@@ -63,14 +100,17 @@ var fullRestart = []svc.State{svc.StopPending, svc.StopPending, svc.Stopped, svc
 
 func TestRestart(t *testing.T) {
 	tests := []struct {
-		name       string
-		ctx        context.Context
-		states     []svc.State
-		controlErr error
-		startErr   error
-		wantStarts int
-		wantErr    []string
-		wantCause  error
+		name              string
+		ctx               context.Context
+		states            []svc.State
+		probes            []probeResult
+		controlErr        error
+		startErr          error
+		wantStarts        int
+		wantProbesAtStart int
+		wantErr           []string
+		wantNotErr        string
+		wantCause         error
 	}{
 		{name: "stops and starts", ctx: context.Background(), states: fullRestart, wantStarts: 1},
 		{
@@ -93,14 +133,43 @@ func TestRestart(t *testing.T) {
 			wantCause: context.DeadlineExceeded,
 		},
 		{
+			name: "Stopped while the server still answers: Start waits for the refusal", ctx: context.Background(),
+			states: fullRestart, probes: []probeResult{answering, answering, refusing},
+			wantStarts: 1, wantProbesAtStart: 3,
+		},
+		{
+			name: "a probe error is retried until the refusal", ctx: context.Background(),
+			states: fullRestart, probes: []probeResult{{err: errors.New("i/o timeout")}, refusing},
+			wantStarts: 1, wantProbesAtStart: 2,
+		},
+		{
+			name: "a server that outlives the stop bound gets no Start", ctx: context.Background(),
+			states: []svc.State{svc.Stopped}, probes: []probeResult{answering},
+			wantErr:   []string{"still answers on localhost:5432", "sends no Start", "Start-Service pg"},
+			wantCause: context.DeadlineExceeded,
+		},
+		{
+			name: "a probe that never gets a refusal gets no Start", ctx: context.Background(),
+			states: []svc.State{svc.Stopped}, probes: []probeResult{{err: errors.New("i/o timeout")}},
+			wantErr:   []string{"without a refusal (i/o timeout)", "Start-Service pg"},
+			wantCause: context.DeadlineExceeded,
+		},
+		{
 			name: "a refused Start says how to start it", ctx: context.Background(),
 			states: []svc.State{svc.Stopped}, startErr: errors.New("start refused"), wantStarts: 1,
 			wantErr: []string{"stays stopped", "Start-Service pg"},
 		},
 		{
-			name: "a server that falls back to Stopped fails at once", ctx: context.Background(),
+			name: "a server that exits during its startup fails at once", ctx: context.Background(),
 			states: []svc.State{svc.Stopped, svc.StartPending, svc.Stopped}, wantStarts: 1,
-			wantErr: []string{"stopped again after the Start", "postgresql.auto.conf"},
+			wantErr: []string{"stopped again after the Start", "nothing answers", "postgresql.auto.conf"},
+		},
+		{
+			name: "a startup pg_ctl stopped waiting for is not blamed on the settings", ctx: context.Background(),
+			states: []svc.State{svc.Stopped, svc.StartPending, svc.Stopped},
+			probes: []probeResult{refusing, answering}, wantStarts: 1,
+			wantErr:    []string{"stopped again after the Start", "outside the service", "pg_ctl stop -D"},
+			wantNotErr: "postgresql.auto.conf",
 		},
 		{
 			name: "Stopped right after the Start is given one more query", ctx: context.Background(),
@@ -114,7 +183,9 @@ func TestRestart(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fake := &fakeService{states: tt.states, controlErr: tt.controlErr, startErr: tt.startErr}
+			fake := &fakeService{
+				states: tt.states, probes: tt.probes, controlErr: tt.controlErr, startErr: tt.startErr,
+			}
 			err := newFakeManagedService(fake).restart(tt.ctx)
 			if fake.stops != 1 {
 				t.Errorf("Stop sent %d times, want 1", fake.stops)
@@ -122,7 +193,16 @@ func TestRestart(t *testing.T) {
 			if fake.starts != tt.wantStarts {
 				t.Errorf("Start sent %d times, want %d", fake.starts, tt.wantStarts)
 			}
+			if fake.starts > 0 && !fake.startAfterRefusal {
+				t.Errorf("Start sent after %d probes, the last not a refusal", fake.probesAtStart)
+			}
+			if tt.wantProbesAtStart > 0 && fake.probesAtStart != tt.wantProbesAtStart {
+				t.Errorf("Start sent after %d probes, want %d", fake.probesAtStart, tt.wantProbesAtStart)
+			}
 			assertServiceError(t, err, tt.wantErr, tt.wantCause)
+			if tt.wantNotErr != "" && err != nil && strings.Contains(err.Error(), tt.wantNotErr) {
+				t.Errorf("error = %q, want it not to contain %q", err, tt.wantNotErr)
+			}
 		})
 	}
 }
@@ -157,6 +237,30 @@ func TestAwaitRunning(t *testing.T) {
 				t.Errorf("the check sent %d Stop and %d Start, want none", fake.stops, fake.starts)
 			}
 		})
+	}
+}
+
+// localhost resolves to ::1 first on Windows, so the listener on 127.0.0.1 also proves that a
+// refusal on one address does not hide an answer on the other
+func TestDialListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := dialListener(net.JoinHostPort("localhost", port))
+
+	if answers, err := probe(context.Background()); !answers || err != nil {
+		t.Errorf("with a listener: answers = %v, error = %v, want true, nil", answers, err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if answers, err := probe(context.Background()); answers || err != nil {
+		t.Errorf("after the listener closed: answers = %v, error = %v, want false, nil", answers, err)
 	}
 }
 

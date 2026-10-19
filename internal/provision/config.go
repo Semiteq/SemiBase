@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,7 +49,8 @@ func (o Options) config(ctx context.Context) error {
 	if o.RestartService != "" {
 		var err error
 		// SA4023: off Windows openService always fails, by design
-		if service, err = openService(ctx, o.RestartService); err != nil { //nolint:staticcheck
+		address := net.JoinHostPort(o.Host, strconv.Itoa(o.Port))
+		if service, err = openService(ctx, o.RestartService, address); err != nil { //nolint:staticcheck
 			return err
 		}
 		defer service.close()

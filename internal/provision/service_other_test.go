@@ -10,7 +10,7 @@ import (
 )
 
 func TestOpenServiceIsRefusedOffWindows(t *testing.T) {
-	service, err := openService(context.Background(), "postgresql-x64-17")
+	service, err := openService(context.Background(), "postgresql-x64-17", "localhost:5432")
 	if err == nil {
 		service.close()
 		t.Fatal("openService() succeeded off Windows")
