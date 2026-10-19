@@ -339,13 +339,13 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 **Files:**
 - Modify: `.github/workflows/ci.yml`
 
-- [ ] remove the runner's PostgreSQL after case 2: `uninstall-postgresql.exe --mode unattended
+- [x] remove the runner's PostgreSQL after case 2: `uninstall-postgresql.exe --mode unattended
       --unattendedmodeui none`, then wait for the `%TEMP%\_uninstall*\_uninstall*.000` copy it
       starts to exit (the uninstaller itself exits before doing anything,
       `installer.md#the-uninstaller`), delete `C:\PostgreSQL\17\data`,
       `C:\Program Files\PostgreSQL` and `HKLM\SOFTWARE\PostgreSQL`; assert Acceptance case 3
-- [ ] add Acceptance cases 4 to 10 in order
-- [ ] push and read the CI run - green before task 8
+- [x] add Acceptance cases 4 to 10 in order
+- [x] push and read the CI run - green before task 8 (run 39299830501)
 
 ### Task 8: Release the setup
 
