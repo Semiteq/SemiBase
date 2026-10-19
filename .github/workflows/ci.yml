@@ -28,11 +28,15 @@ jobs:
         with:
           version: v2.12.2
 
-      # The only test of the service restart itself. The runner image ships
-      # PostgreSQL 17 as service postgresql-x64-17, Stopped and Disabled, and
-      # openService refuses both, so the step enables and starts it first. The
-      # first site run finds settings pending and restarts the service; the
-      # second finds nothing pending and must not restart it.
+      # The only test of the service sequence itself. The runner image ships
+      # PostgreSQL 17 as service postgresql-x64-17, Stopped and Disabled, so the
+      # first run must refuse it with nothing changed. sc.exe start returns
+      # while the service is still start pending, so the restart run begins
+      # with openService waiting for Running, the way an installer that has
+      # just started the service runs site; no other readiness wait precedes
+      # it. That run finds settings pending and restarts the service; the next
+      # finds nothing pending and must not restart it; a service that does not
+      # exist is refused before any change.
       - name: Restart the runner's PostgreSQL service through site
         env:
           SEMIBASE_SUPER_PASSWORD: root
@@ -42,27 +46,37 @@ jobs:
         run: |
           $service = 'postgresql-x64-17'
           $psql = "$env:PGBIN\psql.exe"
-          Get-Service $service | Select-Object Name, Status, StartType | Format-List
-          Write-Host "PGBIN=$env:PGBIN"
-          Set-Service $service -StartupType Manual
-          Start-Service $service
-          # the first site connect does not retry, and Running may precede the postmaster
-          $ready = $false
-          foreach ($attempt in 1..30) {
-            & "$env:PGBIN\pg_isready.exe" -h 127.0.0.1 -p 5432
-            if ($LASTEXITCODE -eq 0) { $ready = $true; break }
-            Start-Sleep -Seconds 1
-          }
-          if (-not $ready) { Write-Host "::error::$service accepted no connection after Start-Service"; exit 1 }
-
+          Get-CimInstance Win32_Service -Filter "Name='$service'" |
+            Select-Object Name, State, StartMode, PathName | Format-List
           go build -o semibase.exe ./cmd/semibase
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          .\semibase.exe site --port 5432 --expected-major 17 --restart-service $service |
-            Tee-Object -Variable first
-          if ($LASTEXITCODE -ne 0) { Write-Host "::error::the first site run exited $LASTEXITCODE"; exit 1 }
-          # joined: -like over an array filters elements instead of answering yes or no
-          if (($first -join "`n") -notlike "*restarting service $service*") {
+          # stdout and stderr joined into one string: -like over an array filters
+          # elements instead of answering yes or no
+          function Invoke-Site([string] $name) {
+            $ErrorActionPreference = 'Continue'
+            $lines = & .\semibase.exe site --port 5432 --expected-major 17 --restart-service $name 2>&1 |
+              ForEach-Object { "$_" }
+            $lines | Write-Host
+            [pscustomobject]@{ Code = $LASTEXITCODE; Output = $lines -join "`n" }
+          }
+          function Assert-Refused($run, [string] $reason) {
+            if ($run.Code -ne 1 -or $run.Output -notlike "*$reason*" -or $run.Output -like '*ALTER SYSTEM SET*') {
+              Write-Host "::error::want exit 1 with '$reason' and no ALTER SYSTEM SET, got exit $($run.Code)"
+              exit 1
+            }
+          }
+
+          Assert-Refused (Invoke-Site $service) "service $service is Disabled"
+
+          Set-Service $service -StartupType Manual
+          sc.exe start $service
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Write-Host "state after sc.exe start: $((Get-Service $service).Status)"
+
+          $first = Invoke-Site $service
+          if ($first.Code -ne 0) { Write-Host "::error::the first site run exited $($first.Code)"; exit 1 }
+          if ($first.Output -notlike "*restarting service $service*") {
             Write-Host "::error::the first site run did not restart $service"
             exit 1
           }
@@ -77,13 +91,14 @@ jobs:
             exit 1
           }
 
-          .\semibase.exe site --port 5432 --expected-major 17 --restart-service $service |
-            Tee-Object -Variable second
-          if ($LASTEXITCODE -ne 0) { Write-Host "::error::the second site run exited $LASTEXITCODE"; exit 1 }
-          if (($second -join "`n") -like '*restarting service*') {
+          $second = Invoke-Site $service
+          if ($second.Code -ne 0) { Write-Host "::error::the second site run exited $($second.Code)"; exit 1 }
+          if ($second.Output -like '*restarting service*') {
             Write-Host "::error::the second site run restarted $service with nothing pending"
             exit 1
           }
+
+          Assert-Refused (Invoke-Site 'no-such-service') 'service no-such-service does not exist'
 
   linux:
     runs-on: ubuntu-latest
@@ -128,7 +143,8 @@ jobs:
           ./semibase site --database semiplot_dev --expected-major 17
 
       # The service container is never restarted, so the loopback-only value
-      # stays pending; a pending value proves site wrote the delta.
+      # stays pending; a pending value proves site wrote a delta, and the
+      # postgresql.auto.conf line proves it wrote 'localhost'.
       - name: Require the listen_addresses delta
         env:
           PGHOST: localhost
@@ -138,8 +154,11 @@ jobs:
           set -euo pipefail
           pending=$(psql -d postgres -tAc \
             "SELECT pending_restart FROM pg_settings WHERE name = 'listen_addresses'")
-          if [[ "$pending" != t ]]; then
-            echo "::error::listen_addresses pending_restart is '$pending' (want t)"
+          written=$(psql -d postgres -tAc \
+            "SELECT setting FROM pg_file_settings WHERE name = 'listen_addresses'
+               AND sourcefile LIKE '%postgresql.auto.conf'")
+          if [[ "$pending" != t || "$written" != localhost ]]; then
+            echo "::error::listen_addresses pending_restart '$pending' (want t), auto.conf value '$written' (want localhost)"
             exit 1
           fi
 
