@@ -190,3 +190,12 @@ Measured 2026-10-19 the same way, with a copy of `Installer/SemiBase.iss` that h
 - `GetCmdTail` returns the command line as typed, quotes included, after a leading
   `/SL5="..."` that the bootstrapper adds. The setup compares the two and refuses a password
   parameter whose value does not appear in it verbatim.
+
+Measured 2026-10-19 the same way, with a scratch setup that extracts two text files and refuses:
+
+- `ExtractTemporaryFile` matches an entry by its `DestName`. For `Source: "source_v1_name.txt";
+  DestName: "dest.txt"`, `ExtractTemporaryFile('dest.txt')` puts `{tmp}\dest.txt` in place and
+  `ExtractTemporaryFile('source_v1_name.txt')` raises `The file "source_v1_name.txt" was not
+  found`. An entry without `DestName` matches by its source file name.
+- It extracts an ordinary `DestDir: "{app}"` entry as well as a `dontcopy` one. So the setup
+  extracts `semibase.exe` by that name, whatever file `/DSemibaseExe` names.

@@ -21,8 +21,9 @@
 
 #define LogRoot      "C:\DISTR\Logs\SemiBase"
 
-; The PostgreSQL 17 install this setup creates: its registry key, port and data directory
+; The PostgreSQL 17 install this setup creates: its registry key, service, port and data directory
 #define PgInstallation "postgresql-x64-17"
+#define PgService      "postgresql-x64-17"
 #define PgPort         "5432"
 #define PgDataDir      "C:\Program Files\PostgreSQL\17\data"
 
@@ -66,6 +67,11 @@ Source: "{#SemibaseExe}"; DestDir: "{app}"; DestName: "semibase.exe"; Flags: ign
 Source: "payload\{#PgInstaller}"; Flags: dontcopy nocompression
 
 [Code]
+function SetEnvironmentVariable(lpName, lpValue: String): BOOL;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+function GetTickCount: Cardinal;
+  external 'GetTickCount@kernel32.dll stdcall';
+
 function CommandLineParameter(const Name: String): String;
 var
   Prefix: String;
@@ -140,6 +146,8 @@ const
   InstallationsKey = 'SOFTWARE\PostgreSQL\Installations';
   ServicesKey = 'SOFTWARE\PostgreSQL\Services';
   RecoveryHint = ' See the recovery section of docs/deployment.md.';
+  PortWaitMilliseconds = 60000;
+  ErrorServiceAlreadyRunning = 1056;
 
 type
   TEngine = record
@@ -165,12 +173,21 @@ begin
   SaveStringsToUTF8FileWithoutBOM(LogPath('setup'), Lines, True);
 end;
 
-function ServiceExists(const Name: String): Boolean;
+// -1 when sc.exe did not run
+function ScExitCode(const Arguments: String): Integer;
 var
   ExitCode: Integer;
 begin
-  Result := Exec(ExpandConstant('{sys}\sc.exe'), 'query "' + Name + '"', '', SW_HIDE,
-    ewWaitUntilTerminated, ExitCode) and (ExitCode = 0);
+  if Exec(ExpandConstant('{sys}\sc.exe'), Arguments, '', SW_HIDE, ewWaitUntilTerminated,
+    ExitCode) then
+    Result := ExitCode
+  else
+    Result := -1;
+end;
+
+function ServiceExists(const Name: String): Boolean;
+begin
+  Result := ScExitCode('query "' + Name + '"') = 0;
 end;
 
 // Pascal Script has no sockets. Returns False when the probe itself did not run.
@@ -314,6 +331,121 @@ begin
   end;
 end;
 
+// EDB exits 0 without a superpassword and leaves a cluster nobody can log into, so the option
+// file always carries one; EDB leaves the file in place, so Setup deletes it.
+function InstallEngineRefusal(const SuperPassword: String): String;
+var
+  Options: TArrayOfString;
+  OptionFile: String;
+  Started: Boolean;
+  ExitCode: Integer;
+begin
+  Result := '';
+  ExtractTemporaryFile('{#PgInstaller}');
+  OptionFile := ExpandConstant('{tmp}\postgresql-options.txt');
+  SetArrayLength(Options, 5);
+  Options[0] := 'superpassword=' + SuperPassword;
+  Options[1] := 'serverport={#PgPort}';
+  Options[2] := 'servicename={#PgService}';
+  Options[3] := 'locale=C';
+  Options[4] := 'datadir={#PgDataDir}';
+  if not SaveStringsToFile(OptionFile, Options, False) then
+  begin
+    Result := 'Setup could not write the PostgreSQL option file into ' + ExpandConstant('{tmp}') +
+      '.' + RecoveryHint;
+    Exit;
+  end;
+  try
+    Started := Exec(ExpandConstant('{tmp}\{#PgInstaller}'), '--mode unattended ' +
+      '--unattendedmodeui none --optionfile "' + OptionFile + '" ' +
+      '--disable-components pgAdmin,stackbuilder', '', SW_HIDE, ewWaitUntilTerminated, ExitCode);
+  finally
+    DeleteFile(OptionFile);
+  end;
+  if not Started then
+    Result := 'Setup could not start the PostgreSQL installer: ' + SysErrorMessage(ExitCode) +
+      '.' + RecoveryHint
+  else if ExitCode <> 0 then
+    Result := 'The PostgreSQL installer exited with code ' + IntToStr(ExitCode) + '; its log is ' +
+      AddBackslash(GetEnv('TEMP')) + 'install-postgresql.log.' + RecoveryHint;
+end;
+
+// semibase site --restart-service refuses a Disabled or stopped service
+function StartServiceRefusal(const ServiceName: String): String;
+var
+  ExitCode: Integer;
+begin
+  Result := '';
+  ExitCode := ScExitCode('config "' + ServiceName + '" start= auto');
+  if ExitCode <> 0 then
+  begin
+    Result := 'sc.exe config ' + ServiceName + ' start= auto exited with code ' +
+      IntToStr(ExitCode) + '.' + RecoveryHint;
+    Exit;
+  end;
+  ExitCode := ScExitCode('start "' + ServiceName + '"');
+  if (ExitCode <> 0) and (ExitCode <> ErrorServiceAlreadyRunning) then
+    Result := 'sc.exe start ' + ServiceName + ' exited with code ' + IntToStr(ExitCode) + '.' +
+      RecoveryHint;
+end;
+
+function PortWaitRefusal(const ServiceName: String; Port: Cardinal): String;
+var
+  Started: Cardinal;
+  Accepts: Boolean;
+begin
+  Result := '';
+  Started := GetTickCount;
+  repeat
+    if not ProbePort(Port, Accepts) then
+    begin
+      Result := 'Setup could not probe 127.0.0.1:' + IntToStr(Port) + ' through powershell.exe.' +
+        RecoveryHint;
+      Exit;
+    end;
+    if Accepts then
+      Exit;
+    Sleep(1000);
+  until GetTickCount - Started >= PortWaitMilliseconds;
+  Result := 'Service ' + ServiceName + ' is started, but 127.0.0.1:' + IntToStr(Port) +
+    ' accepted no TCP connection within 60 s.' + RecoveryHint;
+end;
+
+// semibase inherits the passwords from Setup's environment, so none is on a command line
+function SiteRefusal(const Engine: TEngine; const SuperPassword, WriterPassword: String): String;
+var
+  SiteLog: String;
+  ExitCode: Integer;
+  Failed: Boolean;
+begin
+  Result := '';
+  Failed := False;
+  if not SetEnvironmentVariable('SEMIBASE_SUPER_PASSWORD', SuperPassword) then
+    Failed := True;
+  if not SetEnvironmentVariable('SEMIBASE_PLOT_PASSWORD', 'semiplot') then
+    Failed := True;
+  if WriterPassword <> '' then
+    if not SetEnvironmentVariable('SEMIBASE_WRITER_PASSWORD', WriterPassword) then
+      Failed := True;
+  if Failed then
+  begin
+    Result := 'Setup could not set the SEMIBASE_* password variables for semibase site.';
+    Exit;
+  end;
+  ExtractTemporaryFile('semibase.exe');
+  ForceDirectories('{#LogRoot}');
+  SiteLog := LogPath('site');
+  if not Exec(ExpandConstant('{cmd}'), '/s /c ""' + ExpandConstant('{tmp}\semibase.exe') +
+    '" site --port ' + IntToStr(Engine.Port) + ' --superuser "' + Engine.SuperUser +
+    '" --expected-major 17 --restart-service "' + Engine.ServiceName + '" > "' + SiteLog +
+    '" 2>&1"', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then
+    Result := 'Setup could not start cmd.exe to run semibase site: ' + SysErrorMessage(ExitCode) +
+      '.'
+  else if ExitCode <> 0 then
+    Result := 'semibase site exited with code ' + IntToStr(ExitCode) + '; its log is ' + SiteLog +
+      '.';
+end;
+
 // A refusal returned here comes before Inno copies a file and exits 7 under /VERYSILENT; one
 // raised later comes after the uninstaller is registered and may still exit 0.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -330,6 +462,19 @@ begin
     Result := PasswordRefusal(SuperPassword, WriterPassword);
   if Result = '' then
     Result := EngineRefusal(WriterPassword, Engine);
+  // The install's own registration, read like any other, fills Engine
+  if (Result = '') and Engine.Fresh then
+  begin
+    Result := InstallEngineRefusal(SuperPassword);
+    if Result = '' then
+      Result := RegisteredEngineRefusal(Engine);
+  end;
+  if Result = '' then
+    Result := StartServiceRefusal(Engine.ServiceName);
+  if Result = '' then
+    Result := PortWaitRefusal(Engine.ServiceName, Engine.Port);
+  if Result = '' then
+    Result := SiteRefusal(Engine, SuperPassword, WriterPassword);
   if Result <> '' then
     LogRefusal(Result);
 end;

@@ -83,8 +83,9 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 1. No `/SUPERPASSWORD` and no `SEMIBASE_SUPER_PASSWORD`: non-zero exit; `{app}\semibase.exe`
    does not exist; the runner's `postgresql-x64-17` is still Disabled; the newest
    `C:\DISTR\Logs\SemiBase\setup-*.log` names the missing superuser password.
-2. Existing 17 (the runner's, `SEMIBASE_SUPER_PASSWORD=root` in the environment, no parameter):
-   exit 0; the service start type is Automatic; `semiplot` with password `semiplot` reads
+2. Existing 17 (the runner's, `SEMIBASE_SUPER_PASSWORD=root` and a `SEMIBASE_WRITER_PASSWORD`
+   token in the environment, no parameter; nothing has created `scada_writer` on that cluster
+   yet): exit 0; the service start type is Automatic; `semiplot` with password `semiplot` reads
    `semiplot_tags`.
 3. The runner's PostgreSQL is removed (task 7); `Get-Service postgresql*` is empty and
    `HKLM\SOFTWARE\PostgreSQL` does not exist.
@@ -151,7 +152,7 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 
 | State | Action |
 | --- | --- |
-| `Installations\postgresql-x64-17`, `Version` starts with `17.`, `Super User` is set, `<Data Directory>\PG_VERSION` exists, its `Service ID` names an existing service | Use it, even when other majors are also registered: port from `Services\<Service ID>\Port`, superuser from `Super User`; a Disabled service is set to Automatic, a stopped one is started |
+| `Installations\postgresql-x64-17`, `Version` starts with `17.`, `Super User` is set, `<Data Directory>\PG_VERSION` exists, its `Service ID` names an existing service | Use it, even when other majors are also registered: port from `Services\<Service ID>\Port`, superuser from `Super User`; the service is set to Automatic, a Manual one included, and started |
 | `Installations\postgresql-x64-17` exists with a `Version` not starting with `17.`, without `Super User` or without `<Data Directory>\PG_VERSION` | Refuse: name the key and say that the recovery is `<Base Directory>\uninstall-postgresql.exe`; a failed EDB install leaves exactly this (`installer.md#a-failed-install`) |
 | `Installations\postgresql-x64-17` exists, its service or its `Services\<Service ID>\Port` does not | Refuse: name the key; an orphaned registration is not ours to repair |
 | Another major is registered, 17 is not | Refuse: name the version, port and service |
