@@ -252,3 +252,32 @@
 - On an installation machine, confirm the Simple-Scada project connects to `localhost` or
   `127.0.0.1`. A project that names the machine's own IP or host name stops writing after the
   restart.
+
+**Executed by exec:**
+- branch: site-loopback-and-restart
+
+## Verify it yourself
+
+1. The loopback delta is written. In CI run 39264258290 (HEAD e6e7a4e), the Linux step "Require
+   the listen_addresses delta" is green: `pending_restart` for `listen_addresses` is `t` and
+   `postgresql.auto.conf` holds `localhost`. On `password-hygiene` (3cf9cd9) the setting is not in
+   `config.go`, so the same queries print `f` and nothing.
+2. The restart runs once and only when needed. In the same run, the Windows step "Restart the
+   runner's PostgreSQL service through site" prints, in order: the Disabled refusal with no
+   `ALTER SYSTEM SET` line; `state after sc.exe start: StartPending`; the identity line
+   `service postgresql-x64-17 runs data directory C:\PostgreSQL\17\data, as the server on
+   [::1]:5432 does`; `restarting service postgresql-x64-17: listen_addresses, shared_buffers
+   waiting for a restart`; `stopped, nothing answers on [::1]:5432`; `running`; `all settings
+   active`. The second run prints no restart line, and `no-such-service` is refused.
+3. Start always follows an accepted Stop when only the command is interrupted. Run
+   `go test ./internal/provision -run TestRestart -v` on Windows: the rows "an interrupt after the
+   Stop still starts the service" and "the command timeout after the Stop still starts the
+   service" pass, and every row asserts that Start comes only after the port refused a connect.
+4. The flag is scoped: `go test ./cmd/semibase -run TestParseOptions -v` shows `bench
+   --restart-service` refused as an undefined flag, non-loopback and socket hosts refused, and
+   `localhost`, `127.0.0.1`, `::1` accepted.
+5. Manual, on a machine with an EDB PostgreSQL 17 and an elevated PowerShell: run `semibase site
+   --restart-service postgresql-x64-17` with the passwords in `$env:SEMIBASE_*`, then
+   `psql -h 127.0.0.1 -U postgres -c "SHOW listen_addresses"` prints `localhost`, and
+   `Test-NetConnection <machine IP> -Port 5432` fails. The residual cases that can still leave
+   the service stopped are listed in `docs/architecture/provisioning.md#the-service-restart`.
