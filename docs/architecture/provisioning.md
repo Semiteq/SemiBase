@@ -205,14 +205,15 @@ restart, and `bench --restart-service` fails as an undefined flag. `Options.Vali
 on the loopback interface only.
 
 `config` opens the service before `applySettings` connects, so a service it cannot restart, or one
-that is not the run's server, fails the run with nothing changed. `openService` (`service_windows.go`) refuses a service that does not exist, a
-service manager or service the run may not control (the message says to run `semibase` as an
-administrator), and a Disabled start type, which would leave the service stopped after the Stop.
-A service in Start Pending gets up to 2 minutes to reach Running: an installer may run `site` right
-after it started the service, and an EDB service (`pg_ctl runservice ... -w`, the `PathName` the
-Windows CI step prints) reports Running only once the server accepts connections. That step starts
-the service with `sc.exe start`, which returns while it is Start Pending, and runs `site` at once. Stopped, Stop Pending, Paused, or a start that ends in Stopped,
-is refused.
+that is not the run's server, fails the run with nothing changed. `openService`
+(`service_windows.go`) refuses a service that does not exist, a service manager or service the run
+may not control (the message says to run `semibase` as an administrator), and a Disabled start
+type, which would leave the service stopped after the Stop. A service in Start Pending gets up to
+2 minutes to reach Running: an installer may run `site` right after it started the service, and an
+EDB service (`pg_ctl runservice ... -w`, the `PathName` the Windows CI step prints) reports Running
+only once the server accepts connections. That step starts the service with `sc.exe start`, which
+returns while it is Start Pending, and runs `site` at once. Stopped, Stop Pending, Paused, or a
+start that ends in Stopped, is refused.
 
 Once the service is Running, `openService` ties it to the server the run connects to. It connects
 as the superuser, reads `SHOW data_directory` and the connection's remote IP:port, and compares
@@ -234,9 +235,11 @@ before it returns; then:
    out, the Start is not sent.
 2. Start, then wait up to 2 minutes from the Start for Running. Stopped after the first query fails
    at once, and one more connect to that address names the cause (see below).
-3. Connect to `postgres` as the superuser every second, up to 60 s. A refused connection and 57P03
-   are retried; any other server error, a wrong password for one, fails at once. A timeout
-   reports the last connect error, never the context's.
+3. Connect to `postgres` as the superuser every second, up to 60 s. Every error that is not a
+   server error, a refused connection for one, is retried, and so is 57P03; any other server
+   error, a wrong password for one, fails at once. A timeout reports the last connect error the
+   deadline did not cut short; when no dial failed before the deadline, it reports the error of
+   the dial the deadline cut short.
 4. Read `pending_restart` on the new connection. A non-empty list is an error naming the settings.
 
 Stopped does not mean that the postmaster has exited. What follows was read in

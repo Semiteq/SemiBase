@@ -94,7 +94,8 @@ func TestParseOptions(t *testing.T) {
 		check       func(t *testing.T, options provision.Options)
 	}{
 		{
-			name: "no restart flag parses as before",
+			name:    "site without --restart-service restarts nothing",
+			command: "site",
 			check: func(t *testing.T, options provision.Options) {
 				if options.RestartService != "" {
 					t.Errorf("RestartService = %q, want empty", options.RestartService)
@@ -182,7 +183,11 @@ func TestParseOptions(t *testing.T) {
 				t.Setenv(name, value)
 			}
 
-			options, err := parseOptions(tt.command, tt.arguments)
+			command := tt.command
+			if command == "" {
+				command = "bench"
+			}
+			options, err := parseOptions(command, tt.arguments)
 
 			switch {
 			case tt.wantErrText != "":

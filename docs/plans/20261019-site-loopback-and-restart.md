@@ -52,7 +52,10 @@
   so the value stays pending; this proves the delta is written.
 - Windows CI, new step against the runner's PostgreSQL 17, with `$psql = "$env:PGBIN\psql.exe"`:
   1. `semibase site --port 5432 --expected-major 17 --restart-service postgresql-x64-17` exits 0,
-     and its output contains `restarting service postgresql-x64-17`.
+     and its output contains `restarting service postgresql-x64-17`, the identity line
+     `service postgresql-x64-17 runs data directory C:\PostgreSQL\17\data, as the server on
+     <IP>:5432 does` and `service postgresql-x64-17 stopped, nothing answers on <IP>:5432`, where
+     `<IP>` is the literal address the identity check's connection reached.
   2. `& $psql -h 127.0.0.1 -U postgres -d postgres -tAc "SHOW listen_addresses"` prints
      `localhost`, and `SELECT count(*) FROM pg_settings WHERE pending_restart` prints `0`.
   3. A second identical run exits 0, and its output does not contain `restarting service`.
@@ -138,8 +141,8 @@
      line it names from `postgresql.auto.conf` before `Start-Service`, and warns that a re-run
      writes the line again.
   5. The ready wait connects to `postgres` as the superuser every second, bounded by 60 s. It
-     retries network errors and 57P03 only, returns the new connection, and the last connect
-     error that is not a context error goes into the timeout message.
+     retries every error that is not a server error, and 57P03, returns the new connection, and
+     the last connect error the deadline did not cut short goes into the timeout message.
   6. `pendingRestartSettings` runs on the new connection. A non-empty list is an error naming the
      settings.
 - Service control goes through a four-method seam over `*mgr.Service` (`Query`, `Control`,

@@ -155,8 +155,8 @@ func (o Options) restartService(ctx context.Context, service *managedService, pe
 	return nil
 }
 
-// waitReady dials at once, then every interval, until a dial succeeds or timeout elapses. Network
-// errors and 57P03 are retried; any other server error is final.
+// waitReady dials at once, then every interval, until a dial succeeds or timeout elapses. Every
+// error that is not a server error is retried, and so is 57P03; any other server error is final.
 func waitReady(
 	ctx context.Context,
 	timeout, interval time.Duration,

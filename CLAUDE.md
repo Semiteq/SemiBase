@@ -8,9 +8,9 @@ architecture docs.
 Deployment target: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver
 `pgx/v5`, the five `sql/semiplot_*.sql` files and `sql/trends.sql` embedded via `go:embed`. Entry point:
 `cmd/semibase`. The module is pure Go (`pgx/v5`, plus `golang.org/x/sys` for the Windows service
-restart) and compiles for any GOOS; Linux builds serve the
-containerised test bench of consumers (SemiPlot runs `bench` against an ephemeral `postgres:17`
-container). All commands run from the repository root.
+restart) and compiles for any GOOS; Linux builds serve the containerised test bench of consumers
+(SemiPlot runs `bench` against an ephemeral `postgres:17` container). All commands run from the
+repository root.
 
 ## Build
 
@@ -87,14 +87,13 @@ refuse the runner's shipped Disabled service with no `ALTER SYSTEM SET` line, se
 and starts it with `sc.exe start`, which returns while it is Start Pending. It then requires the
 next run, started at once, to print `restarting service postgresql-x64-17`, the line tying the
 service's `-D` to the server on port 5432, and `stopped, nothing answers on <IP>:5432`, and leave
-`listen_addresses = localhost` with no
-setting pending, a second run not to restart the service,
+`listen_addresses = localhost` with no setting pending, a second run not to restart the service,
 and `--restart-service no-such-service` to be refused with no `ALTER SYSTEM SET` line.
-The Linux job provisions a `postgres:17-alpine` service container by running `site`
-twice — the tuning path and the idempotency check in one step. The
-`Require the listen_addresses delta` step then requires `listen_addresses` still pending and
-`localhost` in `postgresql.auto.conf` (`pg_file_settings`): the container is never restarted, so
-the pending value and the file line prove `site` wrote the delta.
+The Linux job provisions a `postgres:17-alpine` service container by running `site` twice — the
+tuning path and the idempotency check in one step. The `Require the listen_addresses delta` step
+then requires `listen_addresses` still pending and `localhost` in `postgresql.auto.conf`
+(`pg_file_settings`): the container is never restarted, so the pending value and the file line
+prove `site` wrote the delta.
 The job then runs `bench` against a `postgres:14-alpine` container — the version floor, and the only
 place `REVOKE CREATE ON SCHEMA public FROM PUBLIC` bites, because 15 and later withhold that grant
 by engine default — provisions a third container with `bench` as a `postgres` image init script
@@ -157,8 +156,8 @@ tail check run against the restarted server. Only `site` registers the flag, and
 `--host` other than `localhost`, `127.0.0.1` or `::1`. The service is checked before anything
 changes, including that the `-D` in its `PathName` is the `data_directory` of the server the run
 connects to. The Start waits until the IP:port that connection reached refuses connections, since
-`pg_ctl` reports Stopped before a slow postmaster exits, and once the service accepts the Stop the restart
-runs to completion despite an interrupt
+`pg_ctl` reports Stopped before a slow postmaster exits, and once the service accepts the Stop the
+restart runs to completion despite an interrupt
 (`docs/architecture/provisioning.md#the-service-restart`, which also lists the cases that still
 leave it stopped).
 

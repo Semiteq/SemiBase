@@ -59,7 +59,8 @@ type managedService struct {
 
 // openService refuses a service the restart could not complete or that is not the server the run
 // connects to: missing, out of reach, Disabled, not running once a start in progress has
-// finished, or registered for another data directory than the one describe reads.
+// finished, with no -D in its PathName, or registered for another data directory than the one
+// describe reads.
 func openService(
 	ctx context.Context,
 	name string,
