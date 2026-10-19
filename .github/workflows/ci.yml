@@ -192,14 +192,10 @@ jobs:
           function Install-Edb([string] $token, [string] $label) {
             Section "install $label"
             $optionFile = "$work\options-$label.txt"
-            @(
-              "superpassword=$token",
-              'serverport=5432',
-              'servicename=postgresql-x64-17',
-              'locale=C',
-              "datadir=$data"
-            ) | Set-Content -Path $optionFile -Encoding ascii
-            $watch = Start-CommandLineWatch $token
+            $options = @('serverport=5432', 'servicename=postgresql-x64-17', 'locale=C', "datadir=$data")
+            if ($token) { $options = @("superpassword=$token") + $options }
+            $options | Set-Content -Path $optionFile -Encoding ascii
+            $watch = Start-CommandLineWatch $(if ($token) { $token } else { 'no-token-to-watch' })
             Run-Exe $exe "--mode unattended --unattendedmodeui none --optionfile `"$optionFile`" --disable-components pgAdmin,stackbuilder" 1500 | Out-Null
             if (-not (Get-Service postgresql* -ErrorAction SilentlyContinue)) {
               Write-Host 'no service after the install: retrying without --disable-components'
@@ -217,10 +213,14 @@ jobs:
             Get-ChildItem $env:TEMP, 'C:\Windows\Temp' -Recurse -File -Force -ErrorAction SilentlyContinue |
               Where-Object { $_.Name -like '*postgres*' -or $_.Name -like 'bitrock*' -or $_.Name -like '*.log' } |
               ForEach-Object { Write-Host "temp file: $($_.FullName) $($_.Length)" }
-            Find-Token $token
+            if ($token) { Find-Token $token }
+            Get-ChildItem $env:TEMP -Filter 'install-postgresql.log' -ErrorAction SilentlyContinue | Get-Content |
+              Select-String -Pattern 'initcluster|initdb|error|password|exit code|Die\(' |
+              Select-Object -Last 30 |
+              ForEach-Object { Write-Host "  install log: $(if ($token) { $_.Line.Replace($token, '<TOKEN>') } else { $_.Line })" }
             $env:PGPASSWORD = $token
             $psql = "$root\bin\psql.exe"
-            & $psql -h 127.0.0.1 -U postgres -d postgres -c 'SELECT version()' -c 'SHOW server_encoding' `
+            & $psql -w -h 127.0.0.1 -U postgres -d postgres -c 'SELECT version()' -c 'SHOW server_encoding' `
               -c 'SHOW listen_addresses' -c 'SHOW port' -c 'SHOW data_directory' -c 'SHOW lc_messages' `
               -c 'SELECT datname, datcollate, datctype, datlocprovider, pg_encoding_to_char(encoding) FROM pg_database' `
               -c 'SELECT rolname, rolsuper FROM pg_roles WHERE rolname !~ ''^pg_''' 2>&1 |
@@ -229,15 +229,46 @@ jobs:
             Write-Host "pg_hba.conf rules:"
             Get-Content "$data\pg_hba.conf" | Where-Object { $_ -and $_ -notmatch '^\s*#' } | ForEach-Object { Write-Host "  $_" }
           }
+          function Wait-Uninstaller([int[]] $before) {
+            $start = Get-Date
+            $deadline = $start.AddMinutes(10)
+            $seen = @{}
+            $quiet = 0
+            while ((Get-Date) -lt $deadline -and $quiet -lt 5) {
+              $busy = @(Get-CimInstance Win32_Process | Where-Object {
+                $before -notcontains $_.ProcessId -and (
+                  $_.Name -like '*uninstall*' -or $_.Name -like '*.tmp' -or
+                  ($_.ExecutablePath -and ($_.ExecutablePath -like '*\Temp\*' -or $_.ExecutablePath -like '*\PostgreSQL\*')))
+              })
+              foreach ($p in $busy) {
+                $k = "$($p.ProcessId) $($p.Name) $($p.ExecutablePath)"
+                if (-not $seen[$k]) { $seen[$k] = 1; Write-Host "  uninstaller process: $k" }
+              }
+              if ($busy.Count -eq 0) { $quiet++ } else { $quiet = 0 }
+              Start-Sleep -Seconds 1
+            }
+            Write-Host ("uninstaller processes gone after {0:n0} s" -f ((Get-Date) - $start).TotalSeconds)
+          }
           function Remove-Edb([string] $label) {
             Section "remove $label"
             Write-Host "files in ${root}: $((Get-ChildItem $root -Name -ErrorAction SilentlyContinue) -join ', ')"
+            $before = @(Get-Process | ForEach-Object Id)
             Run-Exe "$root\uninstall-postgresql.exe" '--mode unattended --unattendedmodeui none' 900 | Out-Null
-            Write-Host 'after the uninstaller:'
+            Write-Host 'right after the uninstaller exited:'
+            Dump-Services
+            Wait-Uninstaller $before
+            Write-Host 'after its processes ended:'
             Dump-Services
             Dump-Registry
             foreach ($p in $data, $root, 'C:\PostgreSQL\17\data') {
               if (Test-Path $p) { Write-Host "left: $p ($((Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object).Count) entries)" }
+            }
+            Get-ChildItem $env:TEMP -Filter 'uninstall-postgresql.log' -ErrorAction SilentlyContinue |
+              Get-Content -Tail 15 | ForEach-Object { Write-Host "  uninstall log: $_" }
+            foreach ($s in @(Get-Service postgresql* -ErrorAction SilentlyContinue)) {
+              Write-Host "deleting leftover service $($s.Name)"
+              Stop-Service $s.Name -Force -ErrorAction SilentlyContinue
+              sc.exe delete $s.Name | Out-Null
             }
             Remove-Item -Recurse -Force 'C:\PostgreSQL', 'C:\Program Files\PostgreSQL', 'HKLM:\SOFTWARE\PostgreSQL' -ErrorAction SilentlyContinue
             Write-Host "after cleanup: services $(@(Get-Service postgresql* -ErrorAction SilentlyContinue).Count), registry $(Test-Path HKLM:\SOFTWARE\PostgreSQL), program files $(Test-Path 'C:\Program Files\PostgreSQL')"
@@ -258,47 +289,20 @@ jobs:
           $sig = Get-AuthenticodeSignature $exe
           Write-Host "signature $($sig.Status): $($sig.SignerCertificate.Subject)"
 
-          Section '--help'
-          Run-Exe $exe '--help' 120 "$work\help.txt" | Out-Null
-          Get-Content "$work\help.txt", "$work\help.txt.err" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
-          Section '--version'
-          Run-Exe $exe '--version' 120 "$work\version.txt" | Out-Null
-          Get-Content "$work\version.txt", "$work\version.txt.err" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
-
           Remove-Edb 'the runner install'
-
-          $plain = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
-          Install-Edb $plain 'plain'
-
-          Section 'initcluster.ps1'
-          $n = 0
-          Get-Content "$root\installer\server\initcluster.ps1" | ForEach-Object { $n++; Write-Host ("{0,4}: {1}" -f $n, $_) }
-          Section 'install-postgresql.log, initcluster lines'
-          Get-ChildItem $env:TEMP -Recurse -Filter 'install-postgresql.log' -ErrorAction SilentlyContinue |
-            Select-Object -First 1 | Get-Content |
-            Select-String -Pattern 'initcluster|Executing|exit code|vcredist|reboot|runtime|Password' |
-            ForEach-Object { Write-Host "  $($_.Line.Replace($plain, '<TOKEN>'))" }
-          Section 'bitrock_installer log, head'
-          Get-ChildItem $env:TEMP -Recurse -Filter 'bitrock_installer*.log' -ErrorAction SilentlyContinue |
-            ForEach-Object {
-              Write-Host "  file: $($_.FullName)"
-              Get-Content $_.FullName -TotalCount 80 | ForEach-Object { Write-Host "  $($_.Replace($plain, '<TOKEN>'))" }
-            }
-
-          Remove-Edb 'the plain install'
 
           $special = 'Q"w e%PATH%^&|<>''`$x!;z'
           Install-Edb $special 'special'
           Remove-Edb 'the special install'
+
+          Install-Edb '' 'without superpassword'
+          Remove-Edb 'the install without superpassword'
 
           Section 'unknown option'
           Run-Exe $exe '--mode unattended --unattendedmodeui none --no-such-option 1' 300 | Out-Null
           Dump-Services
           Section 'missing option file'
           Run-Exe $exe "--mode unattended --unattendedmodeui none --optionfile `"$work\absent.txt`"" 300 | Out-Null
-          Dump-Services
-          Section 'no superpassword'
-          Run-Exe $exe '--mode unattended --unattendedmodeui none --disable-components pgAdmin,stackbuilder' 1500 | Out-Null
           Dump-Services
           exit 0
 
