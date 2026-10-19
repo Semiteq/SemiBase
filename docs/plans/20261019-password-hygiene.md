@@ -97,3 +97,31 @@
 - [x] `docs/architecture/provisioning.md:103-108`: the same, plus the five session settings and
       why
 - [ ] move this plan to `docs/plans/completed/` (left for the delivery step)
+
+## Post-Completion
+
+**Executed by exec:**
+- branch: password-hygiene
+
+## Verify it yourself
+
+1. No file reader remains. Run `grep -rnE 'dotEnv|\.env\b' cmd/ internal/` and `ls .env.example`:
+   the grep prints nothing and `ls` reports no such file. On `master` (4499b27) the same grep
+   lists `loadDotEnv`, `applyEnv` and `dotEnvName` in `cmd/semibase/main.go`.
+2. The usage text names no file: `go run ./cmd/semibase --help` prints "Passwords come from
+   flags or environment variables (flag wins over environment)"; on `master` it names the `.env`
+   file in the working directory.
+3. Password statements stay out of the server log. Read CI run 39245172938 (HEAD 531e008), steps
+   "Keep the password statements out of the server log" (17, `ALTER ROLE ... PASSWORD` under
+   `log_statement = 'all'`) and "Keep the CREATE ROLE password statements out of the PostgreSQL
+   14 log" (14, `CREATE ROLE ... PASSWORD` under all five logging settings): both green. Each
+   step first requires the `semiplot` login's probe text in `docker logs`, so a server that logs
+   nothing cannot pass. Locally against any PostgreSQL 14+ container: `ALTER SYSTEM SET
+   log_statement = 'all'`, reload, run `semibase site` with a random `SEMIBASE_PLOT_PASSWORD`,
+   then `bash .github/scripts/check-server-log.sh <container> <token>` exits 0.
+4. A non-superuser `--superuser` is refused with a cause. `go test ./internal/provision -run
+   TestSessionSettingFailure` passes; against a live server, `--superuser` naming a role without
+   `rolsuper` stops at connect with "the role <name> that semibase connects as must be a
+   superuser ... Repair with ALTER ROLE <name> SUPERUSER".
+5. The operator instructions never put a password in a typed line: `docs/deployment.md` step 2
+   and `README.md` set each variable from `Read-Host -AsSecureString`.
