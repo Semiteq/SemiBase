@@ -81,14 +81,16 @@ All cases run in the `installer` CI job on `windows-latest`, in this order, each
 `$LASTEXITCODE`. The superuser and writer passwords are random 24-character tokens generated per
 run; `$psql = "$env:PGBIN\psql.exe"`.
 1. No `/SUPERPASSWORD` and no `SEMIBASE_SUPER_PASSWORD`: non-zero exit; `{app}\semibase.exe`
-   does not exist; the runner's `postgresql-x64-17` is still Disabled.
+   does not exist; the runner's `postgresql-x64-17` is still Disabled; the newest
+   `C:\DISTR\Logs\SemiBase\setup-*.log` names the missing superuser password.
 2. Existing 17 (the runner's, `SEMIBASE_SUPER_PASSWORD=root` in the environment, no parameter):
    exit 0; the service start type is Automatic; `semiplot` with password `semiplot` reads
    `semiplot_tags`.
 3. The runner's PostgreSQL is removed (task 7); `Get-Service postgresql*` is empty and
    `HKLM\SOFTWARE\PostgreSQL` does not exist.
-4. A fake `Installations\postgresql-x64-14` key: non-zero exit; the message names version 14;
-   the key is deleted afterwards.
+4. A fake `Installations\postgresql-x64-14` key with a `Services` port: non-zero exit; the
+   newest `setup-*.log` names the key, version 14 and the port, and not the password; the key
+   is deleted afterwards.
 5. A Cyrillic `/SUPERPASSWORD` on the clean machine, then one containing `"`: non-zero exit
    each time; no `postgresql*` service exists afterwards.
 6. Clean machine, `/SUPERPASSWORD` and `/WRITERPASSWORD` tokens: exit 0; the site log contains
@@ -109,6 +111,10 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 - All provisioning runs in `PrepareToInstall`, before Inno copies a file. A non-empty return
   string from `PrepareToInstall` ends Setup with exit code 7 under `/VERYSILENT`. Raising in
   `CurStepChanged` happens after files and the uninstaller are registered and may still exit 0.
+- Under `/VERYSILENT` the returned refusal text reaches no one, and `/LOG` records Setup's
+  command line, so `PrepareToInstall` also appends every refusal, with no password in it, to
+  `C:\DISTR\Logs\SemiBase\setup-<yyyymmdd-hhnnss>.log`, creating the directory itself because
+  `[Dirs]` has not run yet.
 - `semibase.exe` has one `[Files]` entry into `{app}`; `ExtractTemporaryFile` also takes it to
   `{tmp}` for the run. The copy in `{app}` is the recovery tool when Setup refuses a state, and
   the source of `semibase version` for support (`docs/deployment.md:42`). The EDB installer is a
@@ -146,12 +152,12 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 | State | Action |
 | --- | --- |
 | `Installations\postgresql-x64-17`, `Version` starts with `17.`, `Super User` is set, `<Data Directory>\PG_VERSION` exists, its `Service ID` names an existing service | Use it, even when other majors are also registered: port from `Services\<Service ID>\Port`, superuser from `Super User`; a Disabled service is set to Automatic, a stopped one is started |
-| `Installations\postgresql-x64-17` exists without `Super User` or without `<Data Directory>\PG_VERSION` | Refuse: name the key and say that the recovery is `<Base Directory>\uninstall-postgresql.exe`; a failed EDB install leaves exactly this (`installer.md#a-failed-install`) |
-| `Installations\postgresql-x64-17` exists, its service does not | Refuse: name the key; an orphaned registration is not ours to repair |
+| `Installations\postgresql-x64-17` exists with a `Version` not starting with `17.`, without `Super User` or without `<Data Directory>\PG_VERSION` | Refuse: name the key and say that the recovery is `<Base Directory>\uninstall-postgresql.exe`; a failed EDB install leaves exactly this (`installer.md#a-failed-install`) |
+| `Installations\postgresql-x64-17` exists, its service or its `Services\<Service ID>\Port` does not | Refuse: name the key; an orphaned registration is not ours to repair |
 | Another major is registered, 17 is not | Refuse: name the version, port and service |
 | Nothing registered, `127.0.0.1:5432` accepts TCP | Refuse: name the port; a server the registry does not know is not ours to provision |
 | Nothing registered, `{#PgDataDir}` exists and is not empty | Refuse: name the directory and say that removing it is the recovery, for example after an interrupted install; existing data is never overwritten |
-| Nothing registered, port free, no data directory | Without a writer password in silent mode: refuse before installing anything. Otherwise install EDB 17 unattended, then continue as in the first row |
+| Nothing registered, port free, no data directory | Without a writer password: refuse before installing anything. Otherwise install EDB 17 unattended, then continue as in the first row |
 
 - Every refusal message points to the recovery section of `docs/deployment.md`.
 - EDB exit codes (task 1, `installer.md#exit-codes`): 0 continues; any other code refuses,
@@ -289,16 +295,16 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 **Files:**
 - Modify: `Installer/SemiBase.iss`, `.github/workflows/ci.yml`
 
-- [ ] `[Code]`: read the `HKLM64` EDB keys, `Super User` and `<Data Directory>\PG_VERSION`
+- [x] `[Code]`: read the `HKLM64` EDB keys, `Super User` and `<Data Directory>\PG_VERSION`
       among them, check the service named by `Service ID`, probe the port, check `{#PgDataDir}`
-- [ ] map them to the engine-state table; each refusal returns its message from
+- [x] map them to the engine-state table; each refusal returns its message from
       `PrepareToInstall`, including the silent writer-password guard
-- [ ] run once on the development machine (14 registered): Setup refuses and names
+- [x] run once on the development machine (14 registered): Setup refuses and names
       `postgresql-x64-14` and port 15432
-- [ ] extend the CI job with Acceptance case 4; until task 7 removes the runner's PostgreSQL,
+- [x] extend the CI job with Acceptance case 4; until task 7 removes the runner's PostgreSQL,
       the case renames the runner's 17 key aside and restores it afterwards, and task 7 moves the
       case after the removal
-- [ ] push and read the CI run - green before task 5
+- [x] push and read the CI run - green before task 5 (run 39284793107)
 
 ### Task 5: Provisioning run
 
