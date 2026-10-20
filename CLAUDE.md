@@ -34,9 +34,10 @@ iscc /DAppVersion=0.0.0-dev /DFileVersion=0.0.0 "/DSemibaseExe=$PWD\semibase.exe
 
 The output is `Installer/Output/SemiBase-Setup.exe`. Under Git Bash, prefix `iscc` with
 `MSYS2_ARG_CONV_EXCL='*'`, or MSYS rewrites the `/D` arguments as paths. The fetch script holds
-the EDB pin alone and saves it as `Installer/payload/postgresql-17-windows-x64.exe`, the name
-`#define PgInstaller` uses, so a pin bump edits the script only. CI and release build the setup
-through one composite action, `.github/actions/build-setup`.
+the EDB pin the build uses and saves it as `Installer/payload/postgresql-17-windows-x64.exe`, the
+name `#define PgInstaller` uses, so a pin bump leaves the `.iss` alone: it edits the script's
+constants and re-measures the table in `docs/architecture/installer.md#the-pinned-payload`. CI
+and release build the setup through one composite action, `.github/actions/build-setup`.
 
 ## Release
 
@@ -108,14 +109,15 @@ golangci-lint is pinned to 2.12.2 (`winget install GolangCI.golangci-lint --vers
 config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build` and `go test -race`
 on `windows-latest` and `ubuntu-latest` for every push and pull request, and the lint in the
 Windows `build` job only.
-The Windows job then runs the `Restart the runner's PostgreSQL service through site` step, the
-only direct test of the service restart; the `installer` job runs it through the setup. It requires `site --restart-service postgresql-x64-17` to
-refuse the runner's shipped Disabled service with no `ALTER SYSTEM SET` line, sets it to Manual
-and starts it with `sc.exe start`, which returns while it is Start Pending. It then requires the
-next run, started at once, to print `restarting service postgresql-x64-17`, the line tying the
-service's `-D` to the server on port 5432, and `stopped, nothing answers on <IP>:5432`, and leave
-`listen_addresses = localhost` with no setting pending, a second run not to restart the service,
-and `--restart-service no-such-service` to be refused with no `ALTER SYSTEM SET` line.
+The `build` job then runs the `Restart the runner's PostgreSQL service through site` step, the
+only direct test of the service restart; the `installer` job runs it through the setup. It
+requires `site --restart-service postgresql-x64-17` to refuse the runner's shipped Disabled
+service with no `ALTER SYSTEM SET` line, sets it to Manual and starts it with `sc.exe start`,
+which returns while it is Start Pending. It then requires the next run, started at once, to print
+`restarting service postgresql-x64-17`, the line tying the service's `-D` to the server on port
+5432, and `stopped, nothing answers on <IP>:5432`, and leave `listen_addresses = localhost` with
+no setting pending, a second run not to restart the service, and
+`--restart-service no-such-service` to be refused with no `ALTER SYSTEM SET` line.
 The Linux job provisions a `postgres:17-alpine` service container by running `site` twice — the
 tuning path and the idempotency check in one step. The `Require the listen_addresses delta` step
 then requires `listen_addresses` still pending and `localhost` in `postgresql.auto.conf`
@@ -139,34 +141,35 @@ password. The 14 step starts its server with all five statement-logging paramete
 log steps run `.github/scripts/check-server-log.sh`, which requires `logging_collector = off`, so
 `docker logs` is the whole server log, requires the `semiplot` login's probe statement in it, and
 requires the passwords absent. The `listen_addresses`, the pens and the 17 log steps need `psql`
-on the runner; to run them locally, point `psql` at a container. The Windows step uses the
-runner's own `$env:PGBIN\psql.exe`.
+on the runner; to run them locally, point `psql` at a container. The `build` job's restart step
+uses the runner's own `$env:PGBIN\psql.exe`.
 
 The `installer` job (`windows-latest`) builds `semibase.exe` and the setup through
 `.github/actions/build-setup` (EDB payload cached on the fetch script's hash, Inno Setup 6.7.3);
-the Linux job shellchecks the fetch script. Each case step dot-sources
-`.github/scripts/installer-case.ps1`, which runs Setup through `ProcessStartInfo` (a GUI exe the
-call operator does not wait for, with the argument string passed as written) and asserts a
-refusal as exit 7 with its reason last in the newest setup log. In order: no superuser password
-refuses, installs no `semibase.exe` in `{app}`, leaves the recovery copy in
-`C:\Program Files\SemiBase Setup` and the runner's service Disabled; the runner's own 17 provisions with
-exit 0, Automatic, `semiplot`/`semiplot` and the generated `scada_writer` password log in; the
-runner's PostgreSQL is uninstalled, leaving the empty `Installations` and `Services` keys; a fake
-`postgresql-x64-14` key refuses without the password in the log; fourteen password and parameter
-refusals (non-ASCII, `"`, a trailing `"` on either parameter, trailing `\`, a quoted two-word
-value ending in `\`, leading `-` and space, an unquoted split, a split before a `/` word Setup
-does not read on either parameter, the writer rules) and a quoted `"/SUPERPASSWORD=two words"`
-and a `/NOCANCEL` after the password that pass them; the incomplete and orphaned 17 registrations, a busy port 5432, a non-empty data
-directory and a missing writer password refuse with no `postgresql*` service left; a clean
-machine installs EDB 17 through the `SEMIBASE_*` variables while a job watches the option file
-appear and vanish before the site log (`restarting service`, nothing pending, `localhost`,
-`C`/`C`/`UTF8`); a superuser-only parameter re-run under `log_statement = 'all'` restarts
-nothing and keeps the writer password; a re-run with a new writer password applies it; a wrong
-registered port refuses after the 60 s wait; a wrong superuser password refuses with
-`password authentication failed`; none of the four generated passwords appears in any EDB, setup,
-site or server log, and the server log holds the `semiplot` probe; the uninstaller removes
-`semibase.exe` and keeps PostgreSQL, the logs and the recovery copy. No case passes `/LOG`, which
-records Setup's command line.
+the Linux job shellchecks the fetch script and `.github/scripts/*.sh`. Each case step dot-sources
+`.github/scripts/installer-case.ps1`, which holds the setup's paths, the `postgresql-x64-17` key
+and service names and the `psql` and redaction helpers, runs Setup through `ProcessStartInfo` (a
+GUI exe the call operator does not wait for, with the argument string passed as written) and
+asserts a refusal as exit 7 with its reason last in the newest setup log. In order: no superuser
+password refuses, installs no `semibase.exe` in `{app}`, leaves the recovery copy in
+`C:\Program Files\SemiBase Setup` and the runner's service Disabled; the runner's own 17
+provisions with exit 0, Automatic, `semiplot`/`semiplot` and the generated `scada_writer`
+password log in; the runner's PostgreSQL is uninstalled, leaving the empty `Installations` and
+`Services` keys; a fake `postgresql-x64-14` key refuses without the password in the log; fourteen
+password and parameter refusals (non-ASCII, `"`, a trailing `"` on either parameter, trailing
+`\`, a quoted two-word value ending in `\`, leading `-` and space, an unquoted split, a split
+before a `/` word Setup does not read on either parameter, the writer rules) and a quoted
+`"/SUPERPASSWORD=two words"` and a `/NOCANCEL` after the password that pass them; the incomplete
+and orphaned 17 registrations, a busy port 5432, a non-empty data directory and a missing writer
+password refuse with no `postgresql*` service left; a clean machine installs EDB 17 through the
+`SEMIBASE_*` variables while a job watches the option file appear and vanish before the site log
+(`restarting service`, nothing pending, `localhost`, `C`/`C`/`UTF8`); a superuser-only parameter
+re-run under `log_statement = 'all'` restarts nothing and keeps the writer password; a re-run
+with a new writer password applies it; a wrong registered port refuses after the 60 s wait; a
+wrong superuser password refuses with `password authentication failed`; none of the four
+generated passwords appears in any EDB, setup, site or server log, and the server log holds the
+`semiplot` probe; the uninstaller removes `semibase.exe` and keeps PostgreSQL, the logs and the
+recovery copy. No case passes `/LOG`, which records Setup's command line.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests in the repository; the integration checks are
@@ -190,7 +193,8 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 # the setup, in an elevated PowerShell with SEMIBASE_SUPER_PASSWORD (and on a first install
 # SEMIBASE_WRITER_PASSWORD) set: exit 0 provisioned, 7 refused; logs in
 # C:\Program Files\SemiBase Setup\Logs
-(Start-Process .\Installer\Output\SemiBase-Setup.exe '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru).ExitCode
+(Start-Process .\Installer\Output\SemiBase-Setup.exe -Wait -PassThru `
+  -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART').ExitCode
 ```
 
 `site` and `bench` differ in one thing: `site` applies the `ALTER SYSTEM` server settings,
@@ -245,9 +249,9 @@ may not and issues no password statement
 superuser password alone carries a run, and the `semiplot` password only decides whether the run
 also tests that role's TCP login. The setup takes no `semiplot` password: every run sets
 `SEMIBASE_PLOT_PASSWORD=semiplot`, so it resets the role to that convention each time
-(`docs/architecture/installer.md#the-setup`). `public.trends` is created under `SET ROLE scada_writer` on the
-superuser connection, so the table's owner is the role the SCADA writes with and no
-`pg_hba.conf` line has to admit a `scada_writer` login.
+(`docs/architecture/installer.md#the-setup`). `public.trends` is created under
+`SET ROLE scada_writer` on the superuser connection, so the table's owner is the role the SCADA
+writes with and no `pg_hba.conf` line has to admit a `scada_writer` login.
 
 ## Layout
 

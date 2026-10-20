@@ -136,11 +136,11 @@ path then resolves through. So a `C:\DISTR\Logs\SemiBase` DACL holds only with `
 | Size | 413001200 bytes |
 | Signature | Authenticode, Valid, `CN=EnterpriseDB Corporation, O=EnterpriseDB Corporation, L=Wilmington, S=Delaware, C=US` |
 
-`Installer/fetch-postgresql.sh` holds these constants alone and saves the file as
-`Installer/payload/postgresql-17-windows-x64.exe`, the name `#define PgInstaller` in the `.iss`
-uses, so a pin bump edits the script and nothing else. A file already there that does not match
-the pin fails the script, so a stale payload never reaches `iscc` through a run that fetched
-first. CI and release cache `Installer/payload/` on the script's hash: an edit to the script,
+`Installer/fetch-postgresql.sh` holds the Version, URL and SHA256 the build uses and saves the
+file as `Installer/payload/postgresql-17-windows-x64.exe`, the name `#define PgInstaller` in the
+`.iss` uses, so a pin bump leaves the `.iss` unchanged. It edits the script's constants and
+re-measures this table. A file already there that does not match the pin fails the script, so a
+stale payload never reaches `iscc` through a run that fetched first. CI and release cache `Installer/payload/` on the script's hash: an edit to the script,
 a comment included, costs one download of 413 MB (about 25 s), and a cached run never asks the
 URL, so a retired URL surfaces on the first uncached run, not on the pull request that follows it.
 

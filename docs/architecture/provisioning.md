@@ -309,7 +309,7 @@ A restart drops every open connection to the server, the SCADA's included.
 CI's Linux job runs `site` without the flag: its server is a GitHub Actions service container, not
 a Windows service, and nothing in the job restarts it. The `Require the listen_addresses delta`
 step then reads `listen_addresses` still pending and `localhost` in `postgresql.auto.conf`
-through `pg_file_settings`, which proves `site` wrote the delta. The Windows job's
+through `pg_file_settings`, which proves `site` wrote the delta. The `build` job's
 `Restart the runner's PostgreSQL service through site` step is the only direct test of the
 restart; the `installer` job's cases run it through the setup, which passes `--restart-service`
 on every run (`restarting service` in the site logs of the runner's 17 and of the fresh

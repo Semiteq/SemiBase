@@ -259,7 +259,7 @@ jobs:
           set -euo pipefail
           docker build --platform linux/amd64 -f Dockerfile -t "$IMAGE:$TAG" image
 
-          # The only run of the shipped bytes anywhere. CI's smoke check runs a
+          # The only run of the shipped Linux binary anywhere. CI's smoke check runs a
           # binary built without -trimpath and without -s -w, so it exercises a
           # different artifact than the one consumers pull.
           docker run --rm "$IMAGE:$TAG" version
