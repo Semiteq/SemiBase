@@ -39,6 +39,7 @@ time markers. Both are what operators entered, and they can enter them again; th
 | `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning in two commands, `site` and `bench`: instance tuning (`site` only), database, roles, grants, the five SemiPlot tables, `semiplot_register_new_pens()`, `public.trends`, and the `semiplot` access checks that end every run |
 | `sql/semiplot_tags.sql`, `sql/semiplot_register.sql`, `sql/semiplot_groups.sql`, `sql/semiplot_markers.sql`, `sql/semiplot_meta.sql` | DDL for the objects we invented — the pen catalogue, the function that registers new pens, the groups and their membership, the time markers, and the schema version — embedded into the binary |
 | `sql/trends.sql` | The vendor's archive-table shape, transcribed and embedded; applied under `SET ROLE scada_writer`, so the table's owner is the writer |
+| `Installer/` | `SemiBase-Setup.exe` (Inno Setup, `SemiBase.iss`) — installs the vendored EDB PostgreSQL 17 when none is registered, then runs `semibase site --restart-service`; `fetch-postgresql.sh` downloads the pinned EDB installer ([installer.md](./installer.md)) |
 | `Dockerfile` | `ghcr.io/semiteq/semibase` — the Linux binary alone on `scratch`, for consumers that layer it into a bench image |
 | `docs/architecture/` | The instance as it is: configuration deltas, provisioning order, ownership |
 
@@ -53,29 +54,31 @@ silently stop.
 The order matters, because the default privileges have to be in place before any table
 `scada_writer` owns is created.
 
-1. Install the engine: `winget install --id PostgreSQL.PostgreSQL.17 --exact`.
-2. `semibase site` — tuning, then the archive database, the three created roles, default privileges,
-   `public.trends`, the five SemiPlot tables and `semiplot_register_new_pens()`; it ends by proving `semiplot` reads `trends`, writes
-   what it owns, cannot add, delete or re-key a pen and cannot write the archive, and warns while `shared_buffers` or
-   `listen_addresses` waits for a service restart. With `--restart-service <name>` it restarts that Windows service itself
-   and continues against the restarted server (`provisioning.md#the-service-restart`).
-3. Without `--restart-service`, restart the PostgreSQL service or reboot the machine, so `shared_buffers` and
-   `listen_addresses` take effect.
-4. Point the Simple-Scada project at the database on `localhost` or `127.0.0.1`, since the server listens on loopback
-   only, and start it once. It is expected to find
-   `trends` in place, write into it, and create the day partitions and `messages` itself — an
-   **unverified** assumption, with the experiment that settles it, in
-   `provisioning.md` ("Assumption: the SCADA meeting an existing `trends`"). Set
-   `log_statement = 'all'` for that first start and read back the DDL the SCADA issued.
-5. Start the viewer. Pens appear in `semiplot_tags` on their own, one per variable the SCADA has
-   written to `trends`, with default settings the viewer's editor then changes. A person never
-   inserts a pen, and only the superuser can delete one.
-6. Write the SemiPlot connection file: host `127.0.0.1`, the `semiplot` role and its password. The
-   file names no time zone: the viewer runs on the SCADA machine and reads the archive in that
-   machine's zone.
+1. Run `SemiBase-Setup.exe` ([installer.md](./installer.md)). It installs PostgreSQL 17 when none
+   is registered, sets the service to Automatic and starts it, then runs `semibase site
+   --restart-service <service>`: tuning, then the archive database, the three created roles,
+   default privileges, `public.trends`, the five SemiPlot tables and
+   `semiplot_register_new_pens()`. The restart puts `shared_buffers` and `listen_addresses` into
+   effect (`provisioning.md#the-service-restart`), and the run ends by proving `semiplot` reads
+   `trends`, writes what it owns, cannot add, delete or re-key a pen and cannot write the archive.
+   Exit code 0 means all of it holds.
+2. Point the Simple-Scada project at the database on `localhost` or `127.0.0.1`, since the
+   server listens on loopback only, and start it once. It is expected to find `trends` in place,
+   write into it, and create the day partitions and `messages` itself — an **unverified**
+   assumption, with the experiment that settles it, in `provisioning.md` ("Assumption: the SCADA
+   meeting an existing `trends`"). Set `log_statement = 'all'` for that first start and read
+   back the DDL the SCADA issued.
+3. Start the viewer and press `Refresh pen list` in its pen editor. The button calls
+   `semiplot_register_new_pens()`, which adds one pen per variable the SCADA has written to
+   `trends`, with default settings the editor then changes. The viewer registers nothing at
+   startup, so a variable that appears later waits for the next press. A person never inserts a
+   pen by hand, and only the superuser can delete one.
+4. Write the SemiPlot connection file: host `127.0.0.1`, the `semiplot` role and its password,
+   `semiplot` by the setup's convention. The file names no time zone: the viewer runs on the
+   SCADA machine and reads the archive in that machine's zone.
 
-A bench replaces step 2 with `semibase bench` and has no step 3 or 4: the consumer's seeder plays
-the writer's part.
+A bench replaces step 1 with `semibase bench` against its own container and has no step 2: the
+consumer's seeder plays the writer's part.
 
 Every consumer must survive every intermediate state of this sequence — no database, empty
 `trends`, `trends` without `semiplot_tags`, `semiplot_tags` without rows. Each is a normal
