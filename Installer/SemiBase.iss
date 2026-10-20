@@ -1,6 +1,7 @@
 ; SemiBase Inno Setup installer script
 ; Build with: iscc.exe /DAppVersion=1.2.3 /DFileVersion=1.2.3 /DSemibaseExe=<path to semibase.exe> Installer\SemiBase.iss
-; Run `bash Installer/fetch-postgresql.sh` first; it puts the EDB installer into Installer\payload\.
+; Run Installer/fetch-postgresql.sh first, through Git's bash.exe as CLAUDE.md's Build section
+; shows; it puts the EDB installer into Installer\payload\.
 
 #ifndef AppVersion
   #error AppVersion must be defined. Pass it as: iscc.exe /DAppVersion=1.2.3 SemiBase.iss
@@ -25,11 +26,13 @@
 #define ToolRoot     "{commonpf}\SemiBase Setup"
 #define LogRoot      ToolRoot + "\Logs"
 
-; The PostgreSQL 17 install this setup creates: its registry key, service, port and data directory
-#define PgInstallation "postgresql-x64-17"
-#define PgService      "postgresql-x64-17"
+; The PostgreSQL install this setup creates: its major, registry key, service, port and data
+; directory
+#define PgMajor        "17"
+#define PgInstallation "postgresql-x64-" + PgMajor
+#define PgService      "postgresql-x64-" + PgMajor
 #define PgPort         "5432"
-#define PgDataDir      "C:\Program Files\PostgreSQL\17\data"
+#define PgDataDir      "C:\Program Files\PostgreSQL\" + PgMajor + "\data"
 
 [Setup]
 AppId={#AppId}
@@ -150,9 +153,10 @@ begin
     end;
 end;
 
-// The switches Inno Setup 6.7.3 reads, from Setup.MainFunc.pas and SetupLdr.dpr at tag is-6_7_3,
-// named up to and including the first =, as Inno names them. Inno ignores any other switch.
-function IsSetupSwitch(const Argument: String): Boolean;
+// The setup's two password parameters and the switches Inno Setup 6.7.3 reads, from
+// Setup.MainFunc.pas and SetupLdr.dpr at tag is-6_7_3, named up to and including the first =, as
+// Inno names them. Inno ignores any other switch.
+function IsKnownArgument(const Argument: String): Boolean;
 var
   Name: String;
 begin
@@ -176,7 +180,7 @@ var
 begin
   Result := '';
   for I := 1 to ParamCount do
-    if not IsSetupSwitch(ParamStr(I)) then
+    if not IsKnownArgument(ParamStr(I)) then
     begin
       Result := 'Setup argument ' + IntToStr(I) + ' is not a switch Setup reads. A space in an ' +
         'unquoted password parameter splits it there: put the quotes around the whole ' +
@@ -234,8 +238,10 @@ begin
       'file, and neither is known to keep such a password.';
 end;
 
+// Creates the log folder, so a log written before KeepToolRefusal ran has one too
 function LogPath(const Prefix: String): String;
 begin
+  ForceDirectories(ExpandConstant('{#LogRoot}'));
   Result := ExpandConstant('{#LogRoot}\') + Prefix + '-' +
     GetDateTimeString('yyyymmdd-hhnnss', #0, #0) + '.log';
 end;
@@ -247,7 +253,6 @@ var
 begin
   SetArrayLength(Lines, 1);
   Lines[0] := Message;
-  ForceDirectories(ExpandConstant('{#LogRoot}'));
   SaveStringsToUTF8FileWithoutBOM(LogPath('setup'), Lines, True);
 end;
 
@@ -314,7 +319,7 @@ begin
   Result := (Pos('"', Value) = 0) and (Pos('%', Value) = 0);
 end;
 
-// The 17 key exists: it is used only when it is a complete install with a service
+// The {#PgInstallation} key exists: it is used only when it is a complete install with a service
 function RegisteredEngineRefusal(var Engine: TEngine): String;
 var
   Key, Version, SuperUser, DataDirectory, BaseDirectory, ServiceName, Missing: String;
@@ -327,7 +332,7 @@ begin
   RegQueryStringValue(HKLM64, Key, 'Data Directory', DataDirectory);
   RegQueryStringValue(HKLM64, Key, 'Service ID', ServiceName);
 
-  if Copy(Version, 1, 3) <> '17.' then
+  if Copy(Version, 1, Length('{#PgMajor}.')) <> '{#PgMajor}.' then
     Missing := 'its Version is ''' + Version + ''''
   else if SuperUser = '' then
     Missing := 'it has no Super User'
@@ -339,7 +344,7 @@ begin
   begin
     if not RegQueryStringValue(HKLM64, Key, 'Base Directory', BaseDirectory) then
       BaseDirectory := '<Base Directory>';
-    Result := 'HKLM\' + Key + ' is not a complete PostgreSQL 17 installation: ' + Missing +
+    Result := 'HKLM\' + Key + ' is not a complete PostgreSQL {#PgMajor} installation: ' + Missing +
       '. A failed PostgreSQL install leaves this; remove it with ' + BaseDirectory +
       '\uninstall-postgresql.exe, then run Setup again.' + RecoveryHint;
     Exit;
@@ -365,7 +370,7 @@ begin
   Engine.SuperUser := SuperUser;
 end;
 
-// The 17 key does not exist, and another major may be registered
+// The {#PgInstallation} key does not exist, and another major may be registered
 function OtherMajorRefusal: String;
 var
   Names: TArrayOfString;
@@ -392,18 +397,16 @@ begin
       Version + ', service ' + ServiceName + ', ' + PortText + ')';
   end;
   if Registered <> '' then
-    Result := 'PostgreSQL 17 is not registered, and another major is: ' + Registered +
-      '. Setup provisions PostgreSQL 17 only.' + RecoveryHint;
+    Result := 'PostgreSQL {#PgMajor} is not registered, and another major is: ' + Registered +
+      '. Setup provisions PostgreSQL {#PgMajor} only.' + RecoveryHint;
 end;
 
 // Nothing is registered: a fresh install must not meet a server or data it does not know
-function FreshInstallRefusal(const SuperPassword, WriterPassword: String): String;
+function FreshMachineRefusal: String;
 var
   Accepts: Boolean;
 begin
-  Result := FreshPasswordRefusal(SuperPassword);
-  if Result <> '' then
-    Exit;
+  Result := '';
   if not ProbePort({#PgPort}, Accepts) then
     Result := 'Setup could not probe localhost:{#PgPort} through powershell.exe.' + RecoveryHint
   else if Accepts then
@@ -412,10 +415,20 @@ begin
   else if IsNonEmptyDirectory('{#PgDataDir}') then
     Result := 'No PostgreSQL is registered, but {#PgDataDir} exists and is not empty. Setup never ' +
       'overwrites existing data: remove the directory, for example after an interrupted ' +
-      'install, then run Setup again.' + RecoveryHint
-  else if WriterPassword = '' then
-    Result := 'No scada_writer password: this run installs PostgreSQL 17 and creates the ' +
-      'scada_writer role. Pass /WRITERPASSWORD=<password> or set SEMIBASE_WRITER_PASSWORD.';
+      'install, then run Setup again.' + RecoveryHint;
+end;
+
+// The fresh row's rules in their order. The password page passes ProbeMachine False: a probe of a
+// closed port takes about 7 s, and the page checks only what the user can correct in a field.
+function FreshInstallRefusal(const SuperPassword, WriterPassword: String;
+  ProbeMachine: Boolean): String;
+begin
+  Result := FreshPasswordRefusal(SuperPassword);
+  if (Result = '') and ProbeMachine then
+    Result := FreshMachineRefusal;
+  if (Result = '') and (WriterPassword = '') then
+    Result := 'No scada_writer password: this run installs PostgreSQL {#PgMajor} and creates ' +
+      'the scada_writer role. Pass /WRITERPASSWORD=<password> or set SEMIBASE_WRITER_PASSWORD.';
 end;
 
 function EngineIsFresh: Boolean;
@@ -433,7 +446,7 @@ begin
   begin
     Result := OtherMajorRefusal;
     if Result = '' then
-      Result := FreshInstallRefusal(SuperPassword, WriterPassword);
+      Result := FreshInstallRefusal(SuperPassword, WriterPassword, True);
   end;
 end;
 
@@ -514,7 +527,8 @@ begin
     Sleep(1000);
   until GetTickCount - Started >= PortWaitMilliseconds;
   Result := 'Service ' + ServiceName + ' is started, but localhost:' + IntToStr(Port) +
-    ' accepted no TCP connection within 60 s.' + RecoveryHint;
+    ' accepted no TCP connection within ' + IntToStr(PortWaitMilliseconds div 1000) + ' s.' +
+    RecoveryHint;
 end;
 
 // Read back rather than trusted: an empty value may delete the variable or store it empty, and
@@ -541,11 +555,10 @@ begin
       RecoveryHint;
     Exit;
   end;
-  ForceDirectories(ExpandConstant('{#LogRoot}'));
   SiteLog := LogPath('site');
   if not Exec(ExpandConstant('{cmd}'), '/s /c ""' + ExpandConstant('{tmp}\semibase.exe') +
     '" site --port ' + IntToStr(Engine.Port) + ' --superuser "' + Engine.SuperUser +
-    '" --expected-major 17 --restart-service "' + Engine.ServiceName + '" > "' + SiteLog +
+    '" --expected-major {#PgMajor} --restart-service "' + Engine.ServiceName + '" > "' + SiteLog +
     '" 2>&1"', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then
     Result := 'Setup could not start cmd.exe to run semibase site: ' + SysErrorMessage(ExitCode) +
       '.' + RecoveryHint
@@ -561,10 +574,10 @@ var
 procedure InitializeWizard;
 begin
   PasswordPage := CreateInputQueryPage(wpSelectDir, 'PostgreSQL passwords',
-    'Setup provisions PostgreSQL 17 with these passwords.',
+    'Setup provisions PostgreSQL {#PgMajor} with these passwords.',
     'The superuser password is required on every run. The scada_writer password is required ' +
-    'when Setup installs PostgreSQL 17; leave it empty on a server where scada_writer exists ' +
-    'to keep its current password.');
+    'when Setup installs PostgreSQL {#PgMajor}; leave it empty on a server where scada_writer ' +
+    'exists to keep its current password.');
   PasswordPage.Add('&Superuser password:', True);
   PasswordPage.Add('scada_&writer password:', True);
   PasswordPage.Values[0] := ResolvePassword('SUPERPASSWORD', 'SEMIBASE_SUPER_PASSWORD');
@@ -585,12 +598,7 @@ begin
   else
     Refusal := PasswordRefusal(PasswordPage.Values[0], PasswordPage.Values[1]);
   if (Refusal = '') and EngineIsFresh and (OtherMajorRefusal = '') then
-  begin
-    Refusal := FreshPasswordRefusal(PasswordPage.Values[0]);
-    if (Refusal = '') and (PasswordPage.Values[1] = '') then
-      Refusal := 'Enter the scada_writer password: no PostgreSQL 17 is registered, so Setup ' +
-        'installs it and creates the scada_writer role.';
-  end;
+    Refusal := FreshInstallRefusal(PasswordPage.Values[0], PasswordPage.Values[1], False);
   if Refusal <> '' then
   begin
     MsgBox(Refusal, mbError, MB_OK);

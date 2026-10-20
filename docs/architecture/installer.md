@@ -348,7 +348,7 @@ Measured 2026-10-19 the same way, with a copy of `Installer/SemiBase.iss` that h
   passwords, and `"/SUPERPASSWORD=two words\"` reached the trailing-`\` rule. What stays open:
   a password whose part after the space is itself such a name, `x /NOCANCEL` or `x /DIR=y`, still
   arrives cut unless it is quoted. An Inno update that adds a switch needs it added to
-  `IsSetupSwitch`, or the setup refuses it.
+  `IsKnownArgument`, or the setup refuses it.
 
 Measured 2026-10-19 the same way, with a scratch setup that extracts two text files and refuses:
 
