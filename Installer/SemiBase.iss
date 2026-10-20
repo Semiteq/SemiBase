@@ -137,16 +137,48 @@ begin
       'reaches Setup only through ' + VariableName + '.';
 end;
 
-// An unquoted space splits a password parameter, and Setup would keep the part before it
+function IsNameInList(const Name: String; const Names: array of String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 0 to GetArrayLength(Names) - 1 do
+    if CompareText(Name, Names[I]) = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
+// The switches Inno Setup 6.7.3 reads, from Setup.MainFunc.pas and SetupLdr.dpr at tag is-6_7_3,
+// named up to and including the first =, as Inno names them. Inno ignores any other switch.
+function IsSetupSwitch(const Argument: String): Boolean;
+var
+  Name: String;
+begin
+  Name := Argument;
+  if Pos('=', Name) > 0 then
+    Name := Copy(Name, 1, Pos('=', Name));
+  Result := IsNameInList(Name, ['/SUPERPASSWORD=', '/WRITERPASSWORD=', '/SP-', '/SILENT',
+    '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/RESTARTEXITCODE=', '/LOG', '/LOG=',
+    '/NOCANCEL', '/NOSTYLE', '/ALLUSERS', '/CURRENTUSER', '/LANG=', '/DIR=', '/GROUP=',
+    '/NOICONS', '/TYPE=', '/COMPONENTS=', '/TASKS=', '/MERGETASKS=', '/PASSWORD=', '/LOADINF=',
+    '/SAVEINF=', '/CLOSEAPPLICATIONS', '/NOCLOSEAPPLICATIONS', '/FORCECLOSEAPPLICATIONS',
+    '/NOFORCECLOSEAPPLICATIONS', '/LOGCLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS',
+    '/NORESTARTAPPLICATIONS', '/REDIRECTIONGUARD', '/NOREDIRECTIONGUARD']);
+end;
+
+// An unquoted space splits a password parameter, and Setup would keep the part before it. The
+// message names the argument by number alone: its text may be the rest of a password.
 function StrayArgumentRefusal: String;
 var
   I: Integer;
 begin
   Result := '';
   for I := 1 to ParamCount do
-    if Copy(ParamStr(I), 1, 1) <> '/' then
+    if not IsSetupSwitch(ParamStr(I)) then
     begin
-      Result := 'Setup argument ' + IntToStr(I) + ' does not start with /. A space in an ' +
+      Result := 'Setup argument ' + IntToStr(I) + ' is not a switch Setup reads. A space in an ' +
         'unquoted password parameter splits it there: put the quotes around the whole ' +
         'parameter, or pass the password through its SEMIBASE_* variable.';
       Exit;

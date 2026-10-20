@@ -35,8 +35,9 @@ In order, `PrepareToInstall`:
    included;
 2. checks that each password parameter arrived as typed (`GetCmdTail`: the value stands verbatim
    in the tail and ends at the end, at a space, or at a `"` closing a quote opened right before
-   `/NAME=`) and that every argument starts with `/`, since an unquoted space splits a password
-   parameter into two arguments;
+   `/NAME=`) and that every argument is a switch Setup reads, a password parameter or one of Inno's
+   own ([Inno Setup](#inno-setup)), since an unquoted space splits a password parameter into two
+   arguments;
 3. requires a superuser password and a printable ASCII `scada_writer` password;
 4. decides the engine state, applying the [superuser password rules](#password-characters) on the
    fresh row only, and installs EDB there;
@@ -329,8 +330,25 @@ Measured 2026-10-19 the same way, with a copy of `Installer/SemiBase.iss` that h
   `ProcessStartInfo` and by `Start-Process` (whose tail ends in a space), arrives as `two words`
   and passes; `/SUPERPASSWORD="Aa1z"` and `/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w"` are refused.
 - An unquoted `/SUPERPASSWORD=a b` arrives as two arguments, `/SUPERPASSWORD=a` and `b`, and the
-  first matches the tail verbatim. So the setup also refuses any argument that does not start
-  with `/`; the bootstrapper's `/SL5=...` is argument 1 and does.
+  first matches the tail verbatim. The bootstrapper's `/SL5=...` is in `GetCmdTail` only:
+  `ParamStr(1)` is the caller's first argument.
+- Measured 2026-10-20 the same way, ISCC 6.7.3, with a probe that records `ParamStr` in
+  `PrepareToInstall` and refuses there: an unknown switch does not stop Setup. With `/Aa2z`,
+  `/NOSUCHSWITCH`, `/Aa2z=x` or the word `bare` among the arguments, Setup reached
+  `PrepareToInstall` under `/VERYSILENT` and exited 7, and each reached `ParamStr` unchanged,
+  `/SP-` too. Inno's source agrees: the argument loop of `InitializeSetup` in
+  `Projects/Src/Setup.MainFunc.pas` at tag `is-6_7_3` sets a flag per name it knows and skips
+  every other, and `/SPAWNWND=`, `/FIRSTWND=` and `/DEBUGWND=`, which Inno adds itself, never
+  reach `ParamStr`. So `/SUPERPASSWORD=Aa1z /Aa2z` would pass as `Aa1z`, and the setup refuses
+  any argument whose name, up to and including its first `=`, is neither a password parameter
+  nor one of that loop's names or `/SP-` from `Projects/SetupLdr.dpr`. A copy of the setup with
+  `PrivilegesRequired=lowest` that refuses after the password checks refused
+  `/SUPERPASSWORD=Aa1z /Aa2z` and `/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w /Aa2w`, and passed
+  `/NOCANCEL`, `/LOG=<file>`, `/SP-`, `/DIR=<folder>` and a lowercase `/verysilent` after the
+  passwords, and `"/SUPERPASSWORD=two words\"` reached the trailing-`\` rule. What stays open:
+  a password whose part after the space is itself such a name, `x /NOCANCEL` or `x /DIR=y`, still
+  arrives cut unless it is quoted. An Inno update that adds a switch needs it added to
+  `IsSetupSwitch`, or the setup refuses it.
 
 Measured 2026-10-19 the same way, with a scratch setup that extracts two text files and refuses:
 

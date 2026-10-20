@@ -438,7 +438,9 @@ jobs:
       # The superuser rules hold on the fresh-install row, which a clean machine takes. The
       # password parameter comes last, so an unbalanced " swallows no other parameter. The
       # quoted parameter with a space passes every parameter and password check and stops
-      # at the writer guard, so the trailing-quote rule does not refuse the documented form.
+      # at the writer guard, so the trailing-quote rule does not refuse the documented form;
+      # with a trailing \ it stops at the \ rule, which only the whole value can reach. A
+      # switch after the password passes; a / word Setup does not read is refused.
       - name: Refuse a non-ASCII password and a password with a quote
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
@@ -448,9 +450,13 @@ jobs:
           Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z"') 'The /SUPERPASSWORD value does not reach Setup as typed'
           Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w"') 'The /WRITERPASSWORD value does not reach Setup as typed'
           Assert-Refused (Invoke-Setup '"/SUPERPASSWORD=two words"') 'No scada_writer password'
+          Assert-Refused (Invoke-Setup '"/SUPERPASSWORD=two words\"') 'must not contain " or end in \'
           Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z\') 'must not contain " or end in \'
           Assert-Refused (Invoke-Setup '/SUPERPASSWORD=-Aa1z') 'must not start with -, or start or end with a space'
-          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z Aa2z') 'does not start with /'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z Aa2z') 'Setup argument 5 is not a switch Setup reads'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z /Aa2z') 'Setup argument 5 is not a switch Setup reads'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w /Aa2w') 'Setup argument 6 is not a switch Setup reads'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z /NOCANCEL') 'No scada_writer password'
           Assert-Refused (Invoke-Setup "/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1${nonAscii}z") 'The scada_writer password (/WRITERPASSWORD or SEMIBASE_WRITER_PASSWORD) must be printable ASCII'
           Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1"z') 'The /WRITERPASSWORD value does not reach Setup as typed'
           $env:SEMIBASE_SUPER_PASSWORD = 'Aa1"z'
@@ -619,7 +625,8 @@ jobs:
 
       # No case passes /LOG: Inno's own log records Setup's command line, passwords
       # included. The search prints file names and hit counts, never a matched line.
-      # Setup's {tmp} is not searched: Inno removes it at exit, and case 6 watched it.
+      # Setup's {tmp} is not searched: case 6 saw the option file gone once the site
+      # log appeared, while Setup still ran.
       - name: Find no password in the logs
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"

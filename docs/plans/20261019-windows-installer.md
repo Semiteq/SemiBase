@@ -97,9 +97,12 @@ generated per run; `$psql = "$env:PGBIN\psql.exe"`.
 5. On the clean machine, refusals with no `postgresql*` service afterwards: a Cyrillic
    `/SUPERPASSWORD`; one containing `"` as a parameter and through the variable; a
    `/SUPERPASSWORD` and a `/WRITERPASSWORD` ending in `"`; one ending in `\`; one starting with
-   `-`; one starting with a space; an unquoted `/SUPERPASSWORD=a b`; a Cyrillic
-   `/WRITERPASSWORD`; a `/WRITERPASSWORD` containing `"`. A quoted `"/SUPERPASSWORD=two words"`
-   passes every parameter and password check and refuses at the writer guard. Then the engine rows, each
+   `-`; one starting with a space; an unquoted `/SUPERPASSWORD=a b`; `/SUPERPASSWORD=Aa1z /Aa2z`
+   and `/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w /Aa2w`, each naming the `/Aa2` argument by
+   number; a Cyrillic `/WRITERPASSWORD`; a `/WRITERPASSWORD` containing `"`. A quoted
+   `"/SUPERPASSWORD=two words"` and `/SUPERPASSWORD=Aa1z /NOCANCEL` pass every parameter and
+   password check and refuse at the writer guard; `"/SUPERPASSWORD=two words\"` refuses at the
+   trailing-`\` rule, which only the whole value reaches. Then the engine rows, each
    from a fake key or object deleted afterwards: an incomplete 17 key (no `Super User`), an
    orphaned 17 key (`Service ID` naming no service), a listener on `127.0.0.1:5432`, a file in
    `C:\Program Files\PostgreSQL\17\data`, and no writer password.
@@ -119,8 +122,9 @@ generated per run; `$psql = "$env:PGBIN\psql.exe"`.
 9. `Select-String` for all four tokens over the EDB install logs,
    `C:\Program Files\SemiBase Setup\Logs\*.log`
    and `C:\Program Files\PostgreSQL\17\data\log\*` finds nothing, and the server log holds the
-   `semiplot` probe statement, so statement logging was on. Setup's `{tmp}` is gone at exit;
-   case 6 watched it. No case passes `/LOG`: the Inno log carries Setup's command line by design.
+   `semiplot` probe statement, so statement logging was on. Setup's `{tmp}` is not searched:
+   case 6 sees the option file gone once the site log appears, while Setup still runs. No case
+   passes `/LOG`: the Inno log carries Setup's command line by design.
 10. `unins000.exe /VERYSILENT`: exit 0; `{app}\semibase.exe` is gone; `postgresql-x64-17` is
     still present, `semiplot` still logs in, and `C:\Program Files\SemiBase Setup\Logs\*.log`
     and `C:\Program Files\SemiBase Setup\semibase.exe` remain.
@@ -166,9 +170,9 @@ generated per run; `$psql = "$env:PGBIN\psql.exe"`.
   registered 17 the password reaches `semibase` byte for byte. Setup's own command-line parser
   drops every `"`, so a password parameter whose value does not appear verbatim in
   `GetCmdTail`, or is followed there by anything but the end, a space or a closing quote, is
-  refused too, and so is any argument that does not start with `/`, which an
-  unquoted space in a password parameter produces; a password with `"` reaches Setup only
-  through its variable (`installer.md#inno-setup`).
+  refused too, and so is any argument that is neither a password parameter nor a switch Inno
+  6.7.3 reads, which an unquoted space in a password parameter produces; a password with `"`
+  reaches Setup only through its variable (`installer.md#inno-setup`).
 - The superuser password is required on every run and stored nowhere.
 - Every run sets the `semiplot` role to `semiplot`. SemiPlot's connection file relies on the
   convention, so the role has one writer and no site-specific value to lose on an upgrade.
