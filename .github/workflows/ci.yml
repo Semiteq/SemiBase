@@ -135,8 +135,8 @@ jobs:
       - name: Test
         run: go test -race ./...
 
-      - name: Shellcheck the payload fetch script
-        run: shellcheck Installer/fetch-postgresql.sh
+      - name: Shellcheck the shell scripts
+        run: shellcheck Installer/*.sh .github/scripts/*.sh
 
       # The site path, the only thing that covers the ALTER SYSTEM tuning: the
       # same binary provisions the service container the way it provisions an
@@ -345,15 +345,14 @@ jobs:
       - name: Refuse a run without a superuser password
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
-          $service = 'postgresql-x64-17'
           if (Test-Path Env:SEMIBASE_SUPER_PASSWORD) { Fail 'SEMIBASE_SUPER_PASSWORD is set, so this case tests nothing' }
           Assert-Refused (Invoke-Setup) 'No superuser password'
           if (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe") { Fail 'the refused run installed semibase.exe' }
           if (-not (Test-Path $ToolExe)) { Fail "the refused run left no recovery copy at $ToolExe" }
           & $ToolExe version
           if ($LASTEXITCODE -ne 0) { Fail 'the recovery copy does not run' }
-          $startMode = (Get-CimInstance Win32_Service -Filter "Name='$service'").StartMode
-          if ($startMode -ne 'Disabled') { Fail "the refused run changed $service to start type '$startMode' (want Disabled)" }
+          $startMode = (Get-CimInstance Win32_Service -Filter "Name='$PgService'").StartMode
+          if ($startMode -ne 'Disabled') { Fail "the refused run changed $PgService to start type '$startMode' (want Disabled)" }
 
       # Not GITHUB_ENV: an exported variable would reach every step. A case that
       # hands a token through the environment sets it inside its own step, and
@@ -375,15 +374,14 @@ jobs:
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
           $tokens = @(Get-Content $TokenFile)
-          $service = 'postgresql-x64-17'
           $env:SEMIBASE_WRITER_PASSWORD = $tokens[0]
           $run = Invoke-Setup
           Write-Logs $run $tokens
           if ($run.ExitCode -ne 0) { Fail "want exit 0, got $($run.ExitCode)" }
           Get-SiteLog $run | Out-Null
           if (-not (Test-Path "$env:ProgramFiles\SemiBase\semibase.exe")) { Fail 'the run did not install semibase.exe' }
-          $startMode = (Get-CimInstance Win32_Service -Filter "Name='$service'").StartMode
-          if ($startMode -ne 'Auto') { Fail "$service has start type '$startMode' (want Auto)" }
+          $startMode = (Get-CimInstance Win32_Service -Filter "Name='$PgService'").StartMode
+          if ($startMode -ne 'Auto') { Fail "$PgService has start type '$startMode' (want Auto)" }
           Assert-Login semiplot semiplot
           Assert-Login scada_writer $tokens[0]
 
@@ -395,7 +393,7 @@ jobs:
         timeout-minutes: 10
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
-          $base = (Get-ItemProperty 'HKLM:\SOFTWARE\PostgreSQL\Installations\postgresql-x64-17').'Base Directory'
+          $base = (Get-ItemProperty "HKLM:\SOFTWARE\PostgreSQL\Installations\$PgInstallation").'Base Directory'
           $uninstaller = Start-Process -FilePath "$base\uninstall-postgresql.exe" `
             -ArgumentList '--mode', 'unattended', '--unattendedmodeui', 'none' -Wait -PassThru
           if ($uninstaller.ExitCode -ne 0) { Fail "uninstall-postgresql.exe exited $($uninstaller.ExitCode)" }
@@ -468,7 +466,7 @@ jobs:
       - name: Refuse an incomplete PostgreSQL 17 registration
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
-          $fake = New-Item -Path 'HKLM:\SOFTWARE\PostgreSQL\Installations\postgresql-x64-17' -Force
+          $fake = New-Item -Path "HKLM:\SOFTWARE\PostgreSQL\Installations\$PgInstallation" -Force
           New-ItemProperty -Path $fake.PSPath -Name 'Version' -Value '17.11-5' | Out-Null
           New-ItemProperty -Path $fake.PSPath -Name 'Base Directory' -Value 'C:\Program Files\PostgreSQL\17' | Out-Null
           $run = Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w'
@@ -481,7 +479,7 @@ jobs:
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
           $data = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\orphaned-data" -Force
           Set-Content -Path "$data\PG_VERSION" -Value 17
-          $fake = New-Item -Path 'HKLM:\SOFTWARE\PostgreSQL\Installations\postgresql-x64-17' -Force
+          $fake = New-Item -Path "HKLM:\SOFTWARE\PostgreSQL\Installations\$PgInstallation" -Force
           New-ItemProperty -Path $fake.PSPath -Name 'Version' -Value '17.11-5' | Out-Null
           New-ItemProperty -Path $fake.PSPath -Name 'Super User' -Value 'postgres' | Out-Null
           New-ItemProperty -Path $fake.PSPath -Name 'Data Directory' -Value $data.FullName | Out-Null
@@ -550,19 +548,13 @@ jobs:
           if (-not $watched) { Fail 'the option-file watch saw no site log' }
           if (-not $watched.Seen) { Fail 'the watch never saw the option file, so it watched the wrong place' }
           if ($watched.PresentWithSiteLog) { Fail 'the option file was still there when the site log appeared' }
-          if (-not (Get-SiteLog $run).Contains('restarting service postgresql-x64-17')) {
-            Fail 'the site log does not record restarting service postgresql-x64-17'
+          if (-not (Get-SiteLog $run).Contains("restarting service $PgService")) {
+            Fail "the site log does not record restarting service $PgService"
           }
 
-          $env:PGPASSWORD = $super
-          function Invoke-Super([string] $sql) {
-            $out = & "$env:PGBIN\psql.exe" -w -h 127.0.0.1 -U postgres -d postgres -tAc $sql
-            if ($LASTEXITCODE -ne 0) { Fail "psql as postgres failed on: $sql" }
-            "$out".Trim()
-          }
-          $pending = Invoke-Super 'SELECT count(*) FROM pg_settings WHERE pending_restart'
-          $listen = Invoke-Super 'SHOW listen_addresses'
-          $databases = Invoke-Super ("SELECT string_agg(concat_ws('|', datname, datcollate, datctype, " +
+          $pending = Invoke-Super $super 'SELECT count(*) FROM pg_settings WHERE pending_restart'
+          $listen = Invoke-Super $super 'SHOW listen_addresses'
+          $databases = Invoke-Super $super ("SELECT string_agg(concat_ws('|', datname, datcollate, datctype, " +
             "pg_encoding_to_char(encoding)), ',' ORDER BY datname) FROM pg_database " +
             "WHERE datname IN ('template1', 'scada_archive')")
           $wantDatabases = 'scada_archive|C|C|UTF8,template1|C|C|UTF8'
@@ -580,11 +572,8 @@ jobs:
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
           $tokens = @(Get-Content $TokenFile)
           $super, $writer = $tokens[1], $tokens[2]
-          $env:PGPASSWORD = $super
-          & "$env:PGBIN\psql.exe" -w -h 127.0.0.1 -U postgres -d postgres -qtAc "ALTER SYSTEM SET log_statement = 'all'"
-          if ($LASTEXITCODE -ne 0) { Fail 'could not set log_statement' }
-          & "$env:PGBIN\psql.exe" -w -h 127.0.0.1 -U postgres -d postgres -qtAc 'SELECT pg_reload_conf()'
-          if ($LASTEXITCODE -ne 0) { Fail 'could not reload the configuration' }
+          Invoke-Super $super "ALTER SYSTEM SET log_statement = 'all'" | Out-Null
+          Invoke-Super $super 'SELECT pg_reload_conf()' | Out-Null
           $run = Invoke-Setup "/SUPERPASSWORD=$super"
           Write-Logs $run $tokens
           if ($run.ExitCode -ne 0) { Fail "want exit 0, got $($run.ExitCode)" }
@@ -608,10 +597,10 @@ jobs:
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
           $tokens = @(Get-Content $TokenFile)
-          $key = 'HKLM:\SOFTWARE\PostgreSQL\Services\postgresql-x64-17'
+          $key = "HKLM:\SOFTWARE\PostgreSQL\Services\$PgService"
           Set-ItemProperty -Path $key -Name Port -Value 15433 -Type DWord
           try { $run = Invoke-Setup "/SUPERPASSWORD=$($tokens[1])" } finally { Set-ItemProperty -Path $key -Name Port -Value 5432 -Type DWord }
-          Assert-Refused $run 'Service postgresql-x64-17 is started, but localhost:15433 accepted no TCP connection within 60 s'
+          Assert-Refused $run "Service $PgService is started, but localhost:15433 accepted no TCP connection within 60 s"
 
       - name: Refuse a wrong superuser password
         run: |
@@ -668,7 +657,7 @@ jobs:
             if ((Get-Date) -gt $deadline) { Fail 'semibase.exe is still there 60 s after the uninstaller exited' }
             Start-Sleep -Seconds 1
           }
-          if (-not (Get-Service postgresql-x64-17 -ErrorAction SilentlyContinue)) { Fail 'the uninstall removed postgresql-x64-17' }
+          if (-not (Get-Service $PgService -ErrorAction SilentlyContinue)) { Fail "the uninstall removed $PgService" }
           if (@(Get-ChildItem "$LogDir\*.log" -ErrorAction SilentlyContinue).Count -eq 0) { Fail "the uninstall removed the logs in $LogDir" }
           if (-not (Test-Path $ToolExe)) { Fail "the uninstall removed the recovery copy $ToolExe" }
           Assert-Login semiplot semiplot
@@ -679,15 +668,12 @@ jobs:
         if: failure()
         run: |
           $ErrorActionPreference = 'Continue'
-          $tokens = @(Get-Content "$env:RUNNER_TEMP\case-passwords.txt" -ErrorAction SilentlyContinue)
-          function Write-Redacted([string] $text) {
-            foreach ($t in $tokens) { $text = $text.Replace($t, '<REDACTED>') }
-            Write-Host $text
-          }
+          . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
+          $tokens = @(Get-Content $TokenFile -ErrorAction SilentlyContinue)
           Get-Service postgresql* | Format-Table Name, Status, StartType | Out-String | Write-Host
-          Write-Redacted ((reg.exe query HKLM\SOFTWARE\PostgreSQL /s 2>&1) -join "`n")
+          Write-Redacted ((reg.exe query HKLM\SOFTWARE\PostgreSQL /s 2>&1) -join "`n") $tokens
           Get-ChildItem "$env:TEMP\install-postgresql.log", "$env:TEMP\installbuilder_installer_*.log" -ErrorAction SilentlyContinue |
-            ForEach-Object { Write-Host "--- $($_.Name), last 200 lines"; Write-Redacted ((Get-Content $_.FullName -Tail 200) -join "`n") }
-          Get-ChildItem "$env:ProgramFiles\SemiBase Setup\Logs\*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime |
-            ForEach-Object { Write-Host "--- $($_.Name)"; Write-Redacted "$(Get-Content -Raw $_.FullName)" }
+            ForEach-Object { Write-Host "--- $($_.Name), last 200 lines"; Write-Redacted ((Get-Content $_.FullName -Tail 200) -join "`n") $tokens }
+          $logs = @(Get-ChildItem "$LogDir\*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime)
+          Write-Logs ([pscustomobject]@{ Logs = $logs }) $tokens
           exit 0

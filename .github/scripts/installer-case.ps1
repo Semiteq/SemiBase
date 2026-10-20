@@ -4,6 +4,9 @@ $SetupExe = "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe"
 $LogDir = "$env:ProgramFiles\SemiBase Setup\Logs"
 $ToolExe = "$env:ProgramFiles\SemiBase Setup\semibase.exe"
 $TokenFile = "$env:RUNNER_TEMP\case-passwords.txt"
+# The registry key and service of the runner's 17 and of the one the setup installs
+$PgInstallation = 'postgresql-x64-17'
+$PgService = 'postgresql-x64-17'
 
 function Fail([string] $message) {
   Write-Host "::error::$message"
@@ -29,12 +32,15 @@ function Invoke-Setup([string] $arguments = '') {
 
 # The setup and site logs carry no password by design; the redaction keeps a regression out of
 # the public job log
+function Write-Redacted([string] $text, [string[]] $tokens = @()) {
+  foreach ($token in $tokens) { $text = $text.Replace($token, '<REDACTED>') }
+  Write-Host $text
+}
+
 function Write-Logs($run, [string[]] $tokens = @()) {
   foreach ($log in $run.Logs) {
-    $text = "$(Get-Content -Raw $log.FullName)"
-    foreach ($token in $tokens) { $text = $text.Replace($token, '<REDACTED>') }
     Write-Host "--- $($log.Name)"
-    Write-Host $text
+    Write-Redacted "$(Get-Content -Raw $log.FullName)" $tokens
   }
 }
 
@@ -69,4 +75,12 @@ function Assert-Login([string] $role, [string] $password, [string] $database = '
   $env:PGPASSWORD = $password
   & "$env:PGBIN\psql.exe" -w -h 127.0.0.1 -U $role -d $database -tAc 'SELECT 1' | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail "$role cannot log in to $database with the expected password" }
+}
+
+# Returns the trimmed output of one statement run as postgres
+function Invoke-Super([string] $password, [string] $sql) {
+  $env:PGPASSWORD = $password
+  $out = & "$env:PGBIN\psql.exe" -w -h 127.0.0.1 -U postgres -d postgres -qtAc $sql
+  if ($LASTEXITCODE -ne 0) { Fail "psql as postgres failed on: $sql" }
+  "$out".Trim()
 }
