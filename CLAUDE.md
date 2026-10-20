@@ -49,7 +49,8 @@ main.revision=<tag>` is embedded, so `semibase version` prints the tag. `install
 (`windows-latest`) fetches the EDB payload, installs Inno Setup through `winget` and compiles
 `SemiBase-Setup.exe` around the Windows binary (`/DAppVersion=<version>`, `/DFileVersion=` the
 part before the first `-`), then smoke-runs it once without a password: it must refuse with exit
-7, and the `semibase.exe` it copied to `C:\DISTR\Tools\SemiBase` must print the tag. `release` (`ubuntu-latest`) restores the Linux binary's exec bit,
+7, and the `semibase.exe` it copied to `C:\Program Files\SemiBase Setup` must print the tag.
+`release` (`ubuntu-latest`) restores the Linux binary's exec bit,
 which artifact transfer drops, and attaches two assets, the Linux binary and the setup; the
 Windows binary is not attached, the setup carries it.
 
@@ -148,12 +149,13 @@ the Linux job shellchecks the fetch script. Each case step dot-sources
 call operator does not wait for, with the argument string passed as written) and asserts a
 refusal as exit 7 with its reason last in the newest setup log. In order: no superuser password
 refuses, installs no `semibase.exe` in `{app}`, leaves the recovery copy in
-`C:\DISTR\Tools\SemiBase` and the runner's service Disabled; the runner's own 17 provisions with
+`C:\Program Files\SemiBase Setup` and the runner's service Disabled; the runner's own 17 provisions with
 exit 0, Automatic, `semiplot`/`semiplot` and the generated `scada_writer` password log in; the
 runner's PostgreSQL is uninstalled, leaving the empty `Installations` and `Services` keys; a fake
-`postgresql-x64-14` key refuses without the password in the log; nine password and parameter
-refusals (non-ASCII, `"`, trailing `\`, leading `-` and space, an unquoted split, the writer
-rules); the incomplete and orphaned 17 registrations, a busy port 5432, a non-empty data
+`postgresql-x64-14` key refuses without the password in the log; eleven password and parameter
+refusals (non-ASCII, `"`, a trailing `"` on either parameter, trailing `\`, leading `-` and
+space, an unquoted split, the writer rules) and a quoted `"/SUPERPASSWORD=two words"` that
+passes them; the incomplete and orphaned 17 registrations, a busy port 5432, a non-empty data
 directory and a missing writer password refuse with no `postgresql*` service left; a clean
 machine installs EDB 17 through the `SEMIBASE_*` variables while a job watches the option file
 appear and vanish before the site log (`restarting service`, nothing pending, `localhost`,
@@ -185,7 +187,8 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 .\semibase.exe bench --port 15432 --database semiplot_dev --expected-major 17
 .\semibase.exe version                    # print the build revision
 # the setup, in an elevated PowerShell with SEMIBASE_SUPER_PASSWORD (and on a first install
-# SEMIBASE_WRITER_PASSWORD) set: exit 0 provisioned, 7 refused; logs in C:\DISTR\Logs\SemiBase
+# SEMIBASE_WRITER_PASSWORD) set: exit 0 provisioned, 7 refused; logs in
+# C:\Program Files\SemiBase Setup\Logs
 (Start-Process .\Installer\Output\SemiBase-Setup.exe '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru).ExitCode
 ```
 

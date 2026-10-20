@@ -39,7 +39,7 @@ $env:SEMIBASE_WRITER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'П�
 # PostgreSQL 17, если его нет; конфигурация сервера, архивная база, роли `scada_writer`,
 # `semiplot` (пароль `semiplot`) и `semiplot_registrar`, права, таблица архива, пять таблиц
 # SemiPlot и функция регистрации новых перьев; перезапуск службы, если настройки его ждут.
-# код 0: машина готова; код 7: отказ, причина в C:\DISTR\Logs\SemiBase\setup-*.log
+# код 0: машина готова; код 7: отказ, причина в C:\Program Files\SemiBase Setup\Logs\setup-*.log
 $setup = Start-Process -FilePath .\SemiBase-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
 $setup.ExitCode
 ```

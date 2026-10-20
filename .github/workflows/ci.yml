@@ -436,13 +436,18 @@ jobs:
           if ($text.Contains($token)) { Fail 'the setup log contains the superuser password' }
 
       # The superuser rules hold on the fresh-install row, which a clean machine takes. The
-      # password parameter comes last, so an unbalanced " swallows no other parameter.
+      # password parameter comes last, so an unbalanced " swallows no other parameter. The
+      # quoted parameter with a space passes every parameter and password check and stops
+      # at the writer guard, so the trailing-quote rule does not refuse the documented form.
       - name: Refuse a non-ASCII password and a password with a quote
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
           $nonAscii = [char] 0x0436
           Assert-Refused (Invoke-Setup "/SUPERPASSWORD=Aa1${nonAscii}z") 'The superuser password must be printable ASCII'
           Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1"z') 'The /SUPERPASSWORD value does not reach Setup as typed'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z"') 'The /SUPERPASSWORD value does not reach Setup as typed'
+          Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w"') 'The /WRITERPASSWORD value does not reach Setup as typed'
+          Assert-Refused (Invoke-Setup '"/SUPERPASSWORD=two words"') 'No scada_writer password'
           Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z\') 'must not contain " or end in \'
           Assert-Refused (Invoke-Setup '/SUPERPASSWORD=-Aa1z') 'must not start with -, or start or end with a space'
           Assert-Refused (Invoke-Setup '/SUPERPASSWORD=Aa1z Aa2z') 'does not start with /'
@@ -676,6 +681,6 @@ jobs:
           Write-Redacted ((reg.exe query HKLM\SOFTWARE\PostgreSQL /s 2>&1) -join "`n")
           Get-ChildItem "$env:TEMP\install-postgresql.log", "$env:TEMP\installbuilder_installer_*.log" -ErrorAction SilentlyContinue |
             ForEach-Object { Write-Host "--- $($_.Name), last 200 lines"; Write-Redacted ((Get-Content $_.FullName -Tail 200) -join "`n") }
-          Get-ChildItem 'C:\DISTR\Logs\SemiBase\*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime |
+          Get-ChildItem "$env:ProgramFiles\SemiBase Setup\Logs\*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime |
             ForEach-Object { Write-Host "--- $($_.Name)"; Write-Redacted "$(Get-Content -Raw $_.FullName)" }
           exit 0

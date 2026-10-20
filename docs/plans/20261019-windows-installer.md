@@ -80,11 +80,11 @@
 All cases run in the `installer` CI job on `windows-latest`, in this order, each asserting
 Setup's exit code as `Process.ExitCode` reports it (Setup is a GUI exe, so `$LASTEXITCODE` is
 never set). A refusal is exit 7 with its reason as the last line of the newest
-`C:\DISTR\Logs\SemiBase\setup-*.log`. The passwords are random 24-character tokens generated per
-run; `$psql = "$env:PGBIN\psql.exe"`.
+`C:\Program Files\SemiBase Setup\Logs\setup-*.log`. The passwords are random 24-character tokens
+generated per run; `$psql = "$env:PGBIN\psql.exe"`.
 1. No `/SUPERPASSWORD` and no `SEMIBASE_SUPER_PASSWORD`: a refusal naming the missing superuser
-   password; `{app}\semibase.exe` does not exist; `C:\DISTR\Tools\SemiBase\semibase.exe` exists
-   and runs; the runner's `postgresql-x64-17` is still Disabled.
+   password; `{app}\semibase.exe` does not exist; `C:\Program Files\SemiBase Setup\semibase.exe`
+   exists and runs; the runner's `postgresql-x64-17` is still Disabled.
 2. Existing 17 (the runner's, `SEMIBASE_SUPER_PASSWORD=root` and a `SEMIBASE_WRITER_PASSWORD`
    token in the environment, no parameter; nothing has created `scada_writer` on that cluster
    yet): exit 0; the service start type is Automatic; `semiplot` with password `semiplot` and
@@ -95,9 +95,11 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 4. A fake `Installations\postgresql-x64-14` key with a `Services` port: a refusal naming the
    key, version 14 and the port, and not the password; the fake keys are deleted afterwards.
 5. On the clean machine, refusals with no `postgresql*` service afterwards: a Cyrillic
-   `/SUPERPASSWORD`; one containing `"` as a parameter and through the variable; one ending in
-   `\`; one starting with `-`; one starting with a space; an unquoted `/SUPERPASSWORD=a b`; a
-   Cyrillic `/WRITERPASSWORD`; a `/WRITERPASSWORD` containing `"`. Then the engine rows, each
+   `/SUPERPASSWORD`; one containing `"` as a parameter and through the variable; a
+   `/SUPERPASSWORD` and a `/WRITERPASSWORD` ending in `"`; one ending in `\`; one starting with
+   `-`; one starting with a space; an unquoted `/SUPERPASSWORD=a b`; a Cyrillic
+   `/WRITERPASSWORD`; a `/WRITERPASSWORD` containing `"`. A quoted `"/SUPERPASSWORD=two words"`
+   passes every parameter and password check and refuses at the writer guard. Then the engine rows, each
    from a fake key or object deleted afterwards: an incomplete 17 key (no `Super User`), an
    orphaned 17 key (`Service ID` naming no service), a listener on `127.0.0.1:5432`, a file in
    `C:\Program Files\PostgreSQL\17\data`, and no writer password.
@@ -114,13 +116,14 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
    A run with the registered `Port` set to 15433: a refusal naming `localhost:15433` after the
    60 s wait; the port is restored.
 8. `/SUPERPASSWORD=wrong`: a refusal; the site log names the failed connection.
-9. `Select-String` for all four tokens over the EDB install logs, `C:\DISTR\Logs\SemiBase\*.log`
+9. `Select-String` for all four tokens over the EDB install logs,
+   `C:\Program Files\SemiBase Setup\Logs\*.log`
    and `C:\Program Files\PostgreSQL\17\data\log\*` finds nothing, and the server log holds the
    `semiplot` probe statement, so statement logging was on. Setup's `{tmp}` is gone at exit;
    case 6 watched it. No case passes `/LOG`: the Inno log carries Setup's command line by design.
 10. `unins000.exe /VERYSILENT`: exit 0; `{app}\semibase.exe` is gone; `postgresql-x64-17` is
-    still present, `semiplot` still logs in, and `C:\DISTR\Logs\SemiBase\*.log` and
-    `C:\DISTR\Tools\SemiBase\semibase.exe` remain.
+    still present, `semiplot` still logs in, and `C:\Program Files\SemiBase Setup\Logs\*.log`
+    and `C:\Program Files\SemiBase Setup\semibase.exe` remain.
 
 ## Solution Overview
 - All provisioning runs in `PrepareToInstall`, before Inno copies a file. A non-empty return
@@ -128,10 +131,14 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
   `CurStepChanged` happens after files and the uninstaller are registered and may still exit 0.
 - Under `/VERYSILENT` the returned refusal text reaches no one, and `/LOG` records Setup's
   command line, so `PrepareToInstall` also appends every refusal, with no password in it, to
-  `C:\DISTR\Logs\SemiBase\setup-<yyyymmdd-hhnnss>.log`, creating the directory itself because
-  `[Dirs]` has not run yet.
+  `C:\Program Files\SemiBase Setup\Logs\setup-<yyyymmdd-hhnnss>.log`, creating the directory
+  itself because `[Dirs]` has not run yet. Setup's logs and the recovery copy live in
+  `{commonpf}\SemiBase Setup`, not under `C:\DISTR`: any user can create, fill or replace a
+  `C:\DISTR` folder, and elevated Setup writes there
+  (`installer.md#the-setup`).
 - `semibase.exe` has one `[Files]` entry into `{app}`; `ExtractTemporaryFile` also takes it to
-  `{tmp}` for the run, and every run first copies it to `C:\DISTR\Tools\SemiBase\semibase.exe`.
+  `{tmp}` for the run, and every run first copies it to
+  `C:\Program Files\SemiBase Setup\semibase.exe`.
   That copy is the recovery tool when Setup refuses a state: every refusal precedes `[Files]`,
   so `{app}` holds a copy only after a successful run, and the release attaches no Windows
   binary, which an offline site could not download anyway. Either copy answers
@@ -158,7 +165,8 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
   and no leading or trailing space, both unmeasured (`installer.md#password-characters`). On a
   registered 17 the password reaches `semibase` byte for byte. Setup's own command-line parser
   drops every `"`, so a password parameter whose value does not appear verbatim in
-  `GetCmdTail` is refused too, and so is any argument that does not start with `/`, which an
+  `GetCmdTail`, or is followed there by anything but the end, a space or a closing quote, is
+  refused too, and so is any argument that does not start with `/`, which an
   unquoted space in a password parameter produces; a password with `"` reaches Setup only
   through its variable (`installer.md#inno-setup`).
 - The superuser password is required on every run and stored nowhere.
@@ -227,7 +235,7 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 ### `semibase` invocation
 - `semibase.exe site --port <port> --superuser <Super User> --expected-major 17
   --restart-service <Service ID>`, output redirected through `cmd.exe /c` to
-  `C:\DISTR\Logs\SemiBase\site-<yyyymmdd-hhnnss>.log`. No password is on this line.
+  `C:\Program Files\SemiBase Setup\Logs\site-<yyyymmdd-hhnnss>.log`. No password is on this line.
 - Before the `Exec`, `[Code]` sets the three variables through
   `function SetEnvironmentVariable(lpName, lpValue: string): BOOL; external 'SetEnvironmentVariableW@kernel32.dll stdcall';`.
 
@@ -308,7 +316,8 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
       `{autopf}\SemiBase`, `OutputBaseFilename=SemiBase-Setup`, the three `/D` defines required
 - [x] `[Languages]` ru and en; `[Dirs]` `C:\DISTR\Logs\SemiBase` with `uninsneveruninstall`
       (removed in review: `ForceDirectories` creates the folder before `[Dirs]` runs, and the
-      uninstaller never removes a folder it did not create); `[Files]` as in Solution Overview
+      uninstaller never removes a folder it did not create; a later review moved the logs to
+      `{commonpf}\SemiBase Setup\Logs`); `[Files]` as in Solution Overview
 - [x] resolve the superuser and writer passwords from the parameter, else the `SEMIBASE_*`
       variable; refuse an empty superuser password in silent mode, any password that is not
       printable ASCII, and a superuser password that contains `"` or ends in `\`, from

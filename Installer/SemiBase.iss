@@ -19,9 +19,11 @@
 ; fetch-postgresql.sh saves the pinned build under this name and refuses a file that does not match the pin
 #define PgInstaller  "postgresql-17-windows-x64.exe"
 
-#define LogRoot      "C:\DISTR\Logs\SemiBase"
-; Every run copies semibase.exe here, so a machine where Setup never succeeded still has the recovery tool
-#define ToolRoot     "C:\DISTR\Tools\SemiBase"
+; Every run copies semibase.exe here, so a machine where Setup never succeeded still has the
+; recovery tool. Outside {app}, so the uninstaller leaves it. Only administrators can create or
+; change a folder in Program Files, so no user can plant a junction or a binary where Setup writes.
+#define ToolRoot     "{commonpf}\SemiBase Setup"
+#define LogRoot      ToolRoot + "\Logs"
 
 ; The PostgreSQL 17 install this setup creates: its registry key, service, port and data directory
 #define PgInstallation "postgresql-x64-17"
@@ -52,7 +54,7 @@ LZMAUseSeparateProcess=yes
 
 WizardStyle=modern
 
-; Program Files, C:\DISTR and the PostgreSQL service all need admin rights
+; Program Files and the PostgreSQL service both need admin rights
 PrivilegesRequired=admin
 
 [Languages]
@@ -101,20 +103,35 @@ begin
     end;
 end;
 
-// Setup's command-line parser drops every ", so a value typed with one arrives changed
+// Setup's command-line parser drops every ", so a value typed with one arrives changed. The value
+// must stand verbatim in the tail and end there: at the end, at a space, or at the " that closes a
+// quote opened right before /NAME=. A trailing " would otherwise pass as a prefix match.
+function ParameterReachesSetup(const Name, Value: String): Boolean;
+var
+  Prefix, Tail: String;
+  PrefixStart, ValueEnd: Integer;
+begin
+  Prefix := '/' + Name + '=';
+  Tail := GetCmdTail;
+  PrefixStart := Pos(Uppercase(Prefix), Uppercase(Tail));
+  ValueEnd := PrefixStart + Length(Prefix) + Length(Value);
+  Result := (PrefixStart > 0) and (Copy(Tail, PrefixStart + Length(Prefix), Length(Value)) = Value);
+  if Result and (ValueEnd <= Length(Tail)) and (Tail[ValueEnd] = '"') then
+  begin
+    Result := (PrefixStart > 1) and (Tail[PrefixStart - 1] = '"');
+    ValueEnd := ValueEnd + 1;
+  end;
+  if Result then
+    Result := (ValueEnd > Length(Tail)) or (Tail[ValueEnd] <= ' ');
+end;
+
 function ParameterRefusal(const Name, VariableName: String): String;
 var
-  Value, Prefix, Tail: String;
-  ValueStart: Integer;
+  Value: String;
 begin
   Result := '';
   Value := CommandLineParameter(Name);
-  if Value = '' then
-    Exit;
-  Prefix := '/' + Name + '=';
-  Tail := GetCmdTail;
-  ValueStart := Pos(Uppercase(Prefix), Uppercase(Tail)) + Length(Prefix);
-  if Copy(Tail, ValueStart, Length(Value)) <> Value then
+  if (Value <> '') and not ParameterReachesSetup(Name, Value) then
     Result := 'The /' + Name + ' value does not reach Setup as typed: Setup drops every " from ' +
       'its command line. Put the quotes around the whole parameter; a password that contains " ' +
       'reaches Setup only through ' + VariableName + '.';
@@ -187,7 +204,8 @@ end;
 
 function LogPath(const Prefix: String): String;
 begin
-  Result := '{#LogRoot}\' + Prefix + '-' + GetDateTimeString('yyyymmdd-hhnnss', #0, #0) + '.log';
+  Result := ExpandConstant('{#LogRoot}\') + Prefix + '-' +
+    GetDateTimeString('yyyymmdd-hhnnss', #0, #0) + '.log';
 end;
 
 // Under /VERYSILENT the returned refusal reaches no one, and /LOG would record the passwords
@@ -197,7 +215,7 @@ var
 begin
   SetArrayLength(Lines, 1);
   Lines[0] := Message;
-  ForceDirectories('{#LogRoot}');
+  ForceDirectories(ExpandConstant('{#LogRoot}'));
   SaveStringsToUTF8FileWithoutBOM(LogPath('setup'), Lines, True);
 end;
 
@@ -205,9 +223,11 @@ function KeepToolRefusal: String;
 begin
   Result := '';
   ExtractTemporaryFile('semibase.exe');
-  if not ForceDirectories('{#ToolRoot}') or
-    not CopyFile(ExpandConstant('{tmp}\semibase.exe'), '{#ToolRoot}\semibase.exe', False) then
-    Result := 'Setup could not copy semibase.exe into {#ToolRoot}.' + RecoveryHint;
+  if not ForceDirectories(ExpandConstant('{#ToolRoot}')) or
+    not CopyFile(ExpandConstant('{tmp}\semibase.exe'), ExpandConstant('{#ToolRoot}\semibase.exe'),
+    False) then
+    Result := 'Setup could not copy semibase.exe into ' + ExpandConstant('{#ToolRoot}') + '.' +
+      RecoveryHint;
 end;
 
 // -1 when sc.exe did not run
@@ -489,7 +509,7 @@ begin
       RecoveryHint;
     Exit;
   end;
-  ForceDirectories('{#LogRoot}');
+  ForceDirectories(ExpandConstant('{#LogRoot}'));
   SiteLog := LogPath('site');
   if not Exec(ExpandConstant('{cmd}'), '/s /c ""' + ExpandConstant('{tmp}\semibase.exe') +
     '" site --port ' + IntToStr(Engine.Port) + ' --superuser "' + Engine.SuperUser +

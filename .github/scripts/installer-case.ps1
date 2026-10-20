@@ -1,8 +1,8 @@
 # Helpers for the setup's end-to-end cases; each installer step dot-sources this file.
 
 $SetupExe = "$env:GITHUB_WORKSPACE\Installer\Output\SemiBase-Setup.exe"
-$LogDir = 'C:\DISTR\Logs\SemiBase'
-$ToolExe = 'C:\DISTR\Tools\SemiBase\semibase.exe'
+$LogDir = "$env:ProgramFiles\SemiBase Setup\Logs"
+$ToolExe = "$env:ProgramFiles\SemiBase Setup\semibase.exe"
 $TokenFile = "$env:RUNNER_TEMP\case-passwords.txt"
 
 function Fail([string] $message) {

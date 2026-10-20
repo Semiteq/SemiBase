@@ -23,16 +23,20 @@ Setup with exit code 7 under `/VERYSILENT`; a failure raised later comes after t
 registered and may still exit 0. An exception inside `PrepareToInstall` becomes a refusal too.
 Under `/VERYSILENT` the returned text reaches no one, and `/LOG` would record the command line,
 so every refusal is also appended, password-free, to
-`C:\DISTR\Logs\SemiBase\setup-<yyyymmdd-hhnnss>.log`. Every refusal but the password and
-parameter ones, which name their own fix, ends with `See the recovery section of the SemiBase
-deployment guide, docs/deployment.md on GitHub.`
+`C:\Program Files\SemiBase Setup\Logs\setup-<yyyymmdd-hhnnss>.log` (`{commonpf}`, whatever
+folder the install takes). Every refusal but the password and parameter ones, which name their
+own fix, ends with `See the recovery section of the SemiBase deployment guide, docs/deployment.md
+on GitHub.`
 
 In order, `PrepareToInstall`:
 
-1. copies the carried `semibase.exe` to `C:\DISTR\Tools\SemiBase\semibase.exe`, the recovery tool
-   for the manual run, so a machine where Setup never succeeded has one, offline included;
-2. checks that each password parameter arrived as typed (`GetCmdTail`) and that every argument
-   starts with `/`, since an unquoted space splits a password parameter into two arguments;
+1. copies the carried `semibase.exe` to `C:\Program Files\SemiBase Setup\semibase.exe`, the
+   recovery tool for the manual run, so a machine where Setup never succeeded has one, offline
+   included;
+2. checks that each password parameter arrived as typed (`GetCmdTail`: the value stands verbatim
+   in the tail and ends at the end, at a space, or at a `"` closing a quote opened right before
+   `/NAME=`) and that every argument starts with `/`, since an unquoted space splits a password
+   parameter into two arguments;
 3. requires a superuser password and a printable ASCII `scada_writer` password;
 4. decides the engine state, applying the [superuser password rules](#password-characters) on the
    fresh row only, and installs EDB there;
@@ -102,12 +106,24 @@ Without `/SILENT` or `/VERYSILENT`, a password page after the folder page holds 
 prefilled the same way; its Next check only lets the user correct a field, and `PrepareToInstall`
 stays the enforcement. `semibase.exe` has one `[Files]` entry into `{app}`, and
 `ExtractTemporaryFile` takes it to `{tmp}` for the run and for the copy in
-`C:\DISTR\Tools\SemiBase`. The `{app}` copy exists only after a successful run; the
-`C:\DISTR\Tools\SemiBase` copy after any run, so the recovery section of `docs/deployment.md`
-points there. The uninstaller removes the `{app}` copy alone; the engine, its data, the roles,
-`C:\DISTR\Logs\SemiBase` and `C:\DISTR\Tools\SemiBase` stay, since no `[Dirs]` or `[Files]` entry
-names them. The `installer` job in `.github/workflows/ci.yml` runs the setup end to end on
-`windows-latest`, one case per reachable row of the engine table.
+`{commonpf}\SemiBase Setup`. The `{app}` copy exists only after a successful run; the
+`SemiBase Setup` copy after any run, so the recovery section of `docs/deployment.md` points
+there. The uninstaller removes the `{app}` copy alone; the engine, its data, the roles and
+`SemiBase Setup` with its `Logs` stay, since no `[Dirs]` or `[Files]` entry names them. The
+`installer` job in `.github/workflows/ci.yml` runs the setup end to end on `windows-latest`, one
+case per reachable row of the engine table.
+
+`SemiBase Setup` sits in Program Files, not in the site's `C:\DISTR\<kind>\<product>` folders
+that SemiPlot uses, because elevated Setup writes there on every run and the manual recovery runs
+that binary elevated with the passwords in its environment. `C:\` grants Authenticated Users
+Modify to every folder created under it and lets any user create one, so a `C:\DISTR` path is a
+folder a user can fill, replace or turn into a junction. Program Files grants Users read and
+execute only, and that inherited DACL is the whole protection: Setup sets no ACL and checks no
+reparse point. Measured 2026-10-20 on the development machine, non-elevated, in a scratch folder:
+a protected leaf DACL (Administrators and SYSTEM full, Users read) does not stop a user who can
+modify the parent from renaming the parent and putting a junction at its old path, which the leaf
+path then resolves through. So a `C:\DISTR\Logs\SemiBase` DACL holds only with `C:\DISTR` and
+`C:\DISTR\Logs` locked too, folders the setup shares with other products.
 
 ## The pinned payload
 
@@ -305,6 +321,13 @@ Measured 2026-10-19 the same way, with a copy of `Installer/SemiBase.iss` that h
 - `GetCmdTail` returns the command line as typed, quotes included, after a leading
   `/SL5="..."` that the bootstrapper adds. The setup compares the two and refuses a password
   parameter whose value does not appear in it verbatim.
+- Measured 2026-10-20 the same way, with a probe that records `GetCmdTail` and `ParamStr`: a
+  trailing `"` is dropped too, so `/SUPERPASSWORD=Aa1z"` arrives as `Aa1z`, and so does
+  `"/SUPERPASSWORD=Aa1z""`; the tail keeps both quotes. A prefix match would accept them, so the
+  value must also end at the end of the tail, at a space, or at the `"` that closes a quote
+  opened right before `/SUPERPASSWORD=`. `"/SUPERPASSWORD=two words"`, written by
+  `ProcessStartInfo` and by `Start-Process` (whose tail ends in a space), arrives as `two words`
+  and passes; `/SUPERPASSWORD="Aa1z"` and `/SUPERPASSWORD=Aa1z /WRITERPASSWORD=Aa1w"` are refused.
 - An unquoted `/SUPERPASSWORD=a b` arrives as two arguments, `/SUPERPASSWORD=a` and `b`, and the
   first matches the tail verbatim. So the setup also refuses any argument that does not start
   with `/`; the bootstrapper's `/SL5=...` is argument 1 and does.
