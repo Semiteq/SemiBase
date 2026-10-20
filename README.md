@@ -18,12 +18,13 @@ SemiBase — разворачиваемый PostgreSQL-сервис для ус�
 
 | Компонент  | Требование                                       |
 | ---------- | ------------------------------------------------ |
-| DB         | PostgreSQL 17; минимально поддерживаемая — 14    |
+| DB         | PostgreSQL 17. Установщик работает только с 17; утилита на тестовых стендах принимает 14 и новее |
 | Writer     | Simple-Scada 2 с архивацией в PostgreSQL         |
 
 Установщик `SemiBase-Setup.exe` — один файл на странице
-[Releases](https://github.com/Semiteq/SemiBase/releases/latest). Он несёт PostgreSQL 17 и ничего не
-скачивает.
+[Releases](https://github.com/Semiteq/SemiBase/releases/latest). Он несёт PostgreSQL 17 и утилиту
+`semibase.exe` и ничего не скачивает. Отдельного файла `semibase_<версия>_windows_amd64.exe` в
+выпусках больше нет.
 
 ## Быстрое развёртывание
 
@@ -31,6 +32,8 @@ SemiBase — разворачиваемый PostgreSQL-сервис для ус�
 # всё в PowerShell от имени администратора: установщик ставит PostgreSQL и управляет его службой
 # пароли ролей: каждая строка запрашивает пароль, в историю PowerShell он не попадает
 $env:SEMIBASE_SUPER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль postgres' -AsSecureString)).Password
+# пароль scada_writer нужен при первой установке; при повторных запусках оставьте его пустым:
+# непустой пароль заменяет пароль существующей роли, и SCADA дальше входит только с ним
 $env:SEMIBASE_WRITER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль scada_writer' -AsSecureString)).Password
 
 # PostgreSQL 17, если его нет; конфигурация сервера, архивная база, роли `scada_writer`,

@@ -20,17 +20,42 @@ means provisioned.
 
 All of the work runs in `PrepareToInstall`, before Inno copies a file. A string it returns ends
 Setup with exit code 7 under `/VERYSILENT`; a failure raised later comes after the uninstaller is
-registered and may still exit 0. Under `/VERYSILENT` the returned text reaches no one, and `/LOG`
-would record the command line, so every refusal is also appended, password-free, to
-`C:\DISTR\Logs\SemiBase\setup-<yyyymmdd-hhnnss>.log`. The refusals about the engine end with
-`See the recovery section of docs/deployment.md.` In order, `PrepareToInstall` checks that each
-password parameter arrived as typed (`GetCmdTail`), checks the password characters, decides the
-engine state, installs EDB on the fresh row, runs `sc.exe config <service> start= auto` and
-`sc.exe start`, waits up to 60 s for `127.0.0.1:<port>` to accept TCP (a PowerShell `TcpClient`
-probe through `Exec`, since Pascal Script has no sockets), and runs `semibase.exe site --port
-<Port> --superuser <Super User> --expected-major 17 --restart-service <Service ID>` through
-`cmd.exe /c` into `site-<yyyymmdd-hhnnss>.log` beside the setup log. A non-zero exit refuses,
-naming that log.
+registered and may still exit 0. An exception inside `PrepareToInstall` becomes a refusal too.
+Under `/VERYSILENT` the returned text reaches no one, and `/LOG` would record the command line,
+so every refusal is also appended, password-free, to
+`C:\DISTR\Logs\SemiBase\setup-<yyyymmdd-hhnnss>.log`. Every refusal but the password and
+parameter ones, which name their own fix, ends with `See the recovery section of the SemiBase
+deployment guide, docs/deployment.md on GitHub.`
+
+In order, `PrepareToInstall`:
+
+1. copies the carried `semibase.exe` to `C:\DISTR\Tools\SemiBase\semibase.exe`, the recovery tool
+   for the manual run, so a machine where Setup never succeeded has one, offline included;
+2. checks that each password parameter arrived as typed (`GetCmdTail`) and that every argument
+   starts with `/`, since an unquoted space splits a password parameter into two arguments;
+3. requires a superuser password and a printable ASCII `scada_writer` password;
+4. decides the engine state, applying the [superuser password rules](#password-characters) on the
+   fresh row only, and installs EDB there;
+5. runs `sc.exe config <service> start= auto` and `sc.exe start`, then waits up to 60 s for
+   `localhost:<port>` to accept TCP;
+6. runs `semibase.exe site --port <Port> --superuser <Super User> --expected-major 17
+   --restart-service <Service ID>` through `cmd.exe /c` into `site-<yyyymmdd-hhnnss>.log` beside
+   the setup log. A non-zero exit refuses, naming that log.
+
+The port probe is PowerShell through `Exec`, since Pascal Script has no sockets:
+`[Net.Sockets.TcpClient]::new('localhost', <port>)`, the name `semibase` dials too, so a server
+on `::1` or on `127.0.0.1` counts. Exit 0 means accepted and 2 refused, the constructor's
+`SocketException`; any other code, a constructor Constrained Language Mode forbids among them
+(exit 3, measured), refuses. A TCP accept is enough to start `site`: with `--restart-service` it
+waits for the service's Running state before its first connection, and `pg_ctl runservice -w`
+reports Running only once the postmaster accepts sessions, crash recovery included
+(`pgwin32_ServiceMain` in `src/bin/pg_ctl/pg_ctl.c`, REL_17_STABLE). A wrong superuser password
+on a registered 17 is found by `site`, after the service was set to Automatic and started: only
+a running server can check it.
+
+The registered `Super User` and `Service ID` go into the `cmd.exe /s /c` line between `"`, where
+`cmd.exe` still expands `%...%` and a `"` ends the quoting, so a value with either is refused as
+an orphaned registration is.
 
 The engine state comes from the `HKLM64` EDB keys, never from the service list alone; the first
 matching row wins:
@@ -39,9 +64,10 @@ matching row wins:
 | --- | --- |
 | `Installations\postgresql-x64-17` with a `Version` starting `17.`, a `Super User`, `<Data Directory>\PG_VERSION`, and a `Service ID` naming an existing service with a `Services\<Service ID>\Port` | Use it, even when other majors are registered too |
 | `Installations\postgresql-x64-17` with another `Version`, no `Super User` or no `PG_VERSION` | Refuse, naming `<Base Directory>\uninstall-postgresql.exe`: a [failed install](#a-failed-install) leaves exactly this |
-| `Installations\postgresql-x64-17` whose service or `Port` does not exist | Refuse: an orphaned registration is not the setup's to repair |
+| `Installations\postgresql-x64-17` whose service or `Port` does not exist, or whose `Super User` or `Service ID` holds `"` or `%` | Refuse: an orphaned registration is not the setup's to repair |
 | Another major registered, 17 not | Refuse, naming each key's version, service and port |
-| Nothing registered, `127.0.0.1:5432` accepts TCP | Refuse: a server the registry does not know is not the setup's to provision |
+| Nothing registered, a superuser password that breaks the [password rules](#password-characters) | Refuse |
+| Nothing registered, `localhost:5432` accepts TCP | Refuse: a server the registry does not know is not the setup's to provision |
 | Nothing registered, `C:\Program Files\PostgreSQL\17\data` not empty | Refuse: existing data is never overwritten |
 | Nothing registered, port free, no data directory | Refuse without a writer password; otherwise install EDB with the option file under [command line](#command-line), then re-read the new registration as in the first row |
 
@@ -50,26 +76,38 @@ since no reboot code was reproduced ([exit codes](#exit-codes)). Every database-
 belongs to `semibase site`, and the setup duplicates none of them.
 
 Passwords stay off every child command line the setup controls. `[Code]` sets
-`SEMIBASE_SUPER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD=semiplot` and, when given,
-`SEMIBASE_WRITER_PASSWORD` in Setup's own environment through `SetEnvironmentVariableW`, after EDB
-has run, and `semibase` inherits them. EDB reads its password from `{tmp}\postgresql-options.txt`,
-deleted as soon as the EDB process returns. What stays exposed: Setup's own command line when the
-caller passes the parameters, which Inno writes into its log under `/LOG` (`SetupLogging` stays
-off); Setup's environment block, readable by another administrator during the run; and EDB's
-`initcluster.ps1` command line and pwfile ([where the superuser password
-goes](#where-the-superuser-password-goes)). Both passwords must be printable ASCII, and the
-superuser password must not contain `"` or end in `\` ([password
-characters](#password-characters)); a password with `"` reaches Setup only through its variable
-([Inno Setup](#inno-setup)). Every run sets the `semiplot` password to `semiplot`, the convention
+`SEMIBASE_SUPER_PASSWORD`, `SEMIBASE_WRITER_PASSWORD` and `SEMIBASE_PLOT_PASSWORD=semiplot` in
+Setup's own environment through `SetEnvironmentVariableW`, after EDB has run, and `semibase`
+inherits them. The writer variable is set even when empty, so a value the caller's environment
+holds does not reach `semibase` after the user cleared the field; each variable is read back with
+`GetEnv`, and `semibase` reads an empty value as unset. Setting them after EDB keeps them from EDB
+for a caller who passes parameters only. A caller who uses the variables hands them to Setup's
+environment, which EDB, `initcluster.ps1` and `initdb` inherit; the CI fresh install runs that
+channel, and its log search covers the EDB logs. EDB reads its password from
+`{tmp}\postgresql-options.txt`, deleted as soon as the EDB process returns. What stays exposed:
+Setup's own command line when the caller passes the parameters, which Inno writes into its log
+under `/LOG` (`SetupLogging` stays off); Setup's environment block, readable by another
+administrator during the run; and EDB's `initcluster.ps1` command line and pwfile ([where the
+superuser password goes](#where-the-superuser-password-goes)).
+
+The `scada_writer` password must be printable ASCII on every run: the SCADA logs in with it from
+its own project settings, whose encoding of anything else nobody has measured. The superuser
+rules exist for EDB alone and hold on the fresh row only ([password
+characters](#password-characters)); on a registered 17 the password reaches `semibase` byte for
+byte through the variable. A password with `"` reaches Setup only through its variable ([Inno
+Setup](#inno-setup)). Every run sets the `semiplot` password to `semiplot`, the convention
 SemiPlot's connection file relies on, so the role has one writer.
 
 Without `/SILENT` or `/VERYSILENT`, a password page after the folder page holds both fields,
 prefilled the same way; its Next check only lets the user correct a field, and `PrepareToInstall`
 stays the enforcement. `semibase.exe` has one `[Files]` entry into `{app}`, and
-`ExtractTemporaryFile` takes it to `{tmp}` for the run. So the `{app}` copy, the recovery tool,
-exists only after a successful run. The uninstaller removes that copy alone; the engine, its
-data, the roles and `C:\DISTR\Logs\SemiBase` stay. The `installer` job in
-`.github/workflows/ci.yml` runs the setup end to end on `windows-latest`.
+`ExtractTemporaryFile` takes it to `{tmp}` for the run and for the copy in
+`C:\DISTR\Tools\SemiBase`. The `{app}` copy exists only after a successful run; the
+`C:\DISTR\Tools\SemiBase` copy after any run, so the recovery section of `docs/deployment.md`
+points there. The uninstaller removes the `{app}` copy alone; the engine, its data, the roles,
+`C:\DISTR\Logs\SemiBase` and `C:\DISTR\Tools\SemiBase` stay, since no `[Dirs]` or `[Files]` entry
+names them. The `installer` job in `.github/workflows/ci.yml` runs the setup end to end on
+`windows-latest`, one case per reachable row of the engine table.
 
 ## The pinned payload
 
@@ -80,6 +118,14 @@ data, the roles and `C:\DISTR\Logs\SemiBase` stay. The `installer` job in
 | SHA256 | `612c7f5400a003aaffa0372cb273eed52278f93c680ab911eb9cb2229e329072` |
 | Size | 413001200 bytes |
 | Signature | Authenticode, Valid, `CN=EnterpriseDB Corporation, O=EnterpriseDB Corporation, L=Wilmington, S=Delaware, C=US` |
+
+`Installer/fetch-postgresql.sh` holds these constants alone and saves the file as
+`Installer/payload/postgresql-17-windows-x64.exe`, the name `#define PgInstaller` in the `.iss`
+uses, so a pin bump edits the script and nothing else. A file already there that does not match
+the pin fails the script, so a stale payload never reaches `iscc` through a run that fetched
+first. CI and release cache `Installer/payload/` on the script's hash: an edit to the script,
+a comment included, costs one download of 413 MB (about 25 s), and a cached run never asks the
+URL, so a retired URL surfaces on the first uncached run, not on the pull request that follows it.
 
 On 2026-10-19 the EDB downloads page linked this build for Windows x86-64 (`fileid=1260614`).
 `get.enterprisedb.com` also serves builds 17.11-1 to 17.11-4. The installer is built with
@@ -202,6 +248,12 @@ points at a `cmd.exe` layer between the installer and PowerShell; that mechanism
 read in EDB's source. A printable ASCII password without `"` that does not end in `\` passed in
 every combination tried.
 
+Every password measured starts with `Aa1` and has spaces only inside it. A password starting with
+`-` could bind as a parameter name of `initcluster.ps1`, and InstallBuilder could trim spaces at
+either end of an option-file value; neither was measured, so the setup refuses both on the fresh
+row along with non-ASCII, `"` and a trailing `\`. These rules guard EDB's command line and option
+file alone, so a registered 17 never meets them.
+
 ## A failed install
 
 A failed `initcluster.ps1` leaves the installed files, the uninstaller and the `Uninstall` entry,
@@ -253,6 +305,9 @@ Measured 2026-10-19 the same way, with a copy of `Installer/SemiBase.iss` that h
 - `GetCmdTail` returns the command line as typed, quotes included, after a leading
   `/SL5="..."` that the bootstrapper adds. The setup compares the two and refuses a password
   parameter whose value does not appear in it verbatim.
+- An unquoted `/SUPERPASSWORD=a b` arrives as two arguments, `/SUPERPASSWORD=a` and `b`, and the
+  first matches the tail verbatim. So the setup also refuses any argument that does not start
+  with `/`; the bootstrapper's `/SL5=...` is argument 1 and does.
 
 Measured 2026-10-19 the same way, with a scratch setup that extracts two text files and refuses:
 
@@ -273,3 +328,16 @@ refusal right after the password checks:
 - A value written to `TInputQueryWizardPage.Values` and read back is unchanged, a tab, CR LF and
   Cyrillic included. So `PrepareToInstall` reads the passwords from the page in every mode, and
   under `/VERYSILENT` it sees exactly the parameter or `SEMIBASE_*` value.
+
+Measured 2026-10-19 the same way, ISCC 6.7.3, with a copy of the setup whose state checks run
+against a registry key that does not exist and that refuses before the EDB install:
+
+- `SetEnvironmentVariableW` with an empty value returns TRUE whether the variable existed or not,
+  and `GetEnv` then reads `''`.
+- An `ExtractTemporaryFile` of a missing entry raises; the `except` in `PrepareToInstall` turns
+  `GetExceptionMessage` into a refusal, exit 7, logged.
+- `[Net.Sockets.TcpClient]::new('localhost', <port>)` reached a listener on `127.0.0.1` and one
+  on `::1`, and a closed port exited 2 after about 7 s, Windows resending the SYN after the RST
+  on both addresses. Under Constrained Language Mode the constructor is refused and the probe
+  exits 3.
+- `CopyFile` replaces `FileCopy`, which ISCC 6.7.3 reports as renamed.

@@ -68,9 +68,11 @@ The order matters, because the default privileges have to be in place before any
    assumption, with the experiment that settles it, in `provisioning.md` ("Assumption: the SCADA
    meeting an existing `trends`"). Set `log_statement = 'all'` for that first start and read
    back the DDL the SCADA issued.
-3. Start the viewer. Pens appear in `semiplot_tags` on their own, one per variable the SCADA has
-   written to `trends`, with default settings the viewer's editor then changes. A person never
-   inserts a pen, and only the superuser can delete one.
+3. Start the viewer and press `Refresh pen list` in its pen editor. The button calls
+   `semiplot_register_new_pens()`, which adds one pen per variable the SCADA has written to
+   `trends`, with default settings the editor then changes. The viewer registers nothing at
+   startup, so a variable that appears later waits for the next press. A person never inserts a
+   pen by hand, and only the superuser can delete one.
 4. Write the SemiPlot connection file: host `127.0.0.1`, the `semiplot` role and its password,
    `semiplot` by the setup's convention. The file names no time zone: the viewer runs on the
    SCADA machine and reads the archive in that machine's zone.

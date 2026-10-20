@@ -310,8 +310,10 @@ CI's Linux job runs `site` without the flag: its server is a GitHub Actions serv
 a Windows service, and nothing in the job restarts it. The `Require the listen_addresses delta`
 step then reads `listen_addresses` still pending and `localhost` in `postgresql.auto.conf`
 through `pg_file_settings`, which proves `site` wrote the delta. The Windows job's
-`Restart the runner's PostgreSQL service through site` step is the one test of the restart
-itself. The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and Disabled. The
+`Restart the runner's PostgreSQL service through site` step is the only direct test of the
+restart; the `installer` job's cases run it through the setup, which passes `--restart-service`
+on every run (`restarting service` in the site logs of the runner's 17 and of the fresh
+install). The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and Disabled. The
 step first requires `site --restart-service postgresql-x64-17` to refuse the Disabled service
 with no `ALTER SYSTEM SET` line in its output. It then sets the service to Manual, starts it with
 `sc.exe start`, and runs `site` at once, while the service is Start Pending. That run must print

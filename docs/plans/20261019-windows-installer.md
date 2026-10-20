@@ -78,35 +78,49 @@
 
 ## Acceptance Evidence
 All cases run in the `installer` CI job on `windows-latest`, in this order, each asserting
-`$LASTEXITCODE`. The superuser and writer passwords are random 24-character tokens generated per
+Setup's exit code as `Process.ExitCode` reports it (Setup is a GUI exe, so `$LASTEXITCODE` is
+never set). A refusal is exit 7 with its reason as the last line of the newest
+`C:\DISTR\Logs\SemiBase\setup-*.log`. The passwords are random 24-character tokens generated per
 run; `$psql = "$env:PGBIN\psql.exe"`.
-1. No `/SUPERPASSWORD` and no `SEMIBASE_SUPER_PASSWORD`: non-zero exit; `{app}\semibase.exe`
-   does not exist; the runner's `postgresql-x64-17` is still Disabled; the newest
-   `C:\DISTR\Logs\SemiBase\setup-*.log` names the missing superuser password.
+1. No `/SUPERPASSWORD` and no `SEMIBASE_SUPER_PASSWORD`: a refusal naming the missing superuser
+   password; `{app}\semibase.exe` does not exist; `C:\DISTR\Tools\SemiBase\semibase.exe` exists
+   and runs; the runner's `postgresql-x64-17` is still Disabled.
 2. Existing 17 (the runner's, `SEMIBASE_SUPER_PASSWORD=root` and a `SEMIBASE_WRITER_PASSWORD`
    token in the environment, no parameter; nothing has created `scada_writer` on that cluster
-   yet): exit 0; the service start type is Automatic; `semiplot` with password `semiplot` reads
-   `semiplot_tags`.
-3. The runner's PostgreSQL is removed (task 7); `Get-Service postgresql*` is empty and
-   `HKLM\SOFTWARE\PostgreSQL` does not exist.
-4. A fake `Installations\postgresql-x64-14` key with a `Services` port: non-zero exit; the
-   newest `setup-*.log` names the key, version 14 and the port, and not the password; the key
-   is deleted afterwards.
-5. A Cyrillic `/SUPERPASSWORD` on the clean machine, then one containing `"`: non-zero exit
-   each time; no `postgresql*` service exists afterwards.
-6. Clean machine, `/SUPERPASSWORD` and `/WRITERPASSWORD` tokens: exit 0; the site log contains
-   `restarting service postgresql-x64-17`; `SELECT count(*) FROM pg_settings WHERE
-   pending_restart` prints `0`; `SHOW listen_addresses` prints `localhost`; `SELECT datname,
-   datcollate, datctype, pg_encoding_to_char(encoding) FROM pg_database WHERE datname IN
-   ('template1', 'scada_archive')` prints `C`, `C`, `UTF8` on both rows; `semiplot` logs in
-   with password `semiplot`.
-7. The same command again: exit 0; the new site log does not contain `restarting service`.
-8. `/SUPERPASSWORD=wrong`: non-zero exit; the site log names the failed connection.
-9. `Select-String` for both tokens over the EDB install logs, `C:\DISTR\Logs\SemiBase\*.log`,
-   `C:\Program Files\PostgreSQL\17\data\log\*` and `%TEMP%\is-*.tmp` finds nothing. No case
-   passes `/LOG`: the Inno log carries Setup's command line by design.
+   yet): exit 0; the service start type is Automatic; `semiplot` with password `semiplot` and
+   `scada_writer` with the token log in.
+3. The runner's PostgreSQL is removed (task 7); `Get-Service postgresql*` is empty, and
+   `HKLM\SOFTWARE\PostgreSQL` holds no subkey under `Installations` or `Services`, the state a
+   real EDB uninstall leaves.
+4. A fake `Installations\postgresql-x64-14` key with a `Services` port: a refusal naming the
+   key, version 14 and the port, and not the password; the fake keys are deleted afterwards.
+5. On the clean machine, refusals with no `postgresql*` service afterwards: a Cyrillic
+   `/SUPERPASSWORD`; one containing `"` as a parameter and through the variable; one ending in
+   `\`; one starting with `-`; one starting with a space; an unquoted `/SUPERPASSWORD=a b`; a
+   Cyrillic `/WRITERPASSWORD`; a `/WRITERPASSWORD` containing `"`. Then the engine rows, each
+   from a fake key or object deleted afterwards: an incomplete 17 key (no `Super User`), an
+   orphaned 17 key (`Service ID` naming no service), a listener on `127.0.0.1:5432`, a file in
+   `C:\Program Files\PostgreSQL\17\data`, and no writer password.
+6. Clean machine, the superuser and writer tokens in `SEMIBASE_*` set inside the step: exit 0; a
+   watch during the run sees `%TEMP%\is-*.tmp\postgresql-options.txt` and sees it gone when the
+   site log appears; the site log contains `restarting service postgresql-x64-17`;
+   `SELECT count(*) FROM pg_settings WHERE pending_restart` prints `0`; `SHOW listen_addresses`
+   prints `localhost`; `SELECT datname, datcollate, datctype, pg_encoding_to_char(encoding) FROM
+   pg_database WHERE datname IN ('template1', 'scada_archive')` prints `C`, `C`, `UTF8` on both
+   rows; `semiplot` logs in with password `semiplot`.
+7. `log_statement = 'all'` set, then `/SUPERPASSWORD` alone: exit 0; the new site log does not
+   contain `restarting service`; `scada_writer` logs in with the case-6 token. A further run
+   with a new writer token in `SEMIBASE_WRITER_PASSWORD`: exit 0, `scada_writer` logs in with it.
+   A run with the registered `Port` set to 15433: a refusal naming `localhost:15433` after the
+   60 s wait; the port is restored.
+8. `/SUPERPASSWORD=wrong`: a refusal; the site log names the failed connection.
+9. `Select-String` for all four tokens over the EDB install logs, `C:\DISTR\Logs\SemiBase\*.log`
+   and `C:\Program Files\PostgreSQL\17\data\log\*` finds nothing, and the server log holds the
+   `semiplot` probe statement, so statement logging was on. Setup's `{tmp}` is gone at exit;
+   case 6 watched it. No case passes `/LOG`: the Inno log carries Setup's command line by design.
 10. `unins000.exe /VERYSILENT`: exit 0; `{app}\semibase.exe` is gone; `postgresql-x64-17` is
-    still present and `semiplot` still logs in.
+    still present, `semiplot` still logs in, and `C:\DISTR\Logs\SemiBase\*.log` and
+    `C:\DISTR\Tools\SemiBase\semibase.exe` remain.
 
 ## Solution Overview
 - All provisioning runs in `PrepareToInstall`, before Inno copies a file. A non-empty return
@@ -117,8 +131,11 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
   `C:\DISTR\Logs\SemiBase\setup-<yyyymmdd-hhnnss>.log`, creating the directory itself because
   `[Dirs]` has not run yet.
 - `semibase.exe` has one `[Files]` entry into `{app}`; `ExtractTemporaryFile` also takes it to
-  `{tmp}` for the run. The copy in `{app}` is the recovery tool when Setup refuses a state, and
-  the source of `semibase version` for support (`docs/deployment.md:42`). The EDB installer is a
+  `{tmp}` for the run, and every run first copies it to `C:\DISTR\Tools\SemiBase\semibase.exe`.
+  That copy is the recovery tool when Setup refuses a state: every refusal precedes `[Files]`,
+  so `{app}` holds a copy only after a successful run, and the release attaches no Windows
+  binary, which an offline site could not download anyway. Either copy answers
+  `semibase version` for support. The EDB installer is a
   `dontcopy` entry with `nocompression`, so extracting it does not decompress 413 MB of solid
   archive first. The uninstaller removes only `semibase.exe`.
 - The installer decides the engine state from the EDB registry (`HKLM64`), never from the service
@@ -134,14 +151,16 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
   `powershell.exe -File initcluster.ps1` command line, which carries the superuser password as a
   positional argument, and its temporary pwfile during `initdb`. EDB's log masks the argument as
   `****` (`docs/architecture/installer.md#where-the-superuser-password-goes`).
-- Both passwords must be printable ASCII; `PrepareToInstall` refuses anything else. EDB writes
-  the superuser password in the ANSI code page while `semibase` sends UTF-8, so a non-ASCII
-  superuser password produces a cluster nobody can log into. The superuser password also must
-  not contain `"` or end in `\`: either one breaks EDB's `initcluster.ps1` command line, and the
-  install fails half-done (`installer.md#password-characters`). Setup's own command-line parser
+- The `scada_writer` password must be printable ASCII on every run. The superuser password rules
+  hold on the fresh-install row only, where EDB runs: printable ASCII, because EDB writes it in
+  the ANSI code page while `semibase` sends UTF-8; no `"` and no trailing `\`, either of which
+  breaks EDB's `initcluster.ps1` command line and leaves the install half-done; no leading `-`
+  and no leading or trailing space, both unmeasured (`installer.md#password-characters`). On a
+  registered 17 the password reaches `semibase` byte for byte. Setup's own command-line parser
   drops every `"`, so a password parameter whose value does not appear verbatim in
-  `GetCmdTail` is refused too; a password with `"` reaches Setup only through its variable
-  (`installer.md#inno-setup`).
+  `GetCmdTail` is refused too, and so is any argument that does not start with `/`, which an
+  unquoted space in a password parameter produces; a password with `"` reaches Setup only
+  through its variable (`installer.md#inno-setup`).
 - The superuser password is required on every run and stored nowhere.
 - Every run sets the `semiplot` role to `semiplot`. SemiPlot's connection file relies on the
   convention, so the role has one writer and no site-specific value to lose on an upgrade.
@@ -160,16 +179,20 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 | Nothing registered, `{#PgDataDir}` exists and is not empty | Refuse: name the directory and say that removing it is the recovery, for example after an interrupted install; existing data is never overwritten |
 | Nothing registered, port free, no data directory | Without a writer password: refuse before installing anything. Otherwise install EDB 17 unattended, then continue as in the first row |
 
-- Every refusal message points to the recovery section of `docs/deployment.md`.
+- Every refusal but the password and parameter ones, which name their own fix, ends with
+  `See the recovery section of the SemiBase deployment guide, docs/deployment.md on GitHub.`:
+  an installation machine has no repository checkout, so the hint names the guide, not a path.
 - EDB exit codes (task 1, `installer.md#exit-codes`): 0 continues; any other code refuses,
   naming `%TEMP%\install-postgresql.log`. Every measured failure exits 1, and no reboot-required
   code was reproduced, so Setup has no reboot branch. A failed install leaves a partial
   registration, which the next run refuses through the second row.
 - EDB exits 0 without a `superpassword` and leaves a cluster with an unknown password, so Setup
   never starts EDB without one.
-- After starting a service or installing EDB, the installer waits for `127.0.0.1:<port>` to
+- After starting a service or installing EDB, the installer waits for `localhost:<port>` to
   accept TCP, bounded by 60 s. The probe is a PowerShell `System.Net.Sockets.TcpClient` call run
-  through `Exec`, because Pascal Script has no sockets; the port-busy row uses the same probe.
+  through `Exec`, because Pascal Script has no sockets; it dials `localhost` as `semibase` does,
+  and a probe that fails rather than finding the port closed refuses. The port-busy row uses the
+  same probe.
 
 ### Database states (decided by `semibase site`, unchanged)
 
@@ -216,8 +239,10 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 
 ### Payload pinning
 - `Installer/fetch-postgresql.sh` holds the EDB version, URL and SHA256 as its only constants,
-  downloads into `Installer/payload/` (git-ignored), and fails on a hash mismatch. CI and release
-  both call it, so a retired URL fails on a pull request rather than at tag time.
+  downloads into `Installer/payload/postgresql-17-windows-x64.exe` (git-ignored, a fixed name the
+  `.iss` uses), and fails on a hash mismatch. CI and release both call it, but both restore the
+  payload from a cache keyed on the script's hash, so a retired URL surfaces on the first run
+  after a cache miss, which can be a tag; the payload is pinned by hash either way.
 
 ### Release workflow shape
 - `build` (ubuntu): checkout with `fetch-depth: 0`, test, read the tag, cross-compile both
@@ -281,8 +306,9 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 
 - [x] `[Setup]` after `SemiPlot.iss`: own `AppId`, `PrivilegesRequired=admin`, x64 only,
       `{autopf}\SemiBase`, `OutputBaseFilename=SemiBase-Setup`, the three `/D` defines required
-- [x] `[Languages]` ru and en; `[Dirs]` `C:\DISTR\Logs\SemiBase` with `uninsneveruninstall`;
-      `[Files]` as in Solution Overview
+- [x] `[Languages]` ru and en; `[Dirs]` `C:\DISTR\Logs\SemiBase` with `uninsneveruninstall`
+      (removed in review: `ForceDirectories` creates the folder before `[Dirs]` runs, and the
+      uninstaller never removes a folder it did not create); `[Files]` as in Solution Overview
 - [x] resolve the superuser and writer passwords from the parameter, else the `SEMIBASE_*`
       variable; refuse an empty superuser password in silent mode, any password that is not
       printable ASCII, and a superuser password that contains `"` or ends in `\`, from
@@ -331,8 +357,8 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 - [x] the superuser field is required; the writer field is required when the engine state is the
       fresh-install row (checked on Next from the registry alone: no 17 key and no other major;
       `PrepareToInstall` stays the enforcement)
-- [x] build and click through once in a VM (skipped - no VM in this run; manual check listed in
-      Post-Completion)
+- [x] skipped, not done: build and click through once in a VM (no VM in this run; the manual
+      check is listed in Post-Completion)
 
 ### Task 7: Full CI case list
 
@@ -357,8 +383,8 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
 - [x] the `release` job restores the exec bit, then attaches the Linux binary and
       `SemiBase-Setup.exe` in one call; the Windows binary is not attached
 - [x] rewrite the ordering rationale at `release.yml:198-200` to the reason in Technical Details
-- [x] push a prerelease tag on a fork of the repository: the release page has two assets,
-      `:latest` did not move, and nothing is published to `ghcr.io/semiteq` (skipped - tags,
+- [x] skipped, not done: push a prerelease tag on a fork of the repository: the release page has
+      two assets, `:latest` did not move, and nothing is published to `ghcr.io/semiteq` (tags,
       forks and releases are outside this run's git permission; moved to Post-Completion;
       actionlint 1.7.12 is clean on `release.yml`)
 
@@ -389,7 +415,7 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
       ordering rationale and "consumers ... still download the release assets"
 - [x] grep both repositories for `winget` next to `PostgreSQL`; every hit in this repository is
       updated, and SemiPlot's go to Post-Completion
-- [x] move this plan to `docs/plans/completed/` (left for the delivery step)
+- [x] skipped, not done: move this plan to `docs/plans/completed/` (left for the delivery step)
 
 ## Post-Completion
 - SemiPlot `ConfigFiles/connection/connection.yaml:3` names database `semiplot`, while
@@ -403,10 +429,9 @@ run; `$psql = "$env:PGBIN\psql.exe"`.
   `Resources.ru.resx` (`:316`, `:322`, `:340`); each becomes "run the SemiBase setup again".
 - SemiPlot `docs/architecture/testing-strategy.md:418` names the `winget` install. Its other hit,
   `docs/plans/completed/20260810-archive-populator.md:1270`, is a completed plan and stays.
-- No `semibase.exe` exists for the manual run in the recovery section of `docs/deployment.md` on
-  a machine where Setup has never succeeded: every refusal precedes the `[Files]` copy, and the
-  release no longer attaches the Windows binary. Decide whether the release attaches it again or
-  Setup keeps a copy before it refuses.
+- Install once on a clean, offline Windows VM without the Visual C++ runtime: EDB then runs its
+  bundled `vcredist`, which the runners never did, and may ask for a reboot, a code Setup has no
+  branch for (`installer.md#exit-codes`); the runners also always had internet.
 - Click through `SemiBase-Setup.exe` once, interactively, in a clean Windows VM: the password page
   appears after the folder page; Next with an empty superuser field shows an error and stays;
   with no PostgreSQL registered, Next with an empty writer field shows an error and stays; with
