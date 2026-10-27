@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -38,19 +39,20 @@ reports them and leaves the restart to the operator, unless --restart-service na
 the Windows service to restart; the restart needs a loopback --host, because the
 server then listens on the loopback interface only.
 
-Every step checks before it creates; re-running either command is safe. Passwords of
-existing roles change only when the corresponding flag or variable is set.
+Every step checks before it creates; re-running either command is safe.
 
-Passwords come from flags or environment variables (flag wins over environment):
-  --super-password    SEMIBASE_SUPER_PASSWORD    superuser
-  --writer-password   SEMIBASE_WRITER_PASSWORD   scada_writer
-  --plot-password     SEMIBASE_PLOT_PASSWORD     semiplot
+Passwords come from a flag, then an environment variable, then the convention that a
+role's password is its name:
+  --super-password    SEMIBASE_SUPER_PASSWORD    superuser      postgres
+  --writer-password   SEMIBASE_WRITER_PASSWORD   scada_writer   scada_writer
+  --plot-password     SEMIBASE_PLOT_PASSWORD     semiplot       semiplot
 
-A first run creates scada_writer and semiplot and fails without their passwords; it also
-creates semiplot_registrar, which owns the registration function and never logs in, so
-it has no password. Once the roles exist,
-the superuser password alone carries a run; the semiplot password then only decides
-whether the run also tests the semiplot login, which it does over TCP.
+semibase never changes the superuser's password: on a server whose superuser password
+is not postgres, pass the real one. Every run sets the semiplot password, creating or
+resetting the role with it, and tests the semiplot login over TCP unless --host is a
+socket directory. scada_writer gets its password only when the role is created: the SCADA
+project holds the same password, so no run changes it. semiplot_registrar owns the
+registration function and never logs in, so it has no password.
 
 Run 'semibase <command> --help' for the command's flags.
 `
@@ -166,11 +168,12 @@ func newFlagSet(command string, options *provision.Options) *flag.FlagSet {
 	flags.StringVar(&options.Database, "database", "scada_archive", "archive database name")
 	flags.StringVar(&options.SuperUser, "superuser", "postgres", "superuser role name")
 	flags.StringVar(&options.SuperPassword, "super-password", "",
-		"superuser password (env SEMIBASE_SUPER_PASSWORD)")
+		"superuser password (env SEMIBASE_SUPER_PASSWORD, else postgres)")
 	flags.StringVar(&options.WriterPassword, "writer-password", "",
-		"scada_writer password (env SEMIBASE_WRITER_PASSWORD)")
+		"scada_writer password for a new role (env SEMIBASE_WRITER_PASSWORD, else scada_writer); "+
+			"an existing role keeps its own")
 	flags.StringVar(&options.PlotPassword, "plot-password", "",
-		"semiplot password (env SEMIBASE_PLOT_PASSWORD)")
+		"semiplot password (env SEMIBASE_PLOT_PASSWORD, else semiplot)")
 	flags.IntVar(&options.ExpectedMajor, "expected-major", 0,
 		"required server major version; 0 accepts any major >= 14")
 	if command == "site" {
@@ -187,7 +190,7 @@ func parseOptions(command string, arguments []string) (provision.Options, error)
 	if err := flags.Parse(arguments); err != nil {
 		return provision.Options{}, err
 	}
-	resolvePasswordsFromEnvironment(&options)
+	resolvePasswords(&options)
 	if err := options.Validate(); err != nil {
 		fmt.Fprintln(flags.Output(), err)
 		return provision.Options{}, err
@@ -195,14 +198,14 @@ func parseOptions(command string, arguments []string) (provision.Options, error)
 	return options, nil
 }
 
-func resolvePasswordsFromEnvironment(options *provision.Options) {
-	if options.SuperPassword == "" {
-		options.SuperPassword = os.Getenv("SEMIBASE_SUPER_PASSWORD")
-	}
-	if options.WriterPassword == "" {
-		options.WriterPassword = os.Getenv("SEMIBASE_WRITER_PASSWORD")
-	}
-	if options.PlotPassword == "" {
-		options.PlotPassword = os.Getenv("SEMIBASE_PLOT_PASSWORD")
-	}
+const conventionalSuperPassword = "postgres"
+
+// an empty WriterPassword stays empty: it creates a missing role with the convention and keeps
+// an existing role's password, which the SCADA holds
+func resolvePasswords(options *provision.Options) {
+	options.SuperPassword = cmp.Or(options.SuperPassword,
+		os.Getenv("SEMIBASE_SUPER_PASSWORD"), conventionalSuperPassword)
+	options.WriterPassword = cmp.Or(options.WriterPassword, os.Getenv("SEMIBASE_WRITER_PASSWORD"))
+	options.PlotPassword = cmp.Or(options.PlotPassword,
+		os.Getenv("SEMIBASE_PLOT_PASSWORD"), provision.PlotRole)
 }

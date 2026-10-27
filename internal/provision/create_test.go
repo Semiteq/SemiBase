@@ -37,6 +37,39 @@ func TestRoleStatementsEscapeThePassword(t *testing.T) {
 	}
 }
 
+func TestRoleStatement(t *testing.T) {
+	tests := []struct {
+		name          string
+		exists        bool
+		password      string
+		resetExisting bool
+		wantStatement string
+		wantOutcome   string
+	}{
+		{"missing role without a password gets the creation password", false, "", false,
+			"CREATE ROLE scada_writer LOGIN PASSWORD 'scada_writer'", "created with its conventional password"},
+		{"missing role with a password gets that password", false, "explicit", false,
+			"CREATE ROLE scada_writer LOGIN PASSWORD 'explicit'", "created"},
+		{"existing role keeps its password when a run may not reset it", true, "explicit", false,
+			"", "exists, credentials untouched; the given password applies to a new role only"},
+		{"existing role takes the password when a run resets it", true, "explicit", true,
+			"ALTER ROLE scada_writer PASSWORD 'explicit'", "exists, password updated"},
+		{"existing role without a password keeps its own", true, "", true,
+			"", "exists, credentials untouched"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statement, outcome := roleStatement(WriterRole, tt.exists, tt.password, WriterRole, tt.resetExisting)
+			if statement != tt.wantStatement {
+				t.Errorf("statement = %q, want %q", statement, tt.wantStatement)
+			}
+			if outcome != tt.wantOutcome {
+				t.Errorf("outcome = %q, want %q", outcome, tt.wantOutcome)
+			}
+		})
+	}
+}
+
 // the archive table is the vendor's shape, transcribed by hand from a dump, and the whole
 // statement text is pinned rather than a few fragments of it: a consumer that reads id, l, t,
 // v and q gets wrong charts rather than an error when a type, a default or a column drifts.

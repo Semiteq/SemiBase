@@ -9,9 +9,11 @@ The binary is self-contained: `pgx/v5` speaks the wire protocol itself, over TCP
 socket, so neither `psql.exe` nor any runtime needs to be present on the target machine.
 The SQL is embedded at build time: `sql/trends.sql` for the archive table, and
 `sql/semiplot_tags.sql`, `sql/semiplot_register.sql`, `sql/semiplot_groups.sql`,
-`sql/semiplot_markers.sql` and `sql/semiplot_meta.sql` for the SemiPlot configuration schema. Installing the PostgreSQL
-engine itself is one documented `winget` line, deliberately outside the tool — OS package management
-is not database provisioning.
+`sql/semiplot_markers.sql` and `sql/semiplot_meta.sql` for the SemiPlot configuration schema.
+Installing the PostgreSQL engine stays outside the tool, deliberately: OS package management is
+not database provisioning. On an installation machine `SemiBase-Setup.exe` does both, installing
+the vendored EDB PostgreSQL 17 when none is registered and then running `semibase site`
+([installer.md](./installer.md)).
 
 ## Distribution
 
@@ -20,9 +22,14 @@ A tagged release carries three artifacts, all built from one commit by
 
 | Artifact | Form | Consumer |
 | --- | --- | --- |
-| `semibase_<version>_windows_amd64.exe` | GitHub release asset | Commissioning on the installation machine |
-| `semibase_<version>_linux_amd64` | GitHub release asset | Provisioning a bench from a Linux host or CI runner |
+| `SemiBase-Setup.exe` | GitHub release asset | Commissioning on the installation machine; it carries the Windows binary, which is not attached on its own |
+| `semibase_<version>_linux_amd64` | GitHub release asset | The published reference for the image's bytes; provisioning a bench from a Linux host or CI runner |
 | `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` | Container image | Bench images that layer the binary onto `postgres:17-alpine` |
+
+The workflow has three jobs. `build` (ubuntu) tests, reads the tag and cross-compiles both
+binaries; `installer` (windows) compiles the setup around the Windows one; `release` (ubuntu)
+builds the image, creates the GitHub release with the Linux binary and the setup, and pushes the
+image. One workflow-level concurrency group covers all three.
 
 The image is `FROM scratch` and holds one file, `/semibase` — the same bytes as the Linux
 release asset, copied rather than built a second time. It carries no shell, no libc and no CA
@@ -46,8 +53,9 @@ pair nobody runs. The `vX.Y.Z` tag is immutable and exists to place blame and to
 failing pair.
 
 "Latest" only ever moves forward, and that is enforced rather than assumed. One decision, made
-once in the release job, drives all of it: the tag is a release tag (no `-` suffix) **and** it is
-the newest release tag in the repository. That answer sets the GitHub release's `prerelease` and
+once in the `build` job's `Read the tag` step and read by the `release` job through job outputs,
+drives all of it: the tag is a release tag (no `-` suffix) **and** it is the newest release tag
+in the repository. That answer sets the GitHub release's `prerelease` and
 `make_latest` fields and gates the `:latest` push alike, so `/releases/latest` and `:latest`
 cannot name different versions. Without the newest test, re-running an old tag's workflow from
 the Actions UI, or pushing two tags at once, walks "latest" backwards with no signal to anyone
@@ -61,10 +69,11 @@ prereleases out of the comparison, and with them git's own placement of `v1.0.0-
 of it to mean anything; `fetch-depth: 0` is what puts them there, and the job fails loudly if
 the tag being released is not among them.
 
-The image is pushed after the GitHub release exists, never before: consumers still download the
-release assets, so `latest` must never name a version whose assets are missing. The image is
-*built* before it, because a bad copy or a bad `Dockerfile` has to abort while there is still
-nothing published to withdraw.
+The image is pushed after the GitHub release exists, never before: `:latest` is the publish
+consumers act on, and the release page is its record. A push that lands while the release step
+fails leaves `:latest` on a version with no release and no notes, and nobody re-runs a push that
+worked. The image is *built* before it, because a bad copy or a bad `Dockerfile` has to abort
+while there is still nothing published to withdraw.
 
 The GHCR package is public, because consumers pull it anonymously from their own CI. The first
 push creates it private; that is switched once, in the package's settings, and the workflow has
@@ -101,14 +110,15 @@ a test of what a site runs:
 Every step is written to survive a re-run, most of them by checking before they create, so
 re-running any command is safe.
 
-Role passwords are set
-only when the corresponding flag or environment variable is present (`SEMIBASE_SUPER_PASSWORD`,
-`SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD`); a flag wins over its variable. No file is
-read. A password file beside `semibase.exe` would keep the superuser password in plaintext on the
-installation machine, and no caller needs one: CI sets the variables at job level, a consumer's
-bench passes them with `docker -e`, and a hand run sets them in its shell. A run without
-passwords leaves existing credentials untouched. Flag usage output shows only the environment
-variable names, never their values. The statements that set a password stay out of the server
+Each password comes from its flag, then its environment variable (`SEMIBASE_SUPER_PASSWORD`,
+`SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD`), then the role's conventional password
+([Passwords](#passwords)). The writer password applies only when the run creates `scada_writer`,
+`semiplot` is reset to its password on every run, and the superuser password is never changed.
+No file is read. A password file beside `semibase.exe` would keep the
+superuser password in plaintext on the installation machine, and no caller needs one: CI sets
+the variables at job level, a consumer's bench passes them with `docker -e`, and a hand run sets
+them in its shell. Flag usage output shows only the environment variable names, never their
+values. The statements that set a password stay out of the server
 log ([Invariants the provision package owns](#invariants-the-provision-package-owns)).
 
 ## The connection target
@@ -300,9 +310,11 @@ A restart drops every open connection to the server, the SCADA's included.
 CI's Linux job runs `site` without the flag: its server is a GitHub Actions service container, not
 a Windows service, and nothing in the job restarts it. The `Require the listen_addresses delta`
 step then reads `listen_addresses` still pending and `localhost` in `postgresql.auto.conf`
-through `pg_file_settings`, which proves `site` wrote the delta. The Windows job's
-`Restart the runner's PostgreSQL service through site` step is the one test of the restart
-itself. The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and Disabled. The
+through `pg_file_settings`, which proves `site` wrote the delta. The `build` job's
+`Restart the runner's PostgreSQL service through site` step is the only direct test of the
+restart; the `installer` job's cases run it through the setup, which passes `--restart-service`
+on every run (`restarting service` in the site logs of the runner's 17 and of the fresh
+install). The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and Disabled. The
 step first requires `site --restart-service postgresql-x64-17` to refuse the Disabled service
 with no `ALTER SYSTEM SET` line in its output. It then sets the service to Manual, starts it with
 `sc.exe start`, and runs `site` at once, while the service is Start Pending. That run must print
@@ -522,8 +534,9 @@ weight:
   `postgres:17-alpine`, both routes leave the same `relowner` and the same `relacl`
   (`{scada_writer=arwdDxtm/scada_writer,semiplot=r/scada_writer}`), while a login also has
   to be admitted by `pg_hba.conf` — and `local all all peer`, the default on Debian, Ubuntu and
-  RHEL, refuses it on a unix socket. Creating the table therefore needs no writer password; the
-  writer password is needed only on a first run, to create the role itself.
+  RHEL, refuses it on a unix socket. Creating the table therefore never logs in as
+  `scada_writer`, whatever its password, and needs no password of an existing `scada_writer`,
+  which a run never changes ([Passwords](#passwords)).
 - **`messages` is not created.** Nothing we ship reads it, and every object we create is a surface
   that can drift from the vendor.
 - **Day partitions are not created.** `tpYYYYmMMdDD` belongs to the SCADA on a site and to the
@@ -611,11 +624,10 @@ promises. They are knowable at exit precisely because this tool creates `public.
    role adds nothing beside the tables granted to it by name. On 14 this is a property `create`
    establishes with a `REVOKE`; on 15 and later the engine default already carries it and the check
    reads the same answer either way.
-8. **The `semiplot` login reads `trends` too**, over TCP, when the `semiplot` password is present in
-   the run. This is the half `SET ROLE` cannot reach: `pg_hba.conf` admitting the role and the
-   password a consumer will carry. It is skipped, with a printed note, when no password
-   was given, and on a socket host — `peer` is the platform default there and no consumer reads
-   over the socket.
+8. **The `semiplot` login reads `trends` too**, over TCP, with the password the run set. This is
+   the half `SET ROLE` cannot reach: `pg_hba.conf` admitting the role and the password a
+   consumer will carry. It is skipped, with a printed note, on a socket host only — `peer` is the
+   platform default there and no consumer reads over the socket.
 9. No setting waits for a service restart (`pg_settings.pending_restart`) — a warning, not a
    failure, so a pending `shared_buffers` or `listen_addresses` never blocks the access checks.
    Both commands read it, last, after the access checks. After a `--restart-service` restart it
@@ -642,7 +654,24 @@ empty `public.trends` in it.
 
 ## Passwords
 
-The tool takes passwords through flags or environment variables and never stores them. The
+Each role's conventional password is its name. The server listens on `localhost` only and every
+client runs on the installation machine, so the conventions are a formality; a site that needs
+another password changes it explicitly.
+
+| Role | Flag, then variable | Convention | What a run does |
+| --- | --- | --- | --- |
+| The superuser | `--super-password`, `SEMIBASE_SUPER_PASSWORD` | `postgres` | Connects with it and never changes it: a server whose superuser password differs needs the real one on every run, and a wrong one fails the run at its first connection |
+| `scada_writer` | `--writer-password`, `SEMIBASE_WRITER_PASSWORD` | `scada_writer`, for a role this run creates | Creates a missing role with the given password, else the convention. Never changes an existing role's password, given or not: the SCADA project holds the same password, so a change would stop the archive. A given password on an existing role logs `exists, credentials untouched; the given password applies to a new role only`. The operator changes it by hand with `\password scada_writer` and the SCADA project together |
+| `semiplot` | `--plot-password`, `SEMIBASE_PLOT_PASSWORD` | `semiplot` | Creates the role with it or resets the role to it on every run, then logs in with it ([check 8](#what-the-tail-checks-prove)) |
+
+`resolvePasswords` in `cmd/semibase/main.go` applies the chain with `cmp.Or`, so an empty value
+counts as unset; the writer has no default there, and `roleStatement` in
+`internal/provision/create.go` decides create, update or keep from the given password, the
+creation password and `resetExisting`, which `create` sets for `semiplot` and not for
+`scada_writer`. The setup repeats the superuser convention for the EDB option file
+([installer.md](./installer.md#passwords)).
+
+The tool never stores a password. The
 `semiplot` credential ends up in plaintext in client configuration files by design — it grants
 reading process history and editing the pen catalogue and the time markers, and nothing more. The writer credential is
 recorded wherever the installation keeps its commissioning records, outside this repository.

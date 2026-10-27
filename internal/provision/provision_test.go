@@ -2,6 +2,7 @@ package provision
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -294,6 +295,36 @@ func TestSessionSettingFailure(t *testing.T) {
 			}
 			if hasHint := strings.Contains(got.Error(), "Repair with ALTER ROLE dbadmin SUPERUSER"); hasHint != tt.wantHint {
 				t.Errorf("sessionSettingFailure() = %q, superuser hint %v, want %v", got, hasHint, tt.wantHint)
+			}
+		})
+	}
+}
+
+func TestConnectFailure(t *testing.T) {
+	const cause = "password authentication failed for postgres (SQLSTATE 28P01)"
+	wrongPassword := &pgconn.PgError{Code: "28P01", Message: `пользователь "postgres" не прошёл проверку подлинности (по паролю)`}
+	tests := []struct {
+		name      string
+		err       error
+		wantCause bool
+	}{
+		{"wrong password", wrongPassword, true},
+		{"wrong password inside a wrapper", fmt.Errorf("failed to connect: %w", wrongPassword), true},
+		{"another server error", &pgconn.PgError{Code: "42501", Message: "permission denied"}, false},
+		{"refused connection", errors.New("connect: connection refused"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := connectFailure("localhost:5432/postgres", "postgres", tt.err)
+			if !errors.Is(got, tt.err) {
+				t.Errorf("connectFailure() = %v, does not wrap %v", got, tt.err)
+			}
+			want := "connecting to localhost:5432/postgres as postgres: "
+			if tt.wantCause {
+				want += cause + ": "
+			}
+			if !strings.HasPrefix(got.Error(), want) {
+				t.Errorf("connectFailure() = %q, want the prefix %q", got, want)
 			}
 		})
 	}

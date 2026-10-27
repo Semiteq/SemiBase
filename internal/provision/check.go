@@ -389,11 +389,7 @@ func assertNoWritePrivilege(ctx context.Context, archive *pgx.Conn, relation str
 }
 
 func (o Options) checkPlotLogin(ctx context.Context) error {
-	switch {
-	case o.PlotPassword == "":
-		note("no %s password given - the login was not tested, only the privileges behind it.", PlotRole)
-		return nil
-	case isSocketHost(o.Host):
+	if isSocketHost(o.Host) {
 		note("socket host - the %s login was not tested; a consumer connects over TCP.", PlotRole)
 		return nil
 	}
