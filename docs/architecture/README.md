@@ -1,8 +1,7 @@
 # SemiBase Architecture
 
 Declarative architecture docs (English, present tense). These describe the system
-**as it is**, not how it got here. Provisioning commands live in the root
-`CLAUDE.md`; dated plans live in `docs/plans/`.
+**as it is**, not how it got here. Build, test and run commands live in the root `AGENTS.md`.
 
 ## Documents
 
@@ -15,6 +14,8 @@ Declarative architecture docs (English, present tense). These describe the syste
   Setup measurements it rests on.
 - [installer-text.md](./installer-text.md) — the rules every setup text follows, each with the
   operator objection it comes from.
+- [verification.md](./verification.md) — what CI and the release smoke runs execute against a
+  live server, step by step, and what each step requires.
 
 ## Locked decisions
 
@@ -23,15 +24,15 @@ Declarative architecture docs (English, present tense). These describe the syste
 | Installation | EDB PostgreSQL 17 vendored in the setup, pinned by SHA256 (`Installer/fetch-postgresql.sh`); the setup installs the engine, `semibase.exe` never does |
 | Major version | 17 for new installs, pinned latest; floor 14 (SemiPlot needs `date_bin`; Simple-Scada 2 docs require 14+) |
 | Provisioning tool | Go single binary `semibase.exe` (`pgx/v5`, `golang.org/x/sys` for the Windows service, embedded SQL); no runtime or `psql` on the target machine |
-| Instance configuration | Fixed `ALTER SYSTEM` deltas applied by `semibase site` via `pg_reload_conf()`, never by editing `postgresql.conf`; `shared_buffers` and `listen_addresses` take effect at the next service restart, reported through `pg_settings.pending_restart`; `site --restart-service <name>` performs that restart on Windows, opt-in |
+| Instance configuration | Fixed `ALTER SYSTEM` deltas applied by `semibase site` via `pg_reload_conf()`, never by editing `postgresql.conf`; two wait for a restart, which `site --restart-service <name>` performs, opt-in ([configuration.md](./configuration.md)) |
 | Network | Loopback only (`listen_addresses = 'localhost'`): every client runs on the installation machine |
 | Hardware floor | Installation machines guarantee 8 GB RAM and 50 GB database disk; memory settings are fixed constants sized to that floor, identical on every machine |
-| Roles | Four: the superuser the tool connects as, `scada_writer` (SCADA), `semiplot` (viewers), and `semiplot_registrar`, a `NOLOGIN` role that owns `semiplot_register_new_pens()` so its `SECURITY DEFINER` body never runs as the superuser. `semiplot` holds `SELECT` on the archive; `SELECT` on `semiplot_tags` and `UPDATE` on its settings columns, never on `id`; full row access to `semiplot_groups`, `semiplot_pen_groups` and `semiplot_markers`; `SELECT` on `semiplot_meta`; `EXECUTE` on the function; and no `CREATE` on schema `public` — revoked from `PUBLIC` by `create`, since PostgreSQL 14 still grants it by default. The superuser owns the tables, because it is the connection that creates them. One viewer role rather than a second write-only one: both passwords would share one plaintext file, so the split would separate nothing |
+| Roles | Four: the superuser (owns the `semiplot_*` tables), `scada_writer` (SCADA), `semiplot` (viewers, one role, reads the archive and edits only pen settings, groups and markers), `semiplot_registrar` (`NOLOGIN`, owns `semiplot_register_new_pens()`) ([provisioning.md](./provisioning.md#the-roles)) |
 | Command surface | Two commands, `site` and `bench`, named for the situation rather than for the tool's internal steps; they differ in one thing, the server settings, which only `site` applies |
 | Archive read access | `ALTER DEFAULT PRIVILEGES FOR ROLE scada_writer` set **before** `public.trends` is created, and before the writer first runs. The `semiplot_*` tables are granted table by table instead, since the superuser creates them |
 | Objects we add | `semiplot_tags`, `semiplot_groups`, `semiplot_pen_groups`, `semiplot_markers`, `semiplot_meta`, the `semiplot_register_new_pens()` function the viewer calls, and the vendor-shaped `public.trends` — no triggers, scheduled jobs, extensions, or other functions; `messages` is not created, the SCADA makes it |
-| SemiPlot schema version | `semiplot_meta.schema_version`, `1` in this release, written by `provision` alone. A floor, not an equality: a viewer refuses a database below the version it needs and accepts one above, because the versions this repository issues grow by addition. When the rule starts, and what a schema change does before then: [provisioning.md](./provisioning.md#the-schema-version-is-a-floor) |
-| Archive schema | Owned by Simple-Scada 2 and documented in the SemiPlot repository. This tool creates `public.trends` once, with the vendor's shape, connected as `scada_writer`, and never alters it afterwards; day partitions and every later change to the schema remain the vendor's |
+| SemiPlot schema version | `semiplot_meta.schema_version`, `1` in this release, written by `provision` alone; a floor, not an equality ([provisioning.md](./provisioning.md#the-schema-version-is-a-floor)) |
+| Archive schema | Owned by Simple-Scada 2 and documented in the SemiPlot repository. This tool creates `public.trends` once, with the vendor's shape, as `scada_writer` ([provisioning.md](./provisioning.md#the-archive-table)), and never alters it afterwards; day partitions and every later change to the schema remain the vendor's |
 | Distribution | Two GitHub release assets: `SemiBase-Setup.exe`, which carries the Windows binary, and the Linux binary; the Linux binary also as `ghcr.io/semiteq/semibase`, `FROM scratch`, one file, pushed after the release exists; benches track `:latest` and a prerelease never moves it |
 | Backup method | `UNDECIDED` — commissioning-time, needs the customer's archive size |
 | Retention depth / disk sizing | `UNDECIDED` — needs a measured write rate from a working installation |

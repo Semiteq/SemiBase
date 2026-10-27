@@ -2,43 +2,145 @@
 
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8)
 [![Coverage Status](https://coveralls.io/repos/github/Semiteq/SemiBase/badge.svg?branch=master)](https://coveralls.io/github/Semiteq/SemiBase?branch=master)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14+-336791)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 <div align="center">
     <img src=./logo.png width=300 />
 </div>
 
-SemiBase — разворачиваемый PostgreSQL-сервис для установок Semiteq. Один экземпляр базы
-данных, общий для приложений: Simple-Scada 2, [SemiPlot](https://github.com/Semiteq/SemiPlot) и других.
+SemiBase настраивает на одном компьютере с Windows базу scada_archive в PostgreSQL 17: Simple-Scada 2
+записывает в эту базу архив, [SemiPlot](https://github.com/Semiteq/SemiPlot) читает архив из неё.
+Установщик `SemiBase-Setup.exe` устанавливает PostgreSQL 17, если его нет, создаёт базу,
+пользователей БД и таблицы и проверяет, что SemiPlot читает архив.
 
-[Документация](./docs/readme.md)
+SemiBase не делает резервных копий архива и не входит в состав SCADA. PostgreSQL принимает
+подключения только с этого компьютера, поэтому SCADA и SemiPlot работают на этом же компьютере.
 
 ## Требования
 
-| Компонент  | Требование                                       |
-| ---------- | ------------------------------------------------ |
-| DB         | PostgreSQL 17. Установщик работает только с 17; утилита на тестовых стендах принимает 14 и новее |
-| Writer     | Simple-Scada 2 с архивацией в PostgreSQL         |
+- Windows x64 и права администратора.
+- Simple-Scada 2 с архивом в PostgreSQL.
+- На компьютере установлен PostgreSQL 17 или не установлен никакой PostgreSQL.
 
-Установщик `SemiBase-Setup.exe` — один файл на странице
-[Releases](https://github.com/Semiteq/SemiBase/releases/latest). Он несёт PostgreSQL 17 и утилиту
-`semibase.exe` и ничего не скачивает. Отдельного файла `semibase_<версия>_windows_amd64.exe` в
-выпусках больше нет.
+Установщик `SemiBase-Setup.exe` находится на странице
+[Releases](https://github.com/Semiteq/SemiBase/releases/latest) и при установке ничего не скачивает.
 
-## Быстрое развёртывание
+## Установка
+
+Запустите установщик до того, как проект SCADA начнёт записывать архив: базу scada_archive и
+пользователя БД scada_writer для SCADA создаёт установщик.
+
+1. Если SCADA уже записывает архив в PostgreSQL 17, остановите проект SCADA. При первой настройке
+   сервера установщик перезапускает службу PostgreSQL, и подключения SCADA прерываются.
+2. Запустите `SemiBase-Setup.exe`.
+3. На странице «Пароли пользователей БД» укажите пароли (раздел [Пароли](#пароли)).
+4. После установки укажите значения с последней страницы в проекте SCADA
+   (Проект → Настройки → База данных) и в подключении SemiPlot.
+
+![Последняя страница установщика со значениями для SCADA и SemiPlot](docs/images/setup-finished.png)
+
+### Установка из PowerShell
+
+Выполните команды в PowerShell от имени администратора. Команда `Read-Host` запрашивает пароль и
+не сохраняет его в истории команд. Если переменная не задана, установщик использует пароль по
+умолчанию.
 
 ```powershell
-# всё в PowerShell от имени администратора: установщик ставит PostgreSQL и управляет его службой
-# пароли по соглашению: у каждой роли пароль совпадает с её именем, postgres/postgres,
-# scada_writer/scada_writer, semiplot/semiplot; сервер принимает подключения только с этой машины.
-# PostgreSQL 17, если его нет; конфигурация сервера, архивная база, роли `scada_writer`,
-# `semiplot` и `semiplot_registrar`, права, таблица архива, пять таблиц SemiPlot и функция
-# регистрации новых перьев; перезапуск службы, если настройки его ждут.
-# код 0: машина готова; код 7: отказ, причина в C:\Program Files\SemiBase\Logs\setup-*.log
+$env:SEMIBASE_SUPER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль администратора PostgreSQL (postgres)' -AsSecureString)).Password
+$env:SEMIBASE_WRITER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль пользователя БД scada_writer' -AsSecureString)).Password
 $setup = Start-Process -FilePath .\SemiBase-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/LANG=russian' -Wait -PassThru
 $setup.ExitCode
 ```
 
-Как сменить пароль `postgres` или `scada_writer`, описано в
-[руководстве по развёртыванию](./docs/deployment.md#пароли-по-соглашению).
+| Код    | Значение                                                                                 |
+| ------ | ---------------------------------------------------------------------------------------- |
+| `0`    | PostgreSQL 17 настроен, проверки завершились без ошибок                                  |
+| `7`    | Установка невозможна. Причина и действие записаны в последней строке последнего журнала `setup-*.log` |
+| другой | Установщик завершился с ошибкой, PostgreSQL 17 не настроен                               |
+
+Журналы находятся в папке `C:\Program Files\SemiBase\Logs`. Значения для SCADA и SemiPlot те же,
+что на снимке выше. Порт указан в последней строке журнала `site-*.log`:
+`Done: site completed against localhost:5432/scada_archive.`
+
+## Пароли
+
+| Пользователь БД | Назначение               | Пароль по умолчанию | Переменная                 | Когда установщик задаёт пароль                    |
+| --------------- | ------------------------ | ------------------- | -------------------------- | ------------------------------------------------- |
+| `postgres`      | Администратор PostgreSQL | `postgres`          | `SEMIBASE_SUPER_PASSWORD`  | Только при установке PostgreSQL 17 этим установщиком |
+| `scada_writer`  | SCADA записывает архив   | `scada_writer`      | `SEMIBASE_WRITER_PASSWORD` | Только при создании пользователя БД               |
+| `semiplot`      | SemiPlot читает архив    | `semiplot`          | нет                        | При каждом запуске                                |
+
+Чтобы сменить пароль пользователя БД scada_writer, выполните команду psql. Команда запрашивает
+пароль администратора PostgreSQL (пользователь БД postgres), затем новый пароль дважды. Для пароля
+администратора замените последнее слово команды на `postgres`. Если PostgreSQL 17 установлен не
+этим установщиком, укажите в команде папку, порт и имя администратора этого PostgreSQL.
+
+```powershell
+& 'C:\Program Files\PostgreSQL\17\bin\psql.exe' -h localhost -p 5432 -U postgres -d postgres -c '\password scada_writer'
+```
+
+- После смены пароля администратора указывайте новый пароль при каждом запуске установщика: в поле
+  страницы паролей или в переменной `SEMIBASE_SUPER_PASSWORD`.
+- После смены пароля scada_writer сразу укажите тот же пароль в проекте SCADA
+  (Проект → Настройки → База данных). Новые подключения с прежним паролем PostgreSQL отклоняет.
+- Пароль пользователя БД semiplot не меняйте: каждый запуск установщика снова задаёт пароль
+  `semiplot`.
+
+## Если установка невозможна
+
+Установщик показывает причину и действие на экране, а при установке из PowerShell записывает их в
+последнюю строку журнала `setup-*.log`. В строке перед ней записаны подробности, например имя
+программы, которая занимает порт 5432. Ниже описаны случаи, в которых действия с экрана
+недостаточно.
+
+![Установка невозможна: неверный пароль администратора PostgreSQL](docs/images/setup-refusal.png)
+
+### PostgreSQL 17 без имени службы или порта
+
+Если архив на этом сервере нужен, не удаляйте PostgreSQL: настройте сервер утилитой
+`semibase.exe` вручную. Если файла `C:\Program Files\SemiBase\semibase.exe` нет, запустите
+установщик и дождитесь текста о том, что установка невозможна: к этому моменту установщик уже
+скопировал утилиту в эту папку. Затем найдите значения в PowerShell от имени
+администратора и укажите их в командах. Не удаляйте из команды ключ `--expected-major 17`: с этим
+ключом утилита не настраивает сервер другой версии.
+
+```powershell
+# служба PostgreSQL; папка данных указана после -D в PathName
+Get-CimInstance Win32_Service | Where-Object PathName -like '*pg_ctl*' | Format-List Name, State, PathName
+# порт; если строки port нет, порт 5432
+Select-String -Path '<папка данных>\postgresql.conf' -Pattern '^\s*port\s*='
+# имя администратора PostgreSQL
+(Get-ItemProperty 'HKLM:\SOFTWARE\PostgreSQL\Installations\postgresql-x64-17').'Super User'
+
+$port = 5432
+$superuser = 'postgres'
+$service = 'postgresql-x64-17'
+Set-Service $service -StartupType Automatic; Start-Service $service
+$env:SEMIBASE_SUPER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль администратора PostgreSQL' -AsSecureString)).Password
+& 'C:\Program Files\SemiBase\semibase.exe' site --port $port --superuser $superuser --expected-major 17 --restart-service $service
+$LASTEXITCODE
+```
+
+### Служба PostgreSQL осталась остановленной
+
+Если установщик сообщил «Утилита semibase.exe завершилась с ошибкой» и служба PostgreSQL не
+запущена, откройте журнал `site-*.log` из этого сообщения и найдите в его последних строках
+фрагмент из таблицы. Если служба называется иначе, замените
+`postgresql-x64-17` в командах.
+
+| Фрагмент журнала `site-*.log` | Что делать |
+| --- | --- |
+| `will stay stopped` | Дождитесь, пока `Get-Service postgresql-x64-17` покажет `Stopped`, и выполните `Start-Service postgresql-x64-17` |
+| `site sends no Start` | Дождитесь, пока `Test-NetConnection localhost -Port 5432` покажет `TcpTestSucceeded : False`, и выполните `Start-Service postgresql-x64-17` |
+| `starting service` | Выполните `Start-Service postgresql-x64-17` |
+| `stopped again after the Start, and nothing answers` или `stopped again after the Start, and checking` | Сервер завершился при запуске. Найдите причину в журналах сервера в папке `log` папки данных и в журнале событий Windows «Приложение». Если причина в параметре из файла `postgresql.auto.conf` папки данных (например, `shared_buffers`), удалите строку этого параметра и выполните `Start-Service postgresql-x64-17`. Повторный запуск установщика записывает строку снова, поэтому сначала устраните причину |
+| `stopped again after the Start, but the server answers` | Сервер работает без службы. Когда сервер начнёт принимать подключения, выполните `& '<папка PostgreSQL>\bin\pg_ctl.exe' stop -D '<папка данных>'`, затем `Start-Service postgresql-x64-17` |
+| `did not reach running within` | Дождитесь, пока `Get-Service postgresql-x64-17` покажет `Running` или `Stopped`. При `Stopped` выполните действия строки `nothing answers` |
+| `after the Stop; check it with Get-Service`, или работу установщика прервали | Если `Get-Service postgresql-x64-17` показывает `Stopped`, выполните `Start-Service postgresql-x64-17` |
+
+## Удаление
+
+Удалите SemiBase через «Программы и компоненты». Программа удаления удаляет утилиту
+`semibase.exe` и оставляет PostgreSQL 17 с архивом и журналы в папке
+`C:\Program Files\SemiBase\Logs`.

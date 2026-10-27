@@ -27,23 +27,26 @@ A tagged release carries three artifacts, all built from one commit by
 | `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` | Container image | Bench images that layer the binary onto `postgres:17-alpine` |
 
 The workflow has three jobs. `build` (ubuntu) tests, reads the tag and cross-compiles both
-binaries; `installer` (windows) compiles the setup around the Windows one; `release` (ubuntu)
-builds the image, creates the GitHub release with the Linux binary and the setup, and pushes the
-image. One workflow-level concurrency group covers all three.
+binaries with `CGO_ENABLED=0`, `-trimpath` and `-X main.revision=<tag>`, so `semibase version`
+prints the tag; `installer` (windows) compiles the setup around the Windows one through
+`.github/actions/build-setup` and smoke-runs it; `release` (ubuntu) restores the Linux binary's
+exec bit, which artifact transfer drops, builds the image, creates the GitHub release with the
+Linux binary and the setup, and pushes the image. One workflow-level concurrency group covers all
+three. The smoke runs: [verification.md](./verification.md#the-release-smoke-runs).
 
-The image is `FROM scratch` and holds one file, `/semibase` — the same bytes as the Linux
+The image is `FROM scratch` and holds one file, `/semibase`: the same bytes as the Linux
 release asset, copied rather than built a second time. It carries no shell, no libc and no CA
 certificates, because nothing runs it as a base: the consumer copies the binary out
 (`COPY --from=ghcr.io/semiteq/semibase:latest /semibase /semibase`) onto its own postgres image
 and runs it as an init script over the unix socket. The init script belongs to that consumer,
 not to the image. The `ENTRYPOINT` is there so
 `docker run ghcr.io/semiteq/semibase:latest version` answers, and it is what the release job
-runs against the built image before pushing it — the one execution of the shipped bytes.
+runs against the built image before pushing it, the one execution of the shipped Linux bytes.
 
 The manifest says `linux/amd64` because every build passes `--platform linux/amd64`. `FROM
 scratch` otherwise takes the platform of whatever machine built it, so the manifest would state
-the runner rather than the payload. A `FROM --platform=` pin does not substitute for the flag —
-it sets the base stage's platform, and scratch carries no config for the output to inherit — so
+the runner rather than the payload. A `FROM --platform=` pin does not substitute for the flag:
+it sets the base stage's platform, and scratch carries no config for the output to inherit, so
 the release job reads the built image back and fails if the manifest says anything else.
 
 `latest` is the tag consumers track, and that is deliberate. A delivered installation updates
@@ -63,7 +66,7 @@ tracking it. A skipped `:latest` push says so in the job log; it is never silent
 
 The newest tag is found with git's version ordering (`git tag -l --sort=-v:refname`) over plain
 `vN.N[.N…]` tags. That ordering compares the numeric fields as numbers, which a string compare
-does not — `v0.10.0` outranks `v0.9.0`. Narrowing the candidates to unsuffixed tags keeps
+does not: `v0.10.0` outranks `v0.9.0`. Narrowing the candidates to unsuffixed tags keeps
 prereleases out of the comparison, and with them git's own placement of `v1.0.0-rc1` *after*
 `v1.0.0` unless `versionsort.suffix` is configured. All tags have to be in the checkout for any
 of it to mean anything; `fetch-depth: 0` is what puts them there, and the job fails loudly if
@@ -81,8 +84,9 @@ no say in it.
 
 ## Commands
 
-The tool is a setup script: it brings an instance to a known state and exits. It is run once, at
-commissioning, and nobody comes back to run a second command by hand. So the surface names the two
+The tool is a setup script: it brings an instance to a known state and exits. A re-run is
+normal: the setup runs `site` on every start, and an operator recovers by running the
+`semibase.exe` the setup leaves in `C:\Program Files\SemiBase`. So the surface names the two
 situations it is run in, not the phases it runs through.
 
 | Command | What it does | When |
@@ -101,33 +105,23 @@ a test of what a site runs:
 | `public.trends` with the `tpdefault` partition, created as `scada_writer` | yes | yes |
 | The five SemiPlot tables and `semiplot_register_new_pens()`, after `public.trends` because the function body names it | yes | yes |
 | The `semiplot` access checks at the tail | yes | yes |
-| Pending-restart warning at the tail | yes, and after a `--restart-service` restart the list is empty | yes — `bench` tunes nothing, but it runs against existing servers too, and one a `site` run tuned can still be waiting for its restart |
+| Pending-restart warning at the tail ([check 9](#what-the-tail-checks-prove)) | yes | yes |
 
 `version` (or `--version`) prints the build revision: the ldflags value
 (`-X main.revision=...`) when a release sets it, otherwise the VCS revision from
 `debug.ReadBuildInfo` with a `-dirty` suffix for a modified tree.
 
 Every step is written to survive a re-run, most of them by checking before they create, so
-re-running any command is safe.
-
-Each password comes from its flag, then its environment variable (`SEMIBASE_SUPER_PASSWORD`,
-`SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD`), then the role's conventional password
-([Passwords](#passwords)). The writer password applies only when the run creates `scada_writer`,
-`semiplot` is reset to its password on every run, and the superuser password is never changed.
-No file is read. A password file beside `semibase.exe` would keep the
-superuser password in plaintext on the installation machine, and no caller needs one: CI sets
-the variables at job level, a consumer's bench passes them with `docker -e`, and a hand run sets
-them in its shell. Flag usage output shows only the environment variable names, never their
-values. The statements that set a password stay out of the server
-log ([Invariants the provision package owns](#invariants-the-provision-package-owns)).
+re-running any command is safe. Where each password comes from and what a run does with it:
+[Passwords](#passwords).
 
 ## The connection target
 
 `--host` takes a hostname or a unix socket directory, and the split is the driver's own:
 `pgconn.isAbsolutePath` calls a value a socket directory when it starts with `/` or is a
-drive-letter path such as `C:\pgsock`. A socket directory cannot ride in the URL authority —
-its slashes would end the authority — so the connection string moves it, and the port with it,
-into the query, percent-encoded:
+drive-letter path such as `C:\pgsock`. A socket directory cannot ride in the URL authority,
+since its slashes would end the authority, so the connection string moves it, and the port with
+it, into the query, percent-encoded:
 
 ```
 postgres://postgres:***@/scada_archive?host=%2Fvar%2Frun%2Fpostgresql&port=5432
@@ -139,11 +133,10 @@ but pgx resolves such a host as a TCP name, so `semibase` leaves it on the TCP p
 
 The socket form is what lets `bench` run as an init script in the official `postgres` image,
 whose entrypoint serves `/docker-entrypoint-initdb.d/` from a temporary server with
-`listen_addresses` set to empty — reachable over the socket only. The Linux CI job runs exactly
-that: it layers the freshly built binary onto `postgres:17-alpine` behind such an init script and
-asserts the container reaches a state where `semiplot` can query.
+`listen_addresses` set to empty, reachable over the socket only
+([verification.md](./verification.md#the-linux-job) runs exactly that).
 
-Messages name the socket file rather than a URL —
+Messages name the socket file rather than a URL:
 `/var/run/postgresql/.s.PGSQL.5432 (scada_archive)`. The database is in parentheses because a
 slash would make the socket file read as a directory and send the operator to a path that can
 never exist.
@@ -157,7 +150,7 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
   pattern lives only in `internal/provision`; the CLI calls the same method for the friendly
   early error.
 - **Identifier quoting.** Every interpolation of the database name into DDL goes through
-  `pgx.Identifier{...}.Sanitize()`. The connection URL is not sanitized — `url.URL` escapes
+  `pgx.Identifier{...}.Sanitize()`. The connection URL is not sanitized: `url.URL` escapes
   the path itself, and quoted identifiers do not belong in it.
 - **Literal escaping.** `connect` issues `SET standard_conforming_strings = on` for the
   session, which makes the quote-doubling `escapeLiteral` sufficient in every server mode,
@@ -183,25 +176,19 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
   project requires the role `semibase` connects as to be a superuser; when the server refuses one
   with 42501, the error names the role and the repair. The `semiplot` login of
   [check 8](#what-the-tail-checks-prove) sets none of them and issues no password statement.
-  `TestSessionSettings` pins both lists. CI reads the server log through
-  `.github/scripts/check-server-log.sh` in the `Keep the password statements out of the server log`
-  step (the `ALTER ROLE` path) and the
-  `Keep the CREATE ROLE password statements out of the PostgreSQL 14 log` step.
+  `TestSessionSettings` pins both lists; CI reads the server log on both password paths
+  ([verification.md](./verification.md#the-linux-job)).
 - **Cancellable execution.** Every phase honors its context: cancellation stops the
-  in-flight query through pgx instead of killing the process mid-DDL. The context itself —
+  in-flight query through pgx instead of killing the process mid-DDL. The context itself,
   `signal.NotifyContext(..., os.Interrupt)` plus the five-minute per-command timeout
-  (`phaseTimeout`) — is owned by the CLI dispatcher in `cmd/semibase`. The one exception is a
+  (`phaseTimeout`), is owned by the CLI dispatcher in `cmd/semibase`. The one exception is a
   service restart: once the service accepts the Stop, the waits, the port probe and the Start
   ignore the command's cancellation, so that an interrupt does not leave the service stopped
   ([The service restart](#the-service-restart)). A run that used up `phaseTimeout` says so in a
   second error line.
-- **Pending-restart reporting.** The tuning phase applies its deltas with `pg_reload_conf()` and
-  reads `pg_settings.pending_restart` back from the server; both commands read it again as the
-  **last** statement of the tail, after the access checks, so a pending `shared_buffers` or
-  `listen_addresses` is named in the run's last line. Without `--restart-service` the tool never
-  touches the service manager: the operator restarts the service or reboots the machine, and the
-  tool says so instead of doing it. With the flag, `site` restarts the named Windows service
-  itself, and the tail reads an empty list.
+- **Pending-restart reporting.** Without `--restart-service` the tool never touches the service
+  manager: it names the settings that wait and tells the operator to restart the service or
+  reboot ([check 9](#what-the-tail-checks-prove)).
 
 ## The service restart
 
@@ -220,10 +207,8 @@ that is not the run's server, fails the run with nothing changed. `openService`
 may not control (the message says to run `semibase` as an administrator), and a Disabled start
 type, which would leave the service stopped after the Stop. A service in Start Pending gets up to
 2 minutes to reach Running: an installer may run `site` right after it started the service, and an
-EDB service (`pg_ctl runservice ... -w`, the `PathName` the Windows CI step prints) reports Running
-only once the server accepts connections. That step starts the service with `sc.exe start`, which
-returns while it is Start Pending, and runs `site` at once. Stopped, Stop Pending, Paused, or a
-start that ends in Stopped, is refused.
+EDB service (`pg_ctl runservice ... -w`) reports Running only once the server accepts
+connections. Stopped, Stop Pending, Paused, or a start that ends in Stopped, is refused.
 
 Once the service is Running, `openService` ties it to the server the run connects to. It connects
 as the superuser, reads `SHOW data_directory` and the connection's remote IP:port, and compares
@@ -270,14 +255,16 @@ Stopped does not mean that the postmaster has exited. What follows was read in
 - Step 1 probes once a second, because each accepted connect costs the server a process. The
   probe dials the one literal IP:port the identity check's connection reached, never the name
   `localhost`. Go dials a name that resolves to both `::1` and `127.0.0.1` in parallel and, when
-  both fail, returns the error of the first family (`dialParallel` in `net/dial.go`, Go 1.27).
+  both fail, returns the error of the first family (`dialParallel` in `net/dial.go`).
   An IPv6 failure other than a refusal would then hide the IPv4 refusal, and the Start would never
   be sent. A literal address has one family.
 - Each probe dial has a 15 s timeout. Windows resends a SYN after an RST, so a refused loopback
   connect can take seconds (Daniel Stenberg,
   `daniel.haxx.se/blog/2024/08/14/slow-tcp-connect-on-windows`). Measured on Windows 11 build
-  26300, a refusal took under 2 ms; the resends were not reproduced here. The 3-minute stop bound
-  still limits the whole wait.
+  26300, a Go dial to a literal loopback address was refused in under 2 ms; the resends were not
+  reproduced here. The setup's own port probe is a different one, a PowerShell `TcpClient` to the
+  name `localhost`, and a closed port took about 7 s there ([installer.md](./installer.md#inno-setup)).
+  The 3-minute stop bound still limits the whole wait.
 - The service runs `pg_ctl runservice ... -w` with no `-t`, so `wait_for_postmaster_start` gives
   up after `DEFAULT_WAIT` = 60 s. It then reports Stopped and leaves a slower postmaster running
   outside the service. A postmaster that exits during its startup also ends in Stopped. In step 2
@@ -307,22 +294,8 @@ service is refused before any change, and it reports the service state for the b
 
 A restart drops every open connection to the server, the SCADA's included.
 
-CI's Linux job runs `site` without the flag: its server is a GitHub Actions service container, not
-a Windows service, and nothing in the job restarts it. The `Require the listen_addresses delta`
-step then reads `listen_addresses` still pending and `localhost` in `postgresql.auto.conf`
-through `pg_file_settings`, which proves `site` wrote the delta. The `build` job's
-`Restart the runner's PostgreSQL service through site` step is the only direct test of the
-restart; the `installer` job's cases run it through the setup, which passes `--restart-service`
-on every run (`restarting service` in the site logs of the runner's 17 and of the fresh
-install). The runner image ships PostgreSQL 17 as `postgresql-x64-17`, Stopped and Disabled. The
-step first requires `site --restart-service postgresql-x64-17` to refuse the Disabled service
-with no `ALTER SYSTEM SET` line in its output. It then sets the service to Manual, starts it with
-`sc.exe start`, and runs `site` at once, while the service is Start Pending. That run must print
-`restarting service postgresql-x64-17`, the identity line
-`runs data directory C:\PostgreSQL\17\data, as the server on <IP>:5432 does` and
-`stopped, nothing answers on <IP>:5432`, and leave `listen_addresses = localhost` with no setting
-pending. A second run must not restart the service, and `--restart-service no-such-service` must
-be refused with no `ALTER SYSTEM SET` line.
+The setup passes `--restart-service` on every run. CI tests the restart directly in the `build`
+job and through the setup in the `installer` job ([verification.md](./verification.md)).
 
 ## The roles
 
@@ -354,13 +327,8 @@ The missing `CREATE` is issued rather than inherited. PostgreSQL 15 dropped the 
 grants `CREATE` on schema `public` to `PUBLIC`, but 14 is this tool's floor and still carries it,
 so `create` issues `REVOKE CREATE ON SCHEMA public FROM PUBLIC` and grants it back to
 `scada_writer` alone, and the tail check reads `has_schema_privilege` back. Without the `REVOKE`
-the property held on 15 and later by engine default and not at all on 14.
-
-The `Provision a PostgreSQL 14 container, where the REVOKE bites` CI step is what gates the
-statement. On `postgres:17-alpine` the tail check reads `has_schema_privilege` false with or
-without it, so every other step in the file stays green when the `REVOKE` is deleted; on
-`postgres:14-alpine` `semiplot` holds `CREATE` through `PUBLIC` and the run exits 1. Measured
-both ways.
+the property held on 15 and later by engine default and not at all on 14; only the PostgreSQL 14
+CI step can catch its loss ([verification.md](./verification.md#the-linux-job)).
 
 A second, write-only role would keep the long-lived read connection free of any write privilege.
 It was rejected: both passwords would sit in the same plaintext `connection.yaml` on the same
@@ -484,10 +452,9 @@ The rule starts with the first installation. Until a site runs a provisioned dat
 change, a column rename included, edits the `CREATE TABLE` alone, issues no `ALTER`, and leaves the
 number at `1`. A database provisioned before such a change is recreated, not provisioned again:
 `CREATE TABLE IF NOT EXISTS` keeps its old table, and the column grant then fails with 42703 on the
-column that table lacks. `semiplot_markers` is such a change: it leaves the number at `1`, and a
-database provisioned without the table is recreated. After the first installation an added table
-raises the number, and a viewer that reads only the tables it already knew has to keep working
-against it, which an equality check would break.
+column that table lacks. After the first installation an added table raises the number, and a
+viewer that reads only the tables it already knew has to keep working against it, which an
+equality check would break.
 
 A removal is not signalled by this number. An older viewer meeting a dropped column gets 42703,
 which SemiPlot maps to an unexpected-shape failure naming the column.
@@ -499,9 +466,9 @@ newer database cannot write the number down.
 
 ## The SemiPlot read chain
 
-`semiplot` needs `SELECT` on `trends` and on every day partition the SCADA creates later — objects
-that do not exist when the grant has to be decided. A plain `GRANT` cannot be issued on a table that
-is not there, so the create phase sets:
+`semiplot` needs `SELECT` on `trends` and on every day partition the SCADA creates later: objects
+that do not exist when the grant has to be decided. A plain `GRANT` cannot be issued on a table
+that is not there, so the create phase sets:
 
 ```sql
 ALTER DEFAULT PRIVILEGES FOR ROLE scada_writer IN SCHEMA public
@@ -512,17 +479,11 @@ This is in place **before** `public.trends` is created and before the writer fir
 `scada_writer` creates afterwards are readable automatically. If a table was created before the
 statement ran, the repair is a one-time `GRANT SELECT ON ALL TABLES IN SCHEMA public` for the
 tables that exist plus the default-privileges statement for the partitions still to come, then
-another run of the tool — the tail check detects that state and prints all three.
-
-`create` issues `REVOKE CREATE ON SCHEMA public FROM PUBLIC` and then grants `CREATE` to
-`scada_writer` explicitly, so both statements say the same thing on every accepted major. On
-PostgreSQL 15 and later the `public` schema no longer grants `CREATE` to everyone and the `REVOKE`
-is redundant; on 14 it is the statement that makes "`semiplot` holds no `CREATE` on schema
-`public`" true rather than aspirational.
+another run of the tool; the tail check detects that state and prints all three.
 
 ## The archive table
 
-`public.trends` is created by this tool, by both commands, from `sql/trends.sql` — the vendor's
+`public.trends` is created by this tool, by both commands, from `sql/trends.sql`: the vendor's
 shape, transcribed from a customer archive dump. Three properties of how it is created carry the
 weight:
 
@@ -533,7 +494,7 @@ weight:
   `SET ROLE` on the superuser connection, not through a `scada_writer` login: measured on
   `postgres:17-alpine`, both routes leave the same `relowner` and the same `relacl`
   (`{scada_writer=arwdDxtm/scada_writer,semiplot=r/scada_writer}`), while a login also has
-  to be admitted by `pg_hba.conf` — and `local all all peer`, the default on Debian, Ubuntu and
+  to be admitted by `pg_hba.conf`, and `local all all peer`, the default on Debian, Ubuntu and
   RHEL, refuses it on a unix socket. Creating the table therefore never logs in as
   `scada_writer`, whatever its password, and needs no password of an existing `scada_writer`,
   which a run never changes ([Passwords](#passwords)).
@@ -544,10 +505,10 @@ weight:
   no day partition exists lands somewhere instead of failing.
 
 Existence is checked first (`to_regclass('public.trends')`), so a second run leaves the table
-untouched — including a table the SCADA has since altered. Untouched is not unread: on that path
+untouched, including a table the SCADA has since altered. Untouched is not unread: on that path
 the run reads back what it promises. `public.tpdefault` must be there, and its absence is a
 failure with the one `CREATE TABLE ... PARTITION OF ... DEFAULT` that repairs it, because a table
-without it rejects any row no day partition covers. Its row count is then reported — always zero
+without it rejects any row no day partition covers. Its row count is then reported: always zero
 on the create path, but on a table that may be months old a non-empty `tpdefault` is the only
 signal that a day partition was missing at write time, so it is a warning rather than a failure.
 
@@ -564,13 +525,13 @@ replaced by what was observed and `sql/trends.sql` is reconsidered.
 
 ## What the tail checks prove
 
-Both commands end with them, and a failure is a non-zero exit — the run did not reach the state it
+Both commands end with them, and a failure is a non-zero exit: the run did not reach the state it
 promises. They are knowable at exit precisely because this tool creates `public.trends` itself:
 
 1. **`semiplot` reads `public.trends`.** The read itself, not a catalog bit: `SET ROLE semiplot` on
    the superuser connection, then
    `SELECT count(*) FROM (SELECT 1 FROM public.trends LIMIT 1) probe`. `has_table_privilege`
-   cannot carry this check — after `REVOKE USAGE ON SCHEMA public FROM public` it still answers
+   cannot carry this check: after `REVOKE USAGE ON SCHEMA public FROM public` it still answers
    `t` while every read the role issues fails with `permission denied for schema public`
    (measured). The catalog bit is asked only when the read has already failed, to split a missing
    table grant from a schema the role cannot enter, and each answer prints its own repair.
@@ -579,7 +540,7 @@ promises. They are knowable at exit precisely because this tool creates `public.
    This is the first question a viewer asks a database, and the `GRANT SELECT ON semiplot_meta`
    that answers it is the only grant no other check exercises: each writable table's `UPDATE` probe
    carries a `WHERE`, so its read privilege is proved as a side effect, while `semiplot_meta` is
-   granted `SELECT` alone. Removing that grant used to leave every check passing.
+   granted `SELECT` alone.
 3. **`semiplot` registers new pens, writes what it owns, and cannot add, delete or re-key a pen
    by hand.** The transaction opens with `SELECT semiplot_register_new_pens()` as the role, and the
    run prints how many keys in `trends` have no pen yet; a failed call is reported as it is, since a
@@ -618,33 +579,35 @@ promises. They are knowable at exit precisely because this tool creates `public.
    weaken, and it stays a catalog question: a refused statement and a statement that fails on its
    own terms look alike, and an `UPDATE` cannot even be spelled against a table whose columns this
    tool does not define. A failure names the privilege found and the `REVOKE` that removes it.
-6. **`semiplot` holds none of the three on `semiplot_meta`** — the schema version is written by
+6. **`semiplot` holds none of the three on `semiplot_meta`**: the schema version is written by
    `provision` and by nothing else. A catalog question, for the same reason.
 7. **`semiplot` holds no `CREATE` on schema `public`**, read through `has_schema_privilege`, so the
-   role adds nothing beside the tables granted to it by name. On 14 this is a property `create`
-   establishes with a `REVOKE`; on 15 and later the engine default already carries it and the check
-   reads the same answer either way.
+   role adds nothing beside the tables granted to it by name ([The roles](#the-roles)).
 8. **The `semiplot` login reads `trends` too**, over TCP, with the password the run set. This is
    the half `SET ROLE` cannot reach: `pg_hba.conf` admitting the role and the password a
-   consumer will carry. It is skipped, with a printed note, on a socket host only — `peer` is the
+   consumer will carry. It is skipped, with a printed note, on a socket host only: `peer` is the
    platform default there and no consumer reads over the socket.
-9. No setting waits for a service restart (`pg_settings.pending_restart`) — a warning, not a
+9. **No setting waits for a service restart** (`pg_settings.pending_restart`). A warning, not a
    failure, so a pending `shared_buffers` or `listen_addresses` never blocks the access checks.
-   Both commands read it, last, after the access checks. After a `--restart-service` restart it
-   reads an empty list.
+   Both commands read it as the last statement of the run, after the access checks, so a missed
+   restart is the last line before the closing `Done: ...` line, and it tells the operator to
+   restart the service or reboot.
+   `bench` tunes nothing but reads it too, since a server a `site` run tuned can still be waiting.
+   After a `--restart-service` restart the list is empty.
 
 ## Development benches
 
 The bench is an ephemeral vanilla `postgres:17-alpine` container. The consumer's test fixture
-starts it and provisions it by running `bench --database semiplot_dev --expected-major 17` — the
+starts it and provisions it by running `bench --database semiplot_dev --expected-major 17`: the
 same code path a site takes minus the tuning, which is what keeps the fixture from drifting into a
 hand-written copy of the grants. 14 remains the floor accepted through `--expected-major`; the
 bench runs the pinned major, 17.
 
 Two rules make the bench exercise what production exercises:
 
-- `public.trends` is created **as `scada_writer`**, by both commands, so the default-privileges
-  chain is a daily-tested path instead of a commissioning-day surprise.
+- `public.trends` is created as `scada_writer` by both commands
+  ([The archive table](#the-archive-table)), so the default-privileges chain is a daily-tested
+  path instead of a commissioning-day surprise.
 - Bench integration tests read **as `semiplot`**, never as a superuser, so a broken grant
   fails a test today.
 
@@ -671,7 +634,12 @@ creation password and `resetExisting`, which `create` sets for `semiplot` and no
 `scada_writer`. The setup repeats the superuser convention for the EDB option file
 ([installer.md](./installer.md#passwords)).
 
-The tool never stores a password. The
-`semiplot` credential ends up in plaintext in client configuration files by design — it grants
-reading process history and editing the pen catalogue and the time markers, and nothing more. The writer credential is
-recorded wherever the installation keeps its commissioning records, outside this repository.
+No password is read from a file, and the tool never stores one. A password file beside
+`semibase.exe` would keep the superuser password in plaintext on the installation machine, and no
+caller needs one: CI sets the variables, a consumer's bench passes them with `docker -e`, and a
+hand run sets them in its shell. Flag usage output shows only the environment variable names,
+never their values. The statements that set a password stay out of the server log
+([Invariants the provision package owns](#invariants-the-provision-package-owns)). The `semiplot`
+credential ends up in plaintext in client configuration files by design
+([overview.md](./overview.md#consumers)). The writer credential is recorded wherever the
+installation keeps its commissioning records, outside this repository.

@@ -143,14 +143,6 @@ cite them.
     пользователя» becomes «пароль по умолчанию: имя пользователя»). (Objection: «пароль … равный
     звучит криво».)
 
-## Where the rules are met in code
-
-- Rule 25: a refusal function returns `Refuse(Text, Detail)`, which keeps `Detail` in the
-  `RefusalDetail` global; `LogRefusal` writes it on the line before the refusal. Detail entries
-  are `[CustomMessages]` without a language prefix, English in every language.
-- Rule 26: the Ready page is a read-only `ReadyMemo`; a refusal on the Preparing page moves from
-  the static `PreparingLabel` into the read-only `PreparingMemo` (`ShowRefusalAsText`). The two
-  message boxes the Next button raises hold no path.
-- Open checks: the bold superuser label and the 15-line Finished text at 150 % DPI, the
-  Preparing memo with the longest refusal at 150 % DPI, the English SCADA menu path against an
-  English Simple-Scada, and «Программы и компоненты» on the target Windows (rule 18).
+How the code meets rules 25 and 26, the detail line and the copyable memos, and what of the drawn
+pages is not measured: [installer.md](./installer.md#the-setup). The message boxes the Next button
+raises hold no path.
