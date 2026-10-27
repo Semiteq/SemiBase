@@ -3,23 +3,21 @@
 What `SemiBase-Setup.exe` does, then the facts about the EDB PostgreSQL 17 installer and Inno
 Setup that it rests on. Each fact is a dated measurement. The EDB runs happened on GitHub's
 `windows-latest` runner (Windows Server 2025, build 26100, ANSI code page 1252) on 2026-10-19, in
-a throwaway CI job: the probe script is in commits `6f6413e`, `0b7eebd`, `e837805` and `4649439`,
-its logs in CI runs 39268177188, 39269744425, 39270947396 and 39273096839. Every install ran on a
-machine whose earlier PostgreSQL had been uninstalled, its uninstaller process waited for, and
-its service, `C:\PostgreSQL`, `C:\Program Files\PostgreSQL` and `HKLM\SOFTWARE\PostgreSQL`
-deleted.
+a throwaway CI job whose logs are CI runs 39268177188, 39269744425, 39270947396 and 39273096839.
+Every install ran on a machine whose earlier PostgreSQL had been uninstalled, its uninstaller
+process waited for, and its service, `C:\PostgreSQL`, `C:\Program Files\PostgreSQL` and
+`HKLM\SOFTWARE\PostgreSQL` deleted.
 
 ## The setup
 
 `Installer/SemiBase.iss` compiles to `SemiBase-Setup.exe` with `iscc /DAppVersion=<version>
 /DFileVersion=<digits and dots> /DSemibaseExe=<path>`, around the EDB installer that
 `Installer/fetch-postgresql.sh` puts into `Installer/payload/`. The main channel is headless:
-`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, optionally `/LANG=russian` or `/LANG=english`. With no
-password given, every role gets its conventional password ([passwords](#passwords)); a caller
-overrides the superuser and writer ones through `SEMIBASE_SUPER_PASSWORD` and
-`SEMIBASE_WRITER_PASSWORD` in Setup's environment; the writer one applies only when `semibase`
-creates `scada_writer`. Setup takes no password parameter: Inno's
-parser would cut one silently ([Inno Setup](#inno-setup)). Exit code 0 means provisioned.
+`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`, optionally `/LANG=russian` or `/LANG=english`. A
+caller passes passwords through `SEMIBASE_SUPER_PASSWORD` and `SEMIBASE_WRITER_PASSWORD` in
+Setup's environment, else the conventions apply ([passwords](#passwords)). Setup takes no
+password parameter: Inno's parser would cut one silently ([Inno Setup](#inno-setup)). Exit code
+0 means provisioned.
 
 All of the work runs in `PrepareToInstall`, before Inno copies a file. A string it returns ends
 Setup with exit code 7 under `/VERYSILENT`; a failure raised later comes after the uninstaller is
@@ -32,14 +30,17 @@ points at nothing the machine does not hold ([installer-text.md](./installer-tex
 on screen: the refusal function returns `Refuse(Text, Detail)`, which keeps the detail in the
 `RefusalDetail` global, and `LogRefusal` writes it on the line before the refusal, both into one
 file whose path it computes once (each `LogPath` call stamps the current second). A detail is an
-English `[CustomMessages]` entry without a language prefix, `<Message>Detail`, or
-`NoRegistrationDetail`, which `PortBusy` and `DataDirectoryNotEmpty` share, so it reads the
-same under either language; a refusal with nothing technical to add writes its line alone.
+English `[CustomMessages]` entry without a language prefix, which Inno applies to every language
+(Inno Setup 6.7.3 help, "[CustomMessages] section"): `<Message>Detail`, the four `Incomplete*`
+fragments that fill `IncompleteInstallationDetail`, or `NoRegistrationDetail`, which
+`DataDirectoryNotEmpty` uses alone and `PortBusy` follows with `PortOwnerDetail` or
+`PortNoOwnerDetail`. So it reads the same under either language; a refusal with nothing technical
+to add writes its line alone.
 `PrepareToInstall` clears `RefusalDetail` before its chain and in its `except` branch, so a
 detail left by the wizard pages or by an earlier step never precedes `SetupError`.
 
 Inno shows a `PrepareToInstall` refusal on the Preparing page in `PreparingLabel`, static text
-that cannot be selected. `CurPageChanged(wpPreparing)` moves it into `PreparingMemo`, the page's
+that cannot be selected. `CurPageChanged(wpPreparing)` moves it (`ShowRefusalAsText`) into `PreparingMemo`, the page's
 read-only memo that Inno otherwise fills only with the applications that hold files in use, so a
 path in the refusal can be copied (rule 26). Inno enters the page twice: once before
 `PrepareToInstall` with the label hidden, and once after a refusal with the label holding the
@@ -57,40 +58,69 @@ In order, `PrepareToInstall`:
 1. copies the carried `semibase.exe` to `C:\Program Files\SemiBase\semibase.exe` (`{app}`), the
    recovery tool for the manual run, so a machine where Setup never succeeded has one, offline
    included;
-2. requires a printable ASCII `scada_writer` password, an empty one included: the page field on a
-   fresh install, else the caller's `SEMIBASE_WRITER_PASSWORD` (`WriterPasswordValue`);
-3. decides the engine state, applying the [superuser password rules](#password-characters) on the
+2. applies the `scada_writer` password rule ([passwords](#passwords)) to the page field on a
+   fresh install, else to the caller's `SEMIBASE_WRITER_PASSWORD` (`WriterPasswordValue`);
+3. refuses while a PostgreSQL uninstaller runs (`UninstallerRunning`), before any registry read:
+   a process whose `Win32_Process.Name` matches `_uninstall*.000`, the copy the
+   [uninstaller](#the-uninstaller) leaves running, or `uninstall-postgresql*`, the uninstaller
+   itself. The detail line names the first match as `<name> (pid <n>)`. The probe is PowerShell
+   through `ExecAndCaptureOutput` (exit 0 found, 2 none); any other outcome, a failed start or
+   an exception included, writes `UninstallerProbeFailedDetail` to the setup log and Setup goes
+   on as if none runs, since a missing check costs less than a machine the setup never
+   provisions. Measured 2026-10-27 on the development machine with the probe text the `.iss`
+   builds: a copy of `PING.EXE` started as `_uninstall4242.000` printed
+   `_uninstall4242.000 (pid <n>)` and exit 0, and with none running the probe exited 2;
+4. decides the engine state, applying the [superuser password rules](#password-characters) on the
    fresh row only to the given password or the convention, and installs EDB there;
-4. runs `sc.exe config <service> start= auto` and `sc.exe start`; a non-zero exit of either
+5. runs `sc.exe config <service> start= auto` and `sc.exe start`; a non-zero exit of either
    refuses (`ServiceConfigFailed`, `ServiceStartFailed`) with its `SysErrorMessage` text on
    screen and the code in the detail line, since `sc.exe` exits with a Win32 error code, except
    1056 (already running) from `sc.exe start`. `ServiceConfigFailed` names
    `<Base Directory>\uninstall-postgresql.exe` and `ServiceStartFailed` the folder
    `<Data Directory>\log`, both from the `TEngine` that `RegisteredEngineRefusal` filled;
-5. runs `semibase.exe site --port <Port> --superuser <Super User> --expected-major 17
+6. runs `semibase.exe site --port <Port> --superuser <Super User> --expected-major 17
    --restart-service <Service ID>` through `ExecAndLogOutput`, whose callback appends each output
    line, stdout and stderr in write order, to `site-<yyyymmdd-hhnnss>.log` beside the setup log
    as it arrives. The file appears with the first line, so a Setup killed during a long service
-   stop still leaves a log. A non-zero exit refuses: `SitePasswordWrong` when a line of the
-   output carried `SQLSTATE 28P01`, with the log path in its detail line, else `SiteFailed`,
-   which names the log on screen, since the reader acts on its last lines, and puts the exit
-   code in the detail line. `semibase` puts `password
-   authentication failed for <role> (SQLSTATE 28P01)` in English before the server's own text
-   (`connectFailure` in `internal/provision/provision.go`), so the code is there whatever the
-   server's `lc_messages`. A `semibase.exe` that does not start refuses with the system error
-   text.
+   stop still leaves a log. A non-zero exit refuses, the first match winning:
+   - `SitePasswordWrong` when a line of the output carried `SQLSTATE 28P01`, with the log path
+     in its detail line. `semibase` puts `password authentication failed for <role> (SQLSTATE
+     28P01)` in English before the server's own text (`connectFailure` in
+     `internal/provision/provision.go`), so the code is there whatever the server's
+     `lc_messages`;
+   - `SitePortWrong` when a line carried `connectex` before any `[ OK ]` line. `semibase`
+     prints its first `[ OK ]` only after its first connection succeeds (`confirmServes` in
+     `internal/provision/service_windows.go`), so such a line is the TCP failure of that first
+     connection to the registered `Port`; one after an `[ OK ]`, a server that died during the
+     restart, gets `SiteFailed`. `connectex` is the name of the Windows call in Go's dial error,
+     the same on every Windows, while the text after it ("No connection could be made because
+     the target machine actively refused it.") is in the Windows display language. The screen
+     names the port and `<Data Directory>\postgresql.conf`; the detail line names
+     `HKLM\SOFTWARE\PostgreSQL\Services\<Service ID>`, the key that holds `Port`, the port and
+     the site log. In the CI case with `Port` 15433 the refusal takes about 1.3 s;
+   - `SiteFailed` otherwise, which names the log on screen, since the reader acts on its last
+     lines, and puts the exit code in the detail line.
 
-The port probe of the fresh row is PowerShell through `Exec`, since Pascal Script has no sockets:
-`[Net.Sockets.TcpClient]::new('localhost', <port>)`, the name `semibase` dials too, so a server
-on `::1` or on `127.0.0.1` counts. Exit 0 means accepted and 2 refused, the constructor's
-`SocketException`; any other code, a constructor Constrained Language Mode forbids among them
-(exit 3, measured), refuses. Setup does not wait for the port after `sc.exe start`: with
+   A `semibase.exe` that does not start refuses with the system error text.
+
+The port probe of the fresh row is PowerShell through `ExecAndCaptureOutput`, since Pascal
+Script has no sockets and no process list: `[Net.Sockets.TcpClient]::new('localhost', <port>)`,
+the name `semibase` dials too, so a server on `::1` or on `127.0.0.1` counts. Exit 0 means
+accepted and 2 refused, the constructor's `SocketException`; any other code, a constructor
+Constrained Language Mode forbids among them (exit 3, measured), refuses. On an accepted port the
+probe prints each distinct `OwningProcess` of `Get-NetTCPConnection -LocalPort <port> -State
+Listen` as `<name> (pid <n>)`, and `PortBusy`'s detail line names them (`PortOwnerDetail`), or
+says that none was found (`PortNoOwnerDetail`); a failed lookup prints nothing and does not change
+the exit code. Measured 2026-10-27 on the development machine with the probe text the `.iss`
+builds, on a scratch port: a `TcpListener` on `127.0.0.1` in `pwsh` made it print
+`pwsh (pid <n>)` with that shell's `$PID` and exit 0, and the closed port exit 2. Setup does not
+wait for the port after `sc.exe start`: with
 `--restart-service`, `site` waits for the service's Running state before its first connection,
 and `pg_ctl runservice -w` reports Running only once the postmaster accepts sessions, crash
 recovery included (`pgwin32_ServiceMain` in `src/bin/pg_ctl/pg_ctl.c`, REL_17_STABLE). A wrong
-registered `Port` is found by `site`, which cannot connect, and a wrong superuser password on a
-registered 17 is found by `site` too, after the service was set to Automatic and started: only a
-running server can check it.
+registered `Port` is found by `site`, which cannot connect (`SitePortWrong`), and a wrong
+superuser password on a registered 17 is found by `site` too, after the service was set to
+Automatic and started: only a running server can check it.
 
 `ExecAndLogOutput` starts `semibase.exe` with no shell between, so a `%` in the registered `Super
 User` or `Service ID` reaches it verbatim ([measured](#inno-setup)). Both values go between `"`;
@@ -102,8 +132,8 @@ matching row wins:
 | State | Action |
 | --- | --- |
 | `Installations\postgresql-x64-17` with a `Version` starting `17.`, a `Super User`, `<Data Directory>\PG_VERSION`, and a `Service ID` with a `Services\<Service ID>\Port` | Use it, even when other majors are registered too |
-| `Installations\postgresql-x64-17` with another `Version`, no `Super User` or no `PG_VERSION` | Refuse, naming `<Base Directory>\uninstall-postgresql.exe` (`IncompleteInstallation`), or Programs and Features when the key has no `Base Directory` (`IncompleteInstallationNoFolder`); the detail line names the key and what it lacks: a [failed install](#a-failed-install) leaves exactly this |
-| `Installations\postgresql-x64-17` with an empty `Service ID` or no `Services\<Service ID>\Port` | Refuse (`OrphanedRegistration`), naming `<Base Directory>\uninstall-postgresql.exe`, with both keys in the detail line, so `site` never gets `--restart-service ""`. A `Service ID` naming no service passes the table and is refused by `sc.exe config`; a wrong `Port` is refused by `site` |
+| `Installations\postgresql-x64-17` with another `Version`, no `Super User`, no `Data Directory` or no `PG_VERSION` | Refuse (`IncompleteInstallation`); the detail line names the key and what it lacks: a [failed install](#a-failed-install) leaves exactly this |
+| `Installations\postgresql-x64-17` with an empty `Service ID` or no `Services\<Service ID>\Port` | Refuse (`OrphanedRegistration`), naming `<Base Directory>\uninstall-postgresql.exe`, with both keys in the detail line, so `site` never gets `--restart-service ""`. A `Service ID` naming no service passes the table and is refused by `sc.exe config`; a wrong `Port` is refused after `site` (`SitePortWrong`) |
 | Another major registered, 17 not | Refuse; the detail line names each key under `Installations` by its bare name, `postgresql-x64-14` |
 | Nothing registered, a superuser password that breaks the [password rules](#password-characters) | Refuse |
 | Nothing registered, `localhost:5432` accepts TCP | Refuse: a server the registry does not know is not the setup's to provision |
@@ -126,16 +156,12 @@ which sends the reader to Programs and Features instead.
 
 ### Passwords
 
-Every role's conventional password is its name: `postgres`, `scada_writer`, `semiplot`. The
-server listens on `localhost` only and every client runs on the installation machine, so the
-conventions are a formality, and a site that needs another password changes it explicitly.
-`semibase` owns the conventions (`resolvePasswords` in `cmd/semibase/main.go`, the creation
-password `ensureRole` takes in `internal/provision/create.go`,
-[provisioning.md](./provisioning.md#passwords)), so Setup, a manual recovery run and the suite
-installer behave alike. Setup repeats one of them: `#define ConventionalSuperPassword "postgres"`
-fills the EDB option file of a fresh install when no superuser password is given, because EDB
-runs before `semibase`. The clean-install CI case, which logs in as `postgres`/`postgres`, keeps
-the two values equal.
+The conventions, a role's password is its name, belong to `semibase`
+([provisioning.md](./provisioning.md#passwords)), so Setup and a manual recovery run behave
+alike. Setup repeats one of them: `#define ConventionalSuperPassword "postgres"` fills the EDB
+option file of a fresh install when no superuser password is given, because EDB runs before
+`semibase`. The clean-install CI case, which logs in as `postgres`/`postgres`, keeps the two
+values equal.
 
 Passwords stay off every child command line the setup controls. `[Code]` sets
 `SEMIBASE_SUPER_PASSWORD` and `SEMIBASE_WRITER_PASSWORD` to the page values in Setup's own
@@ -144,19 +170,18 @@ registered 17 the page has no writer field, and `WriterPasswordValue` returns th
 `SEMIBASE_WRITER_PASSWORD`, so that variable still reaches `semibase`, which applies it only to a
 `scada_writer` it creates. Both are set even when empty, so a value the caller's environment holds
 does not reach `semibase` after the user cleared a field; `semibase` reads an empty value as unset
-and applies its convention. Setup sets no `SEMIBASE_PLOT_PASSWORD`, so `semibase` resets `semiplot`
-to `semiplot` on every run, the value SemiPlot's connection file relies on, unless the caller's
-environment holds `SEMIBASE_PLOT_PASSWORD`, which nothing supported sets. The caller's variables are
-in Setup's environment from the start, and EDB, `initcluster.ps1` and `initdb` inherit them; the CI
-fresh install runs that channel, and its log search covers the EDB logs. EDB reads its password from
-`{tmp}\postgresql-options.txt`, deleted as soon as the EDB process returns. What stays exposed:
-Setup's environment block, readable by another administrator during the run, and EDB's
-`initcluster.ps1` command line and pwfile ([where the superuser password
-goes](#where-the-superuser-password-goes)).
+and applies its convention. `SEMIBASE_PLOT_PASSWORD` is set to the empty value on every run, so
+`semibase` resets `semiplot` to `semiplot`, the value the Ready and Finished pages name and
+SemiPlot's connection file relies on, whatever the caller's environment holds. The caller's
+variables are in Setup's environment from the start, and EDB, `initcluster.ps1` and `initdb`
+inherit them. EDB reads its password from `{tmp}\postgresql-options.txt`, deleted as soon as the
+EDB process returns. What stays exposed: Setup's environment block, readable by another
+administrator during the run, and EDB's `initcluster.ps1` command line and pwfile ([where the
+superuser password goes](#where-the-superuser-password-goes)).
 
-The `scada_writer` password must be printable ASCII on every run: the SCADA logs in with it from
-its own project settings, whose encoding of anything else nobody has measured. The superuser
-rules exist for EDB alone and hold on the fresh row only ([password
+The `scada_writer` password must be printable ASCII on every run, an empty one included: the SCADA
+logs in with it from its own project settings, whose encoding of anything else nobody has
+measured. The superuser rules exist for EDB alone and hold on the fresh row only ([password
 characters](#password-characters)); on a registered 17 the password reaches `semibase` byte for
 byte through the variable. The conventional `postgres` passes those rules.
 
@@ -164,8 +189,9 @@ byte through the variable. The conventional `postgres` passes those rules.
 
 Without `/SILENT` or `/VERYSILENT`, a password page comes before the Ready page, a custom page
 (`CreateCustomPage`) where each field has a bold prompt, its own wrapped explanation and a plain
-edit: the passwords are conventions, so the page shows them unmasked. `InitializeWizard` builds
-it from `EngineIsFresh`, true when no `Installations\postgresql-x64-17` key exists:
+`TNewEdit` (`AddPasswordField`): the passwords are conventions, so the page shows them unmasked.
+`InitializeWizard` builds it in every mode from `EngineIsFresh`, true when no
+`Installations\postgresql-x64-17` key exists:
 
 | Engine | Page description | Superuser field explanation | Writer field |
 | --- | --- | --- | --- |
@@ -176,19 +202,24 @@ The superuser field is prefilled from `SEMIBASE_SUPER_PASSWORD`, else `postgres`
 means the convention. The texts say "database user" for every role, the Simple-Scada manual's term
 (`postgresql.html`, `db-access-rights.html`), and "superuser" appears in no text. Neither field is
 required. The Next check only lets the user correct a field, and `PrepareToInstall` stays the
-enforcement. The three superuser rules share one message, `SuperPasswordRules`, so a password
-that breaks two of them bounces once.
+enforcement. The superuser rules share one message, `SuperPasswordRules`, so a password that
+breaks two of them bounces once.
 
 `RegistryRefusal` is the part of the engine table the registry alone decides, with no probe and no
 connection: `RegisteredEngineRefusal` on a registered 17, `OtherMajorRefusal` on a fresh one.
 `ShouldSkipPage` skips the password page when it returns a refusal, since no password changes
 the outcome, and `UpdateReadyMemo` then shows only `ReadyRefusal`: "Setup cannot continue.", the
-same text `PrepareToInstall` will log, and "Click Cancel.". The page writes that refusal and its
-detail to the setup log once per interactive run (the `ReadyRefusalLogged` global), because Inno
-runs `UpdateReadyMemo` on every visit to the page and a user who clicks Cancel as told never
-reaches `PrepareToInstall`; a user who clicks Install instead logs it a second time. Under
-`/SILENT` and `/VERYSILENT` Inno runs `UpdateReadyMemo` too, and the page logs nothing there,
-since `PrepareToInstall` always follows. `ReadyMemo` is read-only, so a path in the refusal can be
+same text `PrepareToInstall` will log, and "Click Cancel.". Once per interactive run (the
+`ReadyRefusalLogged` global) the page copies `semibase.exe` into `{app}` through
+`KeepToolRefusal`, then writes that refusal and its detail to the setup log, because Inno runs
+`UpdateReadyMemo` on every visit to the page and a user who clicks Cancel as told never reaches
+`PrepareToInstall`; a user who clicks Install instead copies and logs a second time. A failed copy,
+or an exception from it, writes its own line before the refusal, which stays the last line and the
+page text. Under `/SILENT` and `/VERYSILENT` Inno runs `UpdateReadyMemo` too, and the page neither
+copies nor logs there, since `PrepareToInstall` always follows. The page runs no probe, so a
+running PostgreSQL uninstaller is refused only by `PrepareToInstall`; while it runs, the 17 key
+may be half removed, and the page then shows `IncompleteInstallation` or `OrphanedRegistration`
+before `PrepareToInstall` refuses with `UninstallerRunning`. `ReadyMemo` is read-only, so a path in the refusal can be
 copied. Otherwise the Ready page shows what the run will do, from the registry reads alone: for a
 fresh install the folder, data folder, service and port of the PostgreSQL 17 it installs, the
 port line `ReadyPortNew` adding that 5432 is the PostgreSQL default; for a registered 17 its
@@ -199,8 +230,8 @@ says they differ on the first configuration, and tells the reader to stop the SC
 names the logs folder and the database and users `semibase site` creates, with
 `WriterPasswordValue` or its convention as the `scada_writer` password (`ReadyCreateNew`,
 `ReadyCreateExisting`, the latter adding that an existing user keeps its password and that the
-`semiplot` password is reset). A refusal only `PrepareToInstall` finds (busy port, non-empty data
-directory, wrong password) does not show here.
+`semiplot` password is reset). A refusal only `PrepareToInstall` finds (a running uninstaller, busy
+port, non-empty data directory, wrong port, wrong password) does not show here.
 
 After a provisioned run, `CurPageChanged(wpFinished)` replaces the stock `FinishedLabel` with
 what the SCADA project and SemiPlot connect with, one value per line (`localhost`, the `Port` of
@@ -222,13 +253,12 @@ untouched` in the site log, and `scada_writer` still logged in with `writer-new`
 
 There is one folder, `{app}`, which is `{autopf}\SemiBase`, `C:\Program Files\SemiBase`;
 `DisableDirPage=yes`, so nobody picks another. It holds `semibase.exe`, `SemiBase.ico`,
-`unins000.exe` and `Logs\`. `semibase.exe` has one `[Files]` entry into `{app}`, and
+`unins000.exe`, `unins000.dat` and `Logs\`. `semibase.exe` has one `[Files]` entry into `{app}`, and
 `ExtractTemporaryFile` takes it to `{tmp}` for the run and for the copy `PrepareToInstall` makes
-into `{app}` before any check; the `[Files]` entry later replaces that copy and registers it for
+into `{app}` before any check, which the Ready page also makes when it shows a refusal; the `[Files]` entry later replaces that copy and registers it for
 the uninstaller. The uninstaller removes `semibase.exe` and the icon; the engine, its data, the
-roles and `Logs\` stay, since no `[Dirs]` or `[Files]` entry names the logs. The `installer` job
-in `.github/workflows/ci.yml` runs the setup end to end on `windows-latest`, one case per
-reachable row of the engine table.
+roles and `Logs\` stay, since no `[Dirs]` or `[Files]` entry names the logs. The `installer` CI
+job runs the setup end to end ([verification.md](./verification.md#the-installer-job)).
 
 `Installer/SemiBase.ico` (16, 24, 32, 48, 64, 128 and 256 px) is generated once from the
 repository's `logo.png` with Pillow 12.2.0 by `python Installer/make-icon.py`: the pictogram
@@ -238,16 +268,13 @@ without its caption, the white background made transparent, the same shape as Se
 Every text of the setup's own, the refusals, the page texts, the Ready lines and the Finished
 text, is a `[CustomMessages]` entry with a `russian.` and an `english.` form, filled through
 `FmtMessage(CustomMessage('<name>'), [...])` at each call site ([measured](#inno-setup)); the
-two uninstaller texts are `[Messages]` entries in the same two forms. The texts follow the rules
-in [installer-text.md](./installer-text.md). The refusal details and the four `Incomplete*`
-fragments that fill `IncompleteInstallationDetail` reach the log only, so each is one entry
-without a language prefix, which Inno applies to every language (Inno Setup 6.7.3 help,
-"[CustomMessages] section"). The
+two uninstaller texts are `[Messages]` entries in the same two forms. The rules those texts follow:
+[installer-text.md](./installer-text.md). The
 language is the one picked in Setup's first window, or `/LANG=` under `/VERYSILENT`. Without
 `/LANG=`, Inno's documented default (`LanguageDetectionMethod=uilanguage`, not measured here)
 takes the Windows UI language and falls back to the first `[Languages]` entry, `russian`. The
 setup log carries a refusal in that language and its detail line in English; `semibase`'s own
-output in the site log is English always. The CI cases pass `/LANG=english`, so their assertions read the English entries.
+output in the site log is English always.
 
 The logs and the recovery copy sit in Program Files, not in the site's
 `C:\DISTR\<kind>\<product>` folders that SemiPlot uses, because elevated Setup writes there on
@@ -276,7 +303,9 @@ path then resolves through. So a `C:\DISTR\Logs\SemiBase` DACL holds only with `
 file as `Installer/payload/postgresql-17-windows-x64.exe`, the name `#define PgInstaller` in the
 `.iss` uses, so a pin bump leaves the `.iss` unchanged. It edits the script's constants and
 re-measures this table. A file already there that does not match the pin fails the script, so a
-stale payload never reaches `iscc` through a run that fetched first. CI and release cache `Installer/payload/` on the script's hash: an edit to the script,
+stale payload never reaches `iscc` through a run that fetched first. CI and release build the
+setup through one composite action, `.github/actions/build-setup`, which caches
+`Installer/payload/` on the script's hash: an edit to the script,
 a comment included, costs one download of 413 MB (about 25 s), and a cached run never asks the
 URL, so a retired URL surfaces on the first uncached run, not on the pull request that follows it.
 
@@ -427,8 +456,11 @@ complete one.
 `<prefix>\uninstall-postgresql.exe --mode unattended --unattendedmodeui none` exits 0 after 6 to
 9 s, before it has done anything. It starts a copy of itself,
 `%TEMP%\_uninstall<8 hex>\_uninstall<pid>.000`, which runs another 14 to 70 s and ends with
-`Exiting with code 0` in `%TEMP%\uninstall-postgresql.log`. A caller waits for that process.
-Afterwards:
+`Exiting with code 0` in `%TEMP%\uninstall-postgresql.log`. A caller waits for that process,
+and Setup refuses while it runs (`UninstallerRunning`, step 3 of
+[the setup](#the-setup)); a refusing Setup takes about 1 s in CI, so a run started once the copy
+is listed falls inside the copy's 14 s minimum
+([verification.md](./verification.md#the-installer-job)). Afterwards:
 
 - the service is gone, a running one included;
 - `<prefix>` holds nothing but the data directory, when the data directory is inside it;
@@ -470,7 +502,7 @@ Measured 2026-10-19 the same way, with a scratch setup that extracts two text fi
 - It extracts an ordinary `DestDir: "{app}"` entry as well as a `dontcopy` one. So the setup
   extracts `semibase.exe` by that name, whatever file `/DSemibaseExe` names.
 
-Measured 2026-10-19 the same way, with a copy of the setup that has the password page and a
+Measured 2026-10-19 the same way, with a copy of the setup that has a password page and a
 refusal right after the password checks:
 
 - Under `/SILENT` and `/VERYSILENT` Setup calls `NextButtonClick` for the welcome page, the
@@ -478,8 +510,12 @@ refusal right after the password checks:
   returns `True` under `WizardSilent`; a `False` would end Setup without exit code 7 and without
   a setup log.
 - A value written to `TInputQueryWizardPage.Values` and read back is unchanged, a tab, CR LF and
-  Cyrillic included. So `PrepareToInstall` reads the passwords from the page in every mode, and
-  under `/VERYSILENT` it sees exactly the `SEMIBASE_*` value.
+  Cyrillic included. The setup's page uses `TNewEdit` fields instead, whose round trip is not
+  measured. `PrepareToInstall` reads the superuser password from its field in every mode, and the
+  writer password from its field where the page has one, a fresh install; on a registered 17
+  `WriterPasswordValue` reads `SEMIBASE_WRITER_PASSWORD` directly. Under `/VERYSILENT` a field
+  holds what `InitializeWizard` put there, the `SEMIBASE_*` value or, when the variable is empty,
+  the convention (`SuperPasswordOrConvention`, `WriterPasswordOrConvention`).
 
 Measured 2026-10-19 the same way, ISCC 6.7.3, with a copy of the setup whose state checks run
 against a registry key that does not exist and that refuses before the EDB install:
@@ -526,5 +562,9 @@ Measured 2026-10-27 the same way, with a copy whose `InitializeSetup` writes eac
 `FmtMessage` to a file and returns `False`, and whose `PrepareToInstall` is renamed out of reach:
 under `/LANG=russian` and `/LANG=english` every refusal, the page, Ready and Finished texts and
 `SetupMessage(msgConfirmUninstall)` and `msgUninstalledAll` come out in their language, with the
-`{#PgMajor}` that ISPP expands inside `[Messages]` and `[CustomMessages]` as `17`. The wizard pages
-themselves, the Finished label's height included, were not looked at.
+`{#PgMajor}` that ISPP expands inside `[Messages]` and `[CustomMessages]` as `17`.
+
+Not measured: the wizard pages as drawn, among them the bold superuser label and the 15-line
+Finished text at 150 % DPI and the Preparing memo with the longest refusal at 150 % DPI; the
+English SCADA menu path against an English Simple-Scada; and «Программы и компоненты» as the target
+Windows writes it ([installer-text.md](./installer-text.md), rule 18).

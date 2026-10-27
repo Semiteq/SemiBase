@@ -16,17 +16,12 @@ configuration, and no setting depends on inspecting the host.
 survive a reinstall of `postgresql.conf`, and applies them with `pg_reload_conf()`. Every setting
 below except `shared_buffers` and `listen_addresses` is reload-context or weaker and takes effect
 immediately; those two take effect at the next service restart or reboot. The tuning phase prints
-the server's own pending-restart list (`pg_settings.pending_restart`), and the tail of the run
-reads it again as its last statement, so a missed restart is the last thing the run says.
+the server's own pending-restart list (`pg_settings.pending_restart`), and the run reads it again
+last ([provisioning.md](./provisioning.md#what-the-tail-checks-prove), check 9).
 `site --restart-service <name>` restarts that Windows service inside the tuning phase when the
-list is not empty, and the tail then reads it empty
-([provisioning.md](./provisioning.md#the-service-restart)). `bench` reads it
-too — it tunes nothing, but it runs against existing servers, and one that a `site` run tuned can
-still be waiting for its restart.
+list is not empty ([provisioning.md](./provisioning.md#the-service-restart)).
 
-`semibase bench` writes none of them: the memory values are constants sized to the installation
-machine's hardware floor and mean nothing to a throwaway container, and a loopback-only
-`listen_addresses` would shut out the clients that reach a bench through a published port.
+`semibase bench` writes none of them ([provisioning.md](./provisioning.md#commands) says why).
 
 ## Server settings
 
@@ -61,7 +56,8 @@ SCADA's writes:
 
 ## Network
 
-The service runs under a dedicated Windows account and listens on the loopback interface only.
+The server listens on the loopback interface only. The service the setup installs runs as
+`NT AUTHORITY\NetworkService` ([installer.md](./installer.md#what-a-successful-install-leaves)).
 Every client of the instance runs on the same Windows machine: the SCADA, the viewers and
 `semibase` itself. Nothing on the operator network may reach the server.
 
