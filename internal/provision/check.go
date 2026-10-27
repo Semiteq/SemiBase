@@ -71,10 +71,7 @@ var forbiddenWriteOperations = []string{"INSERT", "UPDATE", "DELETE"}
 
 const scadaMessages = "public.messages" // the SCADA's alone, so it is asserted only where it already exists
 
-const (
-	insufficientPrivilege             = "42501"
-	integrityConstraintViolationClass = "23"
-)
+const integrityConstraintViolationClass = "23"
 
 func writeProbeFailure(probe plotWriteProbe, cause error) error {
 	return fmt.Errorf("%s cannot %s %s: %w. Repair with GRANT %s ON %s TO %s, then re-run this command",
@@ -111,11 +108,6 @@ func refusalVerdict(probe plotWriteProbe, probeErr error) error {
 	}
 }
 
-func hasSQLState(err error, code string) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == code
-}
-
 func excessPrivilegeFailure(relation, operation string) error {
 	return fmt.Errorf("%s holds %s on %s and must not write it. %s",
 		PlotRole, operation, relation, revokeRepair(operation, relation))
@@ -130,7 +122,8 @@ func createInPublicFailure() error {
 }
 
 // the cheapest statement that still needs SELECT on public.trends and USAGE on the schema it
-// lives in, whatever the table's size
+// lives in, whatever the table's size. .github/scripts/check-server-log.sh greps the server log
+// for its text.
 const plotProbe = "SELECT count(*) FROM (SELECT 1 FROM " + archiveTable + " LIMIT 1) probe"
 
 // docs/architecture/provisioning.md#what-the-tail-checks-prove
@@ -140,7 +133,7 @@ func (o Options) check(ctx context.Context) error {
 	}
 	step("Phase check: the %s access chain", PlotRole)
 
-	archive, err := o.connect(ctx, o.Database, o.SuperUser, o.SuperPassword)
+	archive, err := o.connectSuperuser(ctx, o.Database)
 	if err != nil {
 		return err
 	}
@@ -405,7 +398,7 @@ func (o Options) checkPlotLogin(ctx context.Context) error {
 		return nil
 	}
 
-	plot, err := o.connect(ctx, o.Database, PlotRole, o.PlotPassword)
+	plot, err := o.connect(ctx, o.Database, PlotRole, o.PlotPassword, sessionSettings())
 	if err != nil {
 		return err
 	}
