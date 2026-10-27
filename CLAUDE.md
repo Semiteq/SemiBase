@@ -2,9 +2,11 @@
 
 SemiBase is the deployable PostgreSQL service for the semiconductor-tools installation. It
 provisions and configures the instance that hosts the Simple-Scada 2 archive: the SCADA writes
-`trends`/`messages` into it, SemiPlot and future tools read from it. The deliverable is one
-CLI binary, `semibase.exe`, a container image carrying its Linux build, plus the instance's
-architecture docs.
+`trends`/`messages` into it, SemiPlot and future tools read from it. The deliverables are a
+Windows setup, `SemiBase-Setup.exe` (Inno Setup, `Installer/`), which installs the vendored EDB
+PostgreSQL 17 when none is registered and runs `semibase site`; the CLI binary `semibase.exe` it
+carries; a container image carrying the binary's Linux build; and the instance's architecture
+docs.
 Deployment target: Windows. Language: Go (module `github.com/Semiteq/SemiBase`), driver
 `pgx/v5`, the five `sql/semiplot_*.sql` files and `sql/trends.sql` embedded via `go:embed`. Entry point:
 `cmd/semibase`. The module is pure Go (`pgx/v5`, plus `golang.org/x/sys` for the Windows service
@@ -21,20 +23,46 @@ go build -ldflags "-X main.revision=<rev>" -o semibase.exe ./cmd/semibase   # re
 
 Without ldflags, `version` falls back to the VCS revision recorded by the Go toolchain.
 
+The setup needs Inno Setup 6.7.3 (`winget install --id JRSoftware.InnoSetup --exact --version
+6.7.3`, the version its command-line and silent-mode behaviour was measured on) and the pinned EDB
+installer, which the fetch script downloads and checks against its SHA256:
+
+```powershell
+& "$env:ProgramFiles\Git\bin\bash.exe" Installer/fetch-postgresql.sh   # a bare bash may be WSL's
+iscc /DAppVersion=0.0.0-dev /DFileVersion=0.0.0 "/DSemibaseExe=$PWD\semibase.exe" Installer\SemiBase.iss
+```
+
+The output is `Installer/Output/SemiBase-Setup.exe`. Under Git Bash, prefix `iscc` with
+`MSYS2_ARG_CONV_EXCL='*'`, or MSYS rewrites the `/D` arguments as paths. The fetch script holds
+the EDB pin the build uses and saves it as `Installer/payload/postgresql-17-windows-x64.exe`, the
+name `#define PgInstaller` uses, so a pin bump leaves the `.iss` alone: it edits the script's
+constants and re-measures the table in `docs/architecture/installer.md#the-pinned-payload`. CI
+and release build the setup through one composite action, `.github/actions/build-setup`.
+
 ## Release
 
-`.github/workflows/release.yml` fires on a `v*` tag push. One `ubuntu-latest` job
-cross-compiles `windows/amd64` and `linux/amd64` with `CGO_ENABLED=0` — the module is pure
-Go, so native runners are CI's job, not the release's — and attaches
-`semibase_<version>_<goos>_amd64[.exe]` to the GitHub release — no extension on the Linux
-artifact, an ELF is executable by its mode bit. `-X main.revision=<tag>` is embedded, so
-`semibase version` prints the tag.
+`.github/workflows/release.yml` fires on a `v*` tag push and runs three jobs under one
+workflow-level concurrency group. `build` (`ubuntu-latest`) tests, reads the tag and
+cross-compiles `windows/amd64` and `linux/amd64` with `CGO_ENABLED=0` — the module is pure Go,
+so native runners are CI's job, not the release's — into `semibase_<version>_<goos>_amd64[.exe]`;
+no extension on the Linux artifact, an ELF is executable by its mode bit. `-X
+main.revision=<tag>` is embedded, so `semibase version` prints the tag. `installer`
+(`windows-latest`) fetches the EDB payload, installs Inno Setup through `winget` and compiles
+`SemiBase-Setup.exe` around the Windows binary (`/DAppVersion=<version>`, `/DFileVersion=` the
+part before the first `-`), then smoke-runs it once against the runner's own 17 with
+`SEMIBASE_SUPER_PASSWORD=wrong`: it must refuse with exit 7 as a wrong password, naming the
+site log, and the `semibase.exe` it copied to `C:\Program Files\SemiBase` must print the tag.
+`release` (`ubuntu-latest`) restores the Linux binary's exec bit,
+which artifact transfer drops, and attaches two assets, the Linux binary and the setup; the
+Windows binary is not attached, the setup carries it.
 
-The same job then pushes `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` — the root
+`release` then pushes `ghcr.io/semiteq/semibase:latest` and `:vX.Y.Z` — the root
 `Dockerfile`, `FROM scratch`, a copy of the Linux artifact as the only file. The image is built
 and smoke-run before the release is created, so a bad `Dockerfile` aborts with nothing
-published, and pushed after it, since consumers track `:latest` and still download the release
-assets. "Latest" is one decision made once in the `Read the tag` step — the tag has no `-`
+published, and pushed after it: `:latest` is the publish consumers act on and the release page
+is its record, so a push that lands while the release step fails would leave `:latest` on a
+version with no release and no notes. "Latest" is one decision made once in `build`'s
+`Read the tag` step and read by `release` through job outputs — the tag has no `-`
 suffix **and** it is the newest release tag in the repository (`git tag -l --sort=-v:refname`
 over plain `vN.N.N` tags) — and both the release page's `prerelease`/`make_latest` and the
 `:latest` push read it, so they cannot disagree. A prerelease publishes its version tag alone,
@@ -79,16 +107,18 @@ golangci-lint run
 ```
 
 golangci-lint is pinned to 2.12.2 (`winget install GolangCI.golangci-lint --version 2.12.2`);
-config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build`, `go test -race`,
-and the same lint on `windows-latest` and `ubuntu-latest` for every push and pull request.
-The Windows job then runs the `Restart the runner's PostgreSQL service through site` step, the
-only test of the service restart. It requires `site --restart-service postgresql-x64-17` to
-refuse the runner's shipped Disabled service with no `ALTER SYSTEM SET` line, sets it to Manual
-and starts it with `sc.exe start`, which returns while it is Start Pending. It then requires the
-next run, started at once, to print `restarting service postgresql-x64-17`, the line tying the
-service's `-D` to the server on port 5432, and `stopped, nothing answers on <IP>:5432`, and leave
-`listen_addresses = localhost` with no setting pending, a second run not to restart the service,
-and `--restart-service no-such-service` to be refused with no `ALTER SYSTEM SET` line.
+config in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs `go build` and `go test -race`
+on `windows-latest` and `ubuntu-latest` for every push and pull request, and the lint in the
+Windows `build` job only.
+The `build` job then runs the `Restart the runner's PostgreSQL service through site` step, the
+only direct test of the service restart; the `installer` job runs it through the setup. It
+requires `site --restart-service postgresql-x64-17` to refuse the runner's shipped Disabled
+service with no `ALTER SYSTEM SET` line, sets it to Manual and starts it with `sc.exe start`,
+which returns while it is Start Pending. It then requires the next run, started at once, to print
+`restarting service postgresql-x64-17`, the line tying the service's `-D` to the server on port
+5432, and `stopped, nothing answers on <IP>:5432`, and leave `listen_addresses = localhost` with
+no setting pending, a second run not to restart the service, and
+`--restart-service no-such-service` to be refused with no `ALTER SYSTEM SET` line.
 The Linux job provisions a `postgres:17-alpine` service container by running `site` twice — the
 tuning path and the idempotency check in one step. The `Require the listen_addresses delta` step
 then requires `listen_addresses` still pending and `localhost` in `postgresql.auto.conf`
@@ -112,13 +142,47 @@ password. The 14 step starts its server with all five statement-logging paramete
 log steps run `.github/scripts/check-server-log.sh`, which requires `logging_collector = off`, so
 `docker logs` is the whole server log, requires the `semiplot` login's probe statement in it, and
 requires the passwords absent. The `listen_addresses`, the pens and the 17 log steps need `psql`
-on the runner; to run them locally, point `psql` at a container. The Windows step uses the
-runner's own `$env:PGBIN\psql.exe`.
+on the runner; to run them locally, point `psql` at a container. The `build` job's restart step
+uses the runner's own `$env:PGBIN\psql.exe`.
+
+The `installer` job (`windows-latest`) builds `semibase.exe` and the setup through
+`.github/actions/build-setup` (EDB payload cached on the fetch script's hash, Inno Setup 6.7.3);
+the Linux job shellchecks the fetch script and `.github/scripts/*.sh`. Each case step dot-sources
+`.github/scripts/installer-case.ps1`, which holds the setup's paths, the `postgresql-x64-17` key
+and service names and the `psql` and redaction helpers, runs Setup through `ProcessStartInfo` (a
+GUI exe the call operator does not wait for) with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+/LANG=english` and nothing else, so the asserted refusal texts are the English
+`[CustomMessages]`, and asserts a refusal as exit 7 with its reason last in the newest setup log
+and, where the refusal has one, its English detail on the line before.
+A case that passes a password sets its `SEMIBASE_*` variable inside its own step; the others run
+on the conventions. In order: the runner's own 17 provisions with its real password (`root`)
+and no writer password: exit 0, `role scada_writer created with its conventional password` in
+the site log, `C:\Program Files\SemiBase\semibase.exe` present, Automatic, `semiplot`/`semiplot`
+and `scada_writer`/`scada_writer` log in; the runner's PostgreSQL is uninstalled, leaving the
+empty `Installations` and `Services` keys; a fake `postgresql-x64-14` key refuses, its detail
+naming the key, without the password in the log, an incomplete 17 key without `Super User`
+refuses naming `uninstall-postgresql.exe`, and a complete 17 key with an empty `Service ID`
+refuses naming the uninstaller in its `Base Directory`, both details naming the keys; the
+superuser rules on the fresh row (non-ASCII, `"`, trailing `\`, leading `-`, leading space) and
+a non-ASCII writer password refuse; a busy port 5432 and a non-empty data directory refuse with
+no `postgresql*` service left; a clean machine with no variables installs EDB 17 (`restarting
+service`, nothing pending, `localhost`, `C`/`C`/`UTF8`, `postgres`/`postgres`,
+`scada_writer`/`scada_writer` and `semiplot`/`semiplot` log in); the same run again restarts
+nothing and `scada_writer` still logs in with `scada_writer`; a registered `Port` of 15433
+refuses with `The semibase.exe tool failed.`, the exit code in its detail and `connecting to
+localhost:15433/` in the site log; `SEMIBASE_SUPER_PASSWORD=wrong` refuses with `Wrong password
+of the PostgreSQL administrator (database user postgres).`, the site log path in its detail and
+`password authentication failed for postgres (SQLSTATE 28P01)` in the site log;
+the clean install is uninstalled and a second clean install with two generated tokens as the
+superuser and writer passwords logs in with them; neither token appears in the EDB logs in
+`%TEMP%` or in the setup and site logs in `C:\Program Files\SemiBase\Logs` (the server log is the
+Linux job's, through `check-server-log.sh`); the uninstaller removes `semibase.exe` and keeps
+PostgreSQL and the logs.
 
 Unit tests live beside the source (`cmd/semibase/*_test.go`, `internal/provision/*_test.go`),
 table-driven. There are no database-touching tests in the repository; the integration checks are
-the `semiplot` access check both commands run at the tail and the eight CI database steps above,
-against a live server.
+the `semiplot` access check both commands run at the tail, the eight CI database steps above and
+the `installer` job's cases, against a live server.
 
 ## Format
 
@@ -134,6 +198,11 @@ gofmt -w .    # run before presenting changes; gofmt is authoritative
 .\semibase.exe site --restart-service postgresql-x64-17   # also restart the service when settings wait
 .\semibase.exe bench --port 15432 --database semiplot_dev --expected-major 17
 .\semibase.exe version                    # print the build revision
+# the setup, in an elevated PowerShell, on the conventional passwords unless SEMIBASE_SUPER_PASSWORD
+# or SEMIBASE_WRITER_PASSWORD is set: exit 0 provisioned, 7 refused; add /LANG=english or
+# /LANG=russian to fix the language; logs in C:\Program Files\SemiBase\Logs
+(Start-Process .\Installer\Output\SemiBase-Setup.exe -Wait -PassThru `
+  -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART').ExitCode
 ```
 
 `site` and `bench` differ in one thing: `site` applies the `ALTER SYSTEM` server settings,
@@ -176,19 +245,29 @@ this release and is a floor: a viewer refuses a database below the version it ne
 above. Until the first installation, a schema change, a rename included, edits the `CREATE TABLE`
 alone and keeps `1` (`docs/architecture/provisioning.md#the-schema-version-is-a-floor`).
 
-Passwords come from flags or env (flag > env), never from a file: `SEMIBASE_SUPER_PASSWORD`,
-`SEMIBASE_WRITER_PASSWORD`, `SEMIBASE_PLOT_PASSWORD`. Every superuser connection turns off the
+Passwords come from a flag, then env, then the convention that a role's password is its name,
+never from a file: `SEMIBASE_SUPER_PASSWORD` (else `postgres`), `SEMIBASE_WRITER_PASSWORD` (else
+`scada_writer`, for a role the run creates), `SEMIBASE_PLOT_PASSWORD` (else `semiplot`). The
+conventions live in `cmd/semibase/main.go` (`resolvePasswords`) and `ensureRole` in
+`internal/provision/create.go`; the setup repeats only the superuser one, as
+`#define ConventionalSuperPassword` for the EDB option file, and the clean-install CI case keeps
+the two equal. Every superuser connection turns off the
 five log settings that print a statement's text (`log_statement`, `log_min_error_statement`,
 `log_min_duration_statement`, `log_min_duration_sample`, `log_transaction_sample_rate`), so
 `CREATE ROLE ... PASSWORD` and `ALTER ROLE ... PASSWORD` stay out of the server log and
 `--superuser` must name a real superuser. The `semiplot` connection sets none of them, since it
 may not and issues no password statement
-(`docs/architecture/provisioning.md#invariants-the-provision-package-owns`). The writer and
-`semiplot` passwords are needed on a first run, which creates those roles. Otherwise the
-superuser password alone carries a run, and the `semiplot` password only decides whether the run
-also tests that role's TCP login. `public.trends` is created under `SET ROLE scada_writer` on the
-superuser connection, so the table's owner is the role the SCADA writes with and no
-`pg_hba.conf` line has to admit a `scada_writer` login.
+(`docs/architecture/provisioning.md#invariants-the-provision-package-owns`). `semibase` never
+changes the superuser's password; it sets the `semiplot` password on every run and tests that
+login over TCP unless `--host` is a socket directory; the `scada_writer` password applies only
+when the run creates the role, and no run changes an existing one, given or not, since the SCADA
+project holds the same password (`roleStatement`'s `resetExisting`, false for the writer). The
+setup passes the superuser value from its page or the caller's variable, the writer value from
+its page on a fresh install only (on a registered 17 the page has no writer field and the
+caller's variable passes through) and no `semiplot` value
+(`docs/architecture/installer.md#passwords`). `public.trends` is created under
+`SET ROLE scada_writer` on the superuser connection, so the table's owner is the role the SCADA
+writes with and no `pg_hba.conf` line has to admit a `scada_writer` login.
 
 ## Layout
 
@@ -204,6 +283,11 @@ internal/provision/  one file per phase behind the two commands: config.go (ALTE
 sql/                 embedded DDL: the five semiplot_* files (ours: the tables, the
                      pen-registration function, the time markers, the version stamp) and trends
                      (the vendor's shape)
+Installer/           SemiBase.iss (the Inno Setup script: engine states, EDB install, the site
+                     run, all in PrepareToInstall) and fetch-postgresql.sh (the pinned EDB
+                     payload into the git-ignored payload/; ISCC writes Output/)
+.github/             workflows/ (ci, release), actions/build-setup (fetch, Inno Setup, iscc for
+                     both), scripts/ (CI helpers; installer-case.ps1 for the setup's cases)
 docs/                human docs in Russian (enter at docs/readme.md)
 docs/architecture/   agent-facing design docs in English
 docs/plans/          dated implementation plans

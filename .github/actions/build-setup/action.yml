@@ -1,0 +1,46 @@
+name: Build the setup
+description: Fetch the pinned EDB payload, install Inno Setup and compile Installer/Output/SemiBase-Setup.exe
+
+inputs:
+  app-version:
+    description: AppVersion; VersionInfoVersion takes its part before the first -, digits and dots only
+    required: true
+  semibase-exe:
+    description: Path of the semibase.exe the setup carries
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cache the EDB payload
+      uses: actions/cache@v6
+      with:
+        path: Installer/payload
+        key: edb-payload-${{ hashFiles('Installer/fetch-postgresql.sh') }}
+
+    # shell: bash is Git Bash; a bare bash on the PATH may be WSL's
+    - name: Fetch the EDB payload
+      shell: bash
+      run: bash Installer/fetch-postgresql.sh
+
+    # The jrsoftware.org direct download intermittently serves a corrupted file, so winget
+    # (preinstalled on windows runners) installs it instead. The version is the one the setup's
+    # command-line and silent-mode behaviour was measured on (docs/architecture/installer.md#inno-setup).
+    # Machine scope keeps the Program Files (x86) path the next step calls.
+    - name: Install Inno Setup
+      shell: pwsh
+      run: |
+        winget install --id JRSoftware.InnoSetup --exact --version 6.7.3 --scope machine --silent `
+          --accept-source-agreements --accept-package-agreements --disable-interactivity
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+
+    - name: Compile the setup
+      shell: pwsh
+      env:
+        APP_VERSION: ${{ inputs.app-version }}
+        SEMIBASE_EXE: ${{ inputs.semibase-exe }}
+      run: |
+        $fileVersion = $env:APP_VERSION.Split('-')[0]
+        & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:APP_VERSION" `
+          "/DFileVersion=$fileVersion" "/DSemibaseExe=$env:SEMIBASE_EXE" Installer\SemiBase.iss
+        if ($LASTEXITCODE -ne 0) { exit 1 }

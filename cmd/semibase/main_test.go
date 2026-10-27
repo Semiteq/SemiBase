@@ -141,25 +141,6 @@ func TestParseOptions(t *testing.T) {
 			arguments: []string{"--restart-service", "x", "--host", "::1"},
 		},
 		{
-			name:        "flag beats environment",
-			arguments:   []string{"--super-password", "from-flag"},
-			environment: map[string]string{"SEMIBASE_SUPER_PASSWORD": "from-env"},
-			check: func(t *testing.T, options provision.Options) {
-				if options.SuperPassword != "from-flag" {
-					t.Errorf("SuperPassword = %q, want %q", options.SuperPassword, "from-flag")
-				}
-			},
-		},
-		{
-			name:        "environment fills empty flag",
-			environment: map[string]string{"SEMIBASE_WRITER_PASSWORD": "from-env"},
-			check: func(t *testing.T, options provision.Options) {
-				if options.WriterPassword != "from-env" {
-					t.Errorf("WriterPassword = %q, want %q", options.WriterPassword, "from-env")
-				}
-			},
-		},
-		{
 			name:       "invalid database name rejected via Validate",
 			arguments:  []string{"--database", "Bad-Name"},
 			wantAnyErr: true,
@@ -211,6 +192,58 @@ func TestParseOptions(t *testing.T) {
 				tt.check(t, options)
 			}
 		})
+	}
+}
+
+func TestPasswordResolutionOrder(t *testing.T) {
+	roles := []struct {
+		role       string
+		flag       string
+		variable   string
+		convention string
+		password   func(provision.Options) string
+	}{
+		{"superuser", "--super-password", "SEMIBASE_SUPER_PASSWORD", "postgres",
+			func(o provision.Options) string { return o.SuperPassword }},
+		{"scada_writer", "--writer-password", "SEMIBASE_WRITER_PASSWORD", "",
+			func(o provision.Options) string { return o.WriterPassword }},
+		{"semiplot", "--plot-password", "SEMIBASE_PLOT_PASSWORD", "semiplot",
+			func(o provision.Options) string { return o.PlotPassword }},
+	}
+	sources := []struct {
+		name        string
+		useFlag     bool
+		useVariable bool
+	}{
+		{"flag beats the variable", true, true},
+		{"variable fills an empty flag", false, true},
+		{"convention fills both", false, false},
+	}
+	for _, role := range roles {
+		for _, source := range sources {
+			t.Run(role.role+"/"+source.name, func(t *testing.T) {
+				captureErrorOutput(t)
+				clearPasswordEnvironment(t)
+				var arguments []string
+				want := role.convention
+				if source.useVariable {
+					t.Setenv(role.variable, "from-variable")
+					want = "from-variable"
+				}
+				if source.useFlag {
+					arguments = []string{role.flag, "from-flag"}
+					want = "from-flag"
+				}
+
+				options, err := parseOptions("bench", arguments)
+				if err != nil {
+					t.Fatalf("parseOptions returned %v, want nil", err)
+				}
+				if got := role.password(options); got != want {
+					t.Errorf("%s password = %q, want %q", role.role, got, want)
+				}
+			})
+		}
 	}
 }
 

@@ -25,7 +25,7 @@ docker logs "$container" > "$log" 2>&1
 if ! grep -qF -- 'FROM public.trends LIMIT 1) probe' "$log"; then
   echo "::error::the server log of $container lacks the semiplot login's probe:" \
     "either the server does not log statements, or semibase skipped the login check" \
-    "(no SEMIBASE_PLOT_PASSWORD, or a socket host)"
+    "(a socket host)"
   exit 1
 fi
 for password in "$@"; do

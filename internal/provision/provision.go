@@ -125,7 +125,7 @@ func (o Options) connectSuperuser(ctx context.Context, database string) (*pgx.Co
 func (o Options) connect(ctx context.Context, database, role, password string, settings []string) (*pgx.Conn, error) {
 	conn, err := pgx.Connect(ctx, o.connectionString(database, role, password))
 	if err != nil {
-		return nil, fmt.Errorf("connecting to %s as %s: %w", o.endpoint(database), role, err)
+		return nil, connectFailure(o.endpoint(database), role, err)
 	}
 	for _, setting := range settings {
 		if _, err := conn.Exec(ctx, setting); err != nil {
@@ -164,7 +164,21 @@ func sessionSettingFailure(setting, role string, err error) error {
 	return fmt.Errorf("%s: %w", setting, err)
 }
 
-const insufficientPrivilege = "42501"
+// A server with a non-English lc_messages reports 28P01 in its own language, and a client
+// decoding it in another encoding prints mojibake, so the English cause comes first. Setup reads
+// the code from the site log.
+func connectFailure(endpoint, role string, err error) error {
+	if hasSQLState(err, invalidPassword) {
+		return fmt.Errorf("connecting to %s as %s: password authentication failed for %s (SQLSTATE %s): %w",
+			endpoint, role, role, invalidPassword, err)
+	}
+	return fmt.Errorf("connecting to %s as %s: %w", endpoint, role, err)
+}
+
+const (
+	insufficientPrivilege = "42501"
+	invalidPassword       = "28P01"
+)
 
 func hasSQLState(err error, code string) bool {
 	var pgErr *pgconn.PgError

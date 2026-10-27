@@ -48,15 +48,18 @@ func (o Options) create(ctx context.Context) error {
 		return err
 	}
 
+	// Each role's conventional password is its name. The SCADA project holds the writer's
+	// password too, so a run never changes it; semiplot is reset to the convention every run.
 	roles := []struct {
-		name     string
-		password string
+		name          string
+		password      string
+		resetExisting bool
 	}{
-		{WriterRole, o.WriterPassword},
-		{PlotRole, o.PlotPassword},
+		{WriterRole, o.WriterPassword, false},
+		{PlotRole, o.PlotPassword, true},
 	}
 	for _, role := range roles {
-		if err := ensureRole(ctx, super, role.name, role.password); err != nil {
+		if err := ensureRole(ctx, super, role.name, role.password, role.name, role.resetExisting); err != nil {
 			return err
 		}
 	}
@@ -213,28 +216,39 @@ func roleExists(ctx context.Context, conn *pgx.Conn, name string) (bool, error) 
 	return exists, nil
 }
 
-func ensureRole(ctx context.Context, conn *pgx.Conn, name, password string) error {
+// an empty password creates a missing role with creationPassword; an existing role takes a given
+// password only when resetExisting is set
+func ensureRole(ctx context.Context, conn *pgx.Conn, name, password, creationPassword string,
+	resetExisting bool) error {
 	exists, err := roleExists(ctx, conn, name)
 	if err != nil {
 		return err
 	}
+	statement, outcome := roleStatement(name, exists, password, creationPassword, resetExisting)
+	if statement != "" {
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("setting up role %s: %w", name, err)
+		}
+	}
+	ok("role %s %s", name, outcome)
+	return nil
+}
+
+// the statement is empty when the role keeps its credentials; the outcome never carries a password
+func roleStatement(name string, exists bool, password, creationPassword string,
+	resetExisting bool) (statement, outcome string) {
 	switch {
 	case !exists && password == "":
-		return fmt.Errorf("role %s does not exist and no password was given to create it", name)
+		return createRoleStatement(name, creationPassword), "created with its conventional password"
 	case !exists:
-		if _, err := conn.Exec(ctx, createRoleStatement(name, password)); err != nil {
-			return fmt.Errorf("creating role %s: %w", name, err)
-		}
-		ok("role %s created", name)
+		return createRoleStatement(name, password), "created"
+	case password != "" && resetExisting:
+		return alterRolePasswordStatement(name, password), "exists, password updated"
 	case password != "":
-		if _, err := conn.Exec(ctx, alterRolePasswordStatement(name, password)); err != nil {
-			return fmt.Errorf("updating role %s password: %w", name, err)
-		}
-		ok("role %s exists, password updated", name)
+		return "", "exists, credentials untouched; the given password applies to a new role only"
 	default:
-		ok("role %s exists, credentials untouched", name)
+		return "", "exists, credentials untouched"
 	}
-	return nil
 }
 
 // docs/architecture/provisioning.md#registering-new-pens
