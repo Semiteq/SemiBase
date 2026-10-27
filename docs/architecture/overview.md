@@ -56,10 +56,13 @@ The order matters, because the default privileges have to be in place before any
 1. Install the engine: `winget install --id PostgreSQL.PostgreSQL.17 --exact`.
 2. `semibase site` — tuning, then the archive database, the three created roles, default privileges,
    `public.trends`, the five SemiPlot tables and `semiplot_register_new_pens()`; it ends by proving `semiplot` reads `trends`, writes
-   what it owns, cannot add, delete or re-key a pen and cannot write the archive, and warns while `shared_buffers` waits for a service
-   restart.
-3. Restart the PostgreSQL service or reboot the machine, so `shared_buffers` takes effect.
-4. Point the Simple-Scada project at the database and start it once. It is expected to find
+   what it owns, cannot add, delete or re-key a pen and cannot write the archive, and warns while `shared_buffers` or
+   `listen_addresses` waits for a service restart. With `--restart-service <name>` it restarts that Windows service itself
+   and continues against the restarted server (`provisioning.md#the-service-restart`).
+3. Without `--restart-service`, restart the PostgreSQL service or reboot the machine, so `shared_buffers` and
+   `listen_addresses` take effect.
+4. Point the Simple-Scada project at the database on `localhost` or `127.0.0.1`, since the server listens on loopback
+   only, and start it once. It is expected to find
    `trends` in place, write into it, and create the day partitions and `messages` itself — an
    **unverified** assumption, with the experiment that settles it, in
    `provisioning.md` ("Assumption: the SCADA meeting an existing `trends`"). Set

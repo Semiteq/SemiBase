@@ -85,12 +85,61 @@ func TestFlagUsageHidesPasswordValues(t *testing.T) {
 func TestParseOptions(t *testing.T) {
 	tests := []struct {
 		name        string
+		command     string
 		arguments   []string
 		environment map[string]string
 		wantErr     error
 		wantAnyErr  bool
+		wantErrText string
 		check       func(t *testing.T, options provision.Options)
 	}{
+		{
+			name:    "site without --restart-service restarts nothing",
+			command: "site",
+			check: func(t *testing.T, options provision.Options) {
+				if options.RestartService != "" {
+					t.Errorf("RestartService = %q, want empty", options.RestartService)
+				}
+			},
+		},
+		{
+			name:        "bench has no --restart-service",
+			command:     "bench",
+			arguments:   []string{"--restart-service", "x"},
+			wantErrText: "flag provided but not defined: -restart-service",
+		},
+		{
+			name:        "site rejects --restart-service with a non-loopback host",
+			command:     "site",
+			arguments:   []string{"--restart-service", "x", "--host", "db.internal"},
+			wantErrText: "loopback",
+		},
+		{
+			name:        "site rejects --restart-service with a socket host",
+			command:     "site",
+			arguments:   []string{"--restart-service", "x", "--host", "/var/run/postgresql"},
+			wantErrText: "loopback",
+		},
+		{
+			name:      "site accepts --restart-service with the default host",
+			command:   "site",
+			arguments: []string{"--restart-service", "postgresql-x64-17"},
+			check: func(t *testing.T, options provision.Options) {
+				if options.RestartService != "postgresql-x64-17" {
+					t.Errorf("RestartService = %q, want %q", options.RestartService, "postgresql-x64-17")
+				}
+			},
+		},
+		{
+			name:      "site accepts --restart-service with 127.0.0.1",
+			command:   "site",
+			arguments: []string{"--restart-service", "x", "--host", "127.0.0.1"},
+		},
+		{
+			name:      "site accepts --restart-service with ::1",
+			command:   "site",
+			arguments: []string{"--restart-service", "x", "--host", "::1"},
+		},
 		{
 			name:        "flag beats environment",
 			arguments:   []string{"--super-password", "from-flag"},
@@ -134,9 +183,17 @@ func TestParseOptions(t *testing.T) {
 				t.Setenv(name, value)
 			}
 
-			options, err := parseOptions("bench", tt.arguments)
+			command := tt.command
+			if command == "" {
+				command = "bench"
+			}
+			options, err := parseOptions(command, tt.arguments)
 
 			switch {
+			case tt.wantErrText != "":
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrText) {
+					t.Fatalf("parseOptions error = %v, want one containing %q", err, tt.wantErrText)
+				}
 			case tt.wantErr != nil:
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("parseOptions error = %v, want %v", err, tt.wantErr)
@@ -320,6 +377,28 @@ func TestRunReportsTheEndpointItRanAgainst(t *testing.T) {
 	}
 }
 
+func TestRunNamesTheUsedUpTimeLimit(t *testing.T) {
+	buffer := captureErrorOutput(t)
+	clearPasswordEnvironment(t)
+
+	// mutates the shared commands map, so no t.Parallel here
+	commands["stub-deadline-exceeded"] = func(ctx context.Context, _ provision.Options) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { delete(commands, "stub-deadline-exceeded") })
+
+	// an expired parent deadline stands in for a command that used up phaseTimeout
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if got := run(ctx, []string{"stub-deadline-exceeded"}); got != 1 {
+		t.Fatalf("run(stub-deadline-exceeded) = %d, want exit code 1", got)
+	}
+	if want := "ran out of its " + phaseTimeout.String() + " limit"; !strings.Contains(buffer.String(), want) {
+		t.Errorf("error output %q does not contain %q", buffer.String(), want)
+	}
+}
+
 func TestRunReportsCommandFailure(t *testing.T) {
 	buffer := captureErrorOutput(t)
 	clearPasswordEnvironment(t)
@@ -335,6 +414,9 @@ func TestRunReportsCommandFailure(t *testing.T) {
 	}
 	if !strings.Contains(buffer.String(), "error: stub-failure sentinel") {
 		t.Errorf("error output does not report the failure: %q", buffer.String())
+	}
+	if strings.Contains(buffer.String(), "limit") {
+		t.Errorf("error output blames the time limit for an ordinary failure: %q", buffer.String())
 	}
 }
 
