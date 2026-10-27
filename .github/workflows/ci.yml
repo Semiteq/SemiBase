@@ -28,6 +28,83 @@ jobs:
         with:
           version: v2.12.2
 
+      # sc.exe start returns while the service is Start Pending; run site at once
+      # with no readiness wait, so openService's own wait is what runs. The
+      # sequence is in docs/architecture/provisioning.md#the-service-restart.
+      - name: Restart the runner's PostgreSQL service through site
+        env:
+          SEMIBASE_SUPER_PASSWORD: root
+          SEMIBASE_WRITER_PASSWORD: ci-writer
+          SEMIBASE_PLOT_PASSWORD: ci-plot
+          PGPASSWORD: root
+        run: |
+          $service = 'postgresql-x64-17'
+          $psql = "$env:PGBIN\psql.exe"
+          Get-CimInstance Win32_Service -Filter "Name='$service'" |
+            Select-Object Name, State, StartMode, PathName | Format-List
+          go build -o semibase.exe ./cmd/semibase
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          # stdout and stderr joined into one string: -like over an array filters
+          # elements instead of answering yes or no
+          function Invoke-Site([string] $name) {
+            $ErrorActionPreference = 'Continue'
+            $lines = & .\semibase.exe site --port 5432 --expected-major 17 --restart-service $name 2>&1 |
+              ForEach-Object { "$_" }
+            $lines | Write-Host
+            [pscustomobject]@{ Code = $LASTEXITCODE; Output = $lines -join "`n" }
+          }
+          function Assert-Refused($run, [string] $reason) {
+            if ($run.Code -ne 1 -or $run.Output -notlike "*$reason*" -or $run.Output -like '*ALTER SYSTEM SET*') {
+              Write-Host "::error::want exit 1 with '$reason' and no ALTER SYSTEM SET, got exit $($run.Code)"
+              exit 1
+            }
+          }
+
+          Assert-Refused (Invoke-Site $service) "service $service is Disabled"
+
+          Set-Service $service -StartupType Manual
+          sc.exe start $service
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Write-Host "state after sc.exe start: $((Get-Service $service).Status)"
+
+          $first = Invoke-Site $service
+          if ($first.Code -ne 0) { Write-Host "::error::the first site run exited $($first.Code)"; exit 1 }
+          if ($first.Output -notlike "*restarting service $service*") {
+            Write-Host "::error::the first site run did not restart $service"
+            exit 1
+          }
+          if ($first.Output -notlike "*service $service runs data directory C:\PostgreSQL\17\data, as the server on *:5432 does*") {
+            Write-Host "::error::the first site run did not tie $service to the server on port 5432"
+            exit 1
+          }
+          if ($first.Output -notlike "*service $service stopped, nothing answers on *:5432*") {
+            Write-Host "::error::the first site run did not see the old server's port refused before the Start"
+            exit 1
+          }
+
+          Write-Host "data_directory: $(& $psql -h 127.0.0.1 -U postgres -d postgres -tAc 'SHOW data_directory')"
+          $listen = & $psql -h 127.0.0.1 -U postgres -d postgres -tAc 'SHOW listen_addresses'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $pending = & $psql -h 127.0.0.1 -U postgres -d postgres -tAc `
+            'SELECT count(*) FROM pg_settings WHERE pending_restart'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ("$listen".Trim() -ne 'localhost' -or "$pending".Trim() -ne '0') {
+            Write-Host "::error::listen_addresses '$listen' (want localhost), pending_restart count '$pending' (want 0)"
+            exit 1
+          }
+
+          $second = Invoke-Site $service
+          if ($second.Code -ne 0) { Write-Host "::error::the second site run exited $($second.Code)"; exit 1 }
+          if ($second.Output -like '*restarting service*') {
+            Write-Host "::error::the second site run restarted $service with nothing pending"
+            exit 1
+          }
+
+          Assert-Refused (Invoke-Site 'no-such-service') 'service no-such-service does not exist'
+          # the runner exits with the last native exit code, which the refusal left at 1
+          exit 0
+
   linux:
     runs-on: ubuntu-latest
     env:
@@ -69,6 +146,25 @@ jobs:
           go build -o semibase ./cmd/semibase
           ./semibase site --database semiplot_dev --expected-major 17
           ./semibase site --database semiplot_dev --expected-major 17
+
+      # The service container is never restarted, so the loopback-only value
+      # stays pending.
+      - name: Require the listen_addresses delta
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: ci-super
+        run: |
+          set -euo pipefail
+          pending=$(psql -d postgres -tAc \
+            "SELECT pending_restart FROM pg_settings WHERE name = 'listen_addresses'")
+          written=$(psql -d postgres -tAc \
+            "SELECT setting FROM pg_file_settings WHERE name = 'listen_addresses'
+               AND sourcefile LIKE '%postgresql.auto.conf'")
+          if [[ "$pending" != t || "$written" != localhost ]]; then
+            echo "::error::listen_addresses pending_restart '$pending' (want t), auto.conf value '$written' (want localhost)"
+            exit 1
+          fi
 
       # Every other step runs semiplot_register_new_pens() over an empty
       # public.trends, so its INSERT adds nothing.

@@ -10,6 +10,35 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+func TestValidateRestartServiceHost(t *testing.T) {
+	tests := []struct {
+		host    string
+		wantErr bool
+	}{
+		{"localhost", false},
+		{"127.0.0.1", false},
+		{"::1", false},
+		{"db.internal", true},
+		{"192.168.1.10", true},
+		{"/var/run/postgresql", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			options := Options{Database: "scada_archive", Host: tt.host, RestartService: "postgresql-x64-17"}
+			err := options.Validate()
+			if gotErr := err != nil; gotErr != tt.wantErr {
+				t.Errorf("Validate() with host %q: error = %v, wantErr %v", tt.host, err, tt.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "loopback") {
+				t.Errorf("Validate() error = %q, want it to name the loopback rule", err)
+			}
+		})
+	}
+	if err := (Options{Database: "scada_archive", Host: "db.internal"}).Validate(); err != nil {
+		t.Errorf("Validate() without --restart-service refused a remote host: %v", err)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	tests := []struct {
 		name     string
