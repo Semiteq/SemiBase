@@ -115,7 +115,8 @@ config in `.golangci.yml`. Unit tests live beside the source (`cmd/semibase/*_te
 `internal/provision/*_test.go`), table-driven, and touch no database.
 
 CI (`.github/workflows/ci.yml`) runs `go build` and `go test -race` on `windows-latest` and
-`ubuntu-latest` for every push to `master` and every pull request, and the lint in the Windows
+`ubuntu-latest` for every push to `master` and every pull request, unless every changed file is
+Markdown or under `docs/`, and the lint in the Windows
 `build` job only. The database checks run there too: the service restart in `build`, `site` and
 `bench` against PostgreSQL 17 and 14 containers in `linux`, the setup end to end in `installer`.
 Each step and what it requires: `docs/architecture/verification.md`.

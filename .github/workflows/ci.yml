@@ -1,11 +1,14 @@
 name: CI
 
 # push is limited to master so a same-repo pull request runs once (the
-# pull_request event), not twice.
+# pull_request event), not twice. A change of Markdown and docs/ files alone
+# builds and tests nothing, so it runs nothing.
 on:
   push:
     branches: [master]
+    paths-ignore: ['**.md', 'docs/**']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**']
 
 jobs:
   build:
