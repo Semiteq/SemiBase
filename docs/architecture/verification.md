@@ -6,7 +6,8 @@ database-touching unit tests: unit tests sit beside the source (`cmd/semibase/*_
 access checks every run ends with ([provisioning.md](./provisioning.md#what-the-tail-checks-prove)),
 the CI steps below and the release smoke runs.
 
-`.github/workflows/ci.yml` runs on every pull request and on a push to `master`. Three jobs:
+`.github/workflows/ci.yml` runs on every pull request and on a push to `master`, unless every
+changed file matches `**.md` or `docs/**` (`paths-ignore`). Three jobs:
 
 | Job | Runner | Covers |
 | --- | --- | --- |
