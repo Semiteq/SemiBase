@@ -94,13 +94,24 @@ function Invoke-Super([string] $password, [string] $sql) {
 # The uninstaller exits before it removes anything, and a copy of it in %TEMP% does the work
 # (docs/architecture/installer.md#the-uninstaller). The empty Installations and Services keys
 # it leaves stay, as on an installation machine.
-function Remove-PostgreSQL {
+function Start-PostgreSQLRemoval {
   $base = (Get-ItemProperty "HKLM:\SOFTWARE\PostgreSQL\Installations\$PgInstallation").'Base Directory'
   $uninstaller = Start-Process -FilePath "$base\uninstall-postgresql.exe" `
-    -ArgumentList '--mode', 'unattended', '--unattendedmodeui', 'none' -Wait -PassThru
+    -ArgumentList '--mode', 'unattended', '--unattendedmodeui', 'none' -PassThru
+  # A process object whose handle was never read reports no ExitCode after it exits
+  $null = $uninstaller.Handle
+  $uninstaller
+}
+
+function Get-UninstallerCopy {
+  @(Get-CimInstance Win32_Process | Where-Object { $_.Name -like '_uninstall*.000' })
+}
+
+function Wait-PostgreSQLRemoval($uninstaller) {
+  $uninstaller.WaitForExit()
   if ($uninstaller.ExitCode -ne 0) { Fail "uninstall-postgresql.exe exited $($uninstaller.ExitCode)" }
   $deadline = (Get-Date).AddMinutes(5)
-  while (Get-CimInstance Win32_Process | Where-Object { $_.Name -like '_uninstall*.000' }) {
+  while ((Get-UninstallerCopy).Count -ne 0) {
     if ((Get-Date) -gt $deadline) { Fail 'the uninstaller copy still runs after 5 minutes' }
     Start-Sleep -Seconds 1
   }
@@ -116,4 +127,8 @@ function Remove-PostgreSQL {
   $client = [Net.Sockets.TcpClient]::new()
   try { $open = $client.ConnectAsync('127.0.0.1', 5432).Wait(2000) } catch { $open = $false } finally { $client.Close() }
   if ($open) { Fail '127.0.0.1:5432 still accepts TCP' }
+}
+
+function Remove-PostgreSQL {
+  Wait-PostgreSQLRemoval (Start-PostgreSQLRemoval)
 }

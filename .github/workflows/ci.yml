@@ -372,11 +372,22 @@ jobs:
           Assert-Login semiplot semiplot
           Assert-Login scada_writer scada_writer
 
-      - name: Remove the runner's PostgreSQL
+      # The uninstaller copy runs 14 to 70 s after uninstall-postgresql.exe
+      # exits, and a refusing Setup takes a few seconds, so the run lands inside
+      # the copy's lifetime once the copy is seen
+      - name: Remove the runner's PostgreSQL, refusing while its uninstaller runs
         timeout-minutes: 10
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
-          Remove-PostgreSQL
+          $uninstaller = Start-PostgreSQLRemoval
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-UninstallerCopy).Count -eq 0) {
+            if ((Get-Date) -gt $deadline) { Fail 'no _uninstall*.000 copy appeared within 60 s, so the case tests nothing' }
+            Start-Sleep -Milliseconds 250
+          }
+          $run = Invoke-Setup
+          Assert-Refused $run 'The removal of PostgreSQL has not ended yet. Wait until the PostgreSQL uninstaller closes, then run Setup again.' 'PostgreSQL uninstaller process running: '
+          Wait-PostgreSQLRemoval $uninstaller
           exit 0
 
       # The serviceless key passes the incomplete-key rules, so it reaches the
@@ -445,7 +456,7 @@ jobs:
           $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 5432)
           $listener.Start()
           try { $run = Invoke-Setup } finally { $listener.Stop() }
-          Assert-Refused $run 'Port 5432 is busy, and no installed PostgreSQL is found.' 'HKLM\SOFTWARE\PostgreSQL\Installations holds no registration.'
+          Assert-Refused $run 'Port 5432 is busy, and no installed PostgreSQL is found.' "HKLM\SOFTWARE\PostgreSQL\Installations holds no registration. Port 5432 held by pwsh (pid $PID)."
 
           if (Test-Path 'C:\Program Files\PostgreSQL') { Fail 'C:\Program Files\PostgreSQL exists before the case' }
           New-Item -ItemType Directory -Path 'C:\Program Files\PostgreSQL\17\data' -Force | Out-Null
@@ -481,8 +492,12 @@ jobs:
           Assert-Login scada_writer scada_writer
           Assert-Login semiplot semiplot
 
+      # Setup clears the caller's SEMIBASE_PLOT_PASSWORD, so semiplot keeps the
+      # password the Finished page names
       - name: Run the same setup again
         timeout-minutes: 15
+        env:
+          SEMIBASE_PLOT_PASSWORD: ci-other-plot
         run: |
           . "$env:GITHUB_WORKSPACE\.github\scripts\installer-case.ps1"
           $run = Invoke-Setup
@@ -490,6 +505,7 @@ jobs:
           if ($run.ExitCode -ne 0) { Fail "want exit 0, got $($run.ExitCode)" }
           if ((Get-SiteLog $run).Contains('restarting service')) { Fail 'the second run restarted the service with nothing pending' }
           Assert-Login scada_writer scada_writer
+          Assert-Login semiplot semiplot
 
       - name: Refuse a registered port nothing answers on
         timeout-minutes: 5
@@ -498,7 +514,7 @@ jobs:
           $key = "HKLM:\SOFTWARE\PostgreSQL\Services\$PgService"
           Set-ItemProperty -Path $key -Name Port -Value 15433 -Type DWord
           try { $run = Invoke-Setup } finally { Set-ItemProperty -Path $key -Name Port -Value 5432 -Type DWord }
-          Assert-Refused $run "The semibase.exe tool failed. Fix the error named in the last lines of the log $LogDir\site-" 'semibase.exe exit code '
+          Assert-Refused $run 'No server answers on port 15433, which is set for the installed PostgreSQL 17. Check the port value in the file C:\Program Files\PostgreSQL\17\data\postgresql.conf, then run Setup again.' "HKLM\SOFTWARE\PostgreSQL\Services\$PgService holds Port 15433; semibase.exe site log: $LogDir\site-"
           if (-not (Get-SiteLog $run).Contains('connecting to localhost:15433/')) {
             Fail 'the site log does not name the refused connection to localhost:15433'
           }

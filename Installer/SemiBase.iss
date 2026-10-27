@@ -1,4 +1,4 @@
-; Run Installer/fetch-postgresql.sh first, through Git's bash.exe as CLAUDE.md's Build section
+; Run Installer/fetch-postgresql.sh first, through Git's bash.exe as AGENTS.md's Build section
 ; shows; it puts the EDB installer into Installer\payload\.
 
 #ifndef AppVersion
@@ -96,9 +96,15 @@ russian.OrphanedRegistration=PostgreSQL {#PgMajor} установлен, но у
 OtherMajorDetail=Registered installations: %1.
 english.OtherMajor=PostgreSQL of another version is installed, and Setup works with PostgreSQL %1 only. Move the data to PostgreSQL %1 or remove the other version, then run Setup again.
 russian.OtherMajor=Установлен PostgreSQL другой версии, а установщик работает только с PostgreSQL %1. Перенесите данные на PostgreSQL %1 или удалите другую версию и запустите установщик снова.
+UninstallerRunningDetail=PostgreSQL uninstaller process running: %1.
+UninstallerProbeFailedDetail=Setup could not check through powershell.exe whether a PostgreSQL uninstaller runs (%1), and goes on as if none runs.
+english.UninstallerRunning=The removal of PostgreSQL has not ended yet. Wait until the PostgreSQL uninstaller closes, then run Setup again.
+russian.UninstallerRunning=Удаление PostgreSQL ещё не завершено. Дождитесь, пока закроется программа удаления PostgreSQL, и запустите установщик снова.
 english.ProbeFailed=Setup could not check through powershell.exe whether port %1 is free. Run Setup again.
 russian.ProbeFailed=Не удалось проверить через powershell.exe, свободен ли порт %1. Запустите установщик снова.
 NoRegistrationDetail=HKLM\SOFTWARE\PostgreSQL\Installations holds no registration.
+PortOwnerDetail=Port %1 held by %2.
+PortNoOwnerDetail=Port %1 accepts connections, and Get-NetTCPConnection names no listening process.
 english.PortBusy=Port %1 is busy, and no installed PostgreSQL is found. Stop the program that holds this port, then run Setup again.
 russian.PortBusy=Порт %1 занят, а установленный PostgreSQL не найден. Остановите программу, которая занимает этот порт, и запустите установщик снова.
 english.DataDirectoryNotEmpty=The folder %1 is not empty, and no installed PostgreSQL is found. If the data in this folder is not needed, delete it, then run Setup again.
@@ -121,6 +127,9 @@ russian.SiteNotStarted=Не удалось запустить утилиту sem
 SitePasswordWrongDetail=semibase.exe site log: %1.
 english.SitePasswordWrong=Wrong password of the PostgreSQL administrator (database user postgres). Enter the current password, then run Setup again.
 russian.SitePasswordWrong=Неверный пароль администратора PostgreSQL (пользователь БД postgres). Укажите текущий пароль и запустите установщик снова.
+SitePortWrongDetail=%1 holds Port %2; semibase.exe site log: %3.
+english.SitePortWrong=No server answers on port %1, which is set for the installed PostgreSQL {#PgMajor}. Check the port value in the file %2\postgresql.conf, then run Setup again.
+russian.SitePortWrong=Сервер не отвечает на порту %1, который указан для установленного PostgreSQL {#PgMajor}. Проверьте значение port в файле %2\postgresql.conf и запустите установщик снова.
 SiteFailedDetail=semibase.exe exit code %1.
 english.SiteFailed=The semibase.exe tool failed. Fix the error named in the last lines of the log %1, then run Setup again.
 russian.SiteFailed=Утилита semibase.exe завершилась с ошибкой. Устраните ошибку, названную в последних строках журнала %1, и запустите установщик снова.
@@ -314,18 +323,75 @@ begin
   Result := ExitCode;
 end;
 
+function PowerShellExe: String;
+begin
+  Result := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+end;
+
+function JoinLines(const Lines: TArrayOfString): String;
+var
+  I: Integer;
+begin
+  Result := '';
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    if Result <> '' then
+      Result := Result + ', ';
+    Result := Result + Lines[I];
+  end;
+end;
+
 // The probe dials localhost, as semibase does, so ::1 and 127.0.0.1 both count. Returns False
-// when the probe itself failed, a constructor PowerShell refuses included.
-function ProbePort(Port: Cardinal; var Accepts: Boolean): Boolean;
+// when the probe itself failed, a constructor PowerShell refuses included. On an accepted port,
+// Owner names each listening process as '<name> (pid <n>)'; empty when the lookup finds none.
+function ProbePort(Port: Cardinal; var Accepts: Boolean; var Owner: String): Boolean;
 var
   ExitCode: Integer;
+  Output: TExecOutput;
 begin
-  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -NonInteractive -Command "try { ([Net.Sockets.TcpClient]::new(''localhost'', ' +
-    IntToStr(Port) + ')).Close(); exit 0 } catch { if ($_.Exception.InnerException -is ' +
-    '[Net.Sockets.SocketException]) { exit 2 }; exit 3 }"',
-    '', SW_HIDE, ewWaitUntilTerminated, ExitCode) and ((ExitCode = 0) or (ExitCode = 2));
+  Result := ExecAndCaptureOutput(PowerShellExe, '-NoProfile -NonInteractive -Command "try { ' +
+    '([Net.Sockets.TcpClient]::new(''localhost'', ' + IntToStr(Port) + ')).Close() } catch { ' +
+    'if ($_.Exception.InnerException -is [Net.Sockets.SocketException]) { exit 2 }; exit 3 }; ' +
+    'try { Get-NetTCPConnection -LocalPort ' + IntToStr(Port) + ' -State Listen -ErrorAction ' +
+    'SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { ' +
+    '''{0} (pid {1})'' -f (Get-Process -Id $_ -ErrorAction SilentlyContinue).ProcessName, $_ } ' +
+    '} catch { }; exit 0"', '', SW_HIDE, ewWaitUntilTerminated, ExitCode, Output) and
+    ((ExitCode = 0) or (ExitCode = 2));
   Accepts := ExitCode = 0;
+  Owner := JoinLines(Output.StdOut);
+end;
+
+// The EDB uninstaller exits before it removes anything, and its copy in %TEMP% removes the
+// registration, the service and the files over the next 14 to 70 s. A failed probe does not
+// refuse: its line goes to the setup log, and Setup goes on.
+function UninstallerRefusal: String;
+var
+  Started: Boolean;
+  ExitCode: Integer;
+  Output: TExecOutput;
+  Failure: String;
+begin
+  Result := '';
+  Failure := '';
+  try
+    Started := ExecAndCaptureOutput(PowerShellExe, '-NoProfile -NonInteractive -Command "try { ' +
+      '$found = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -like ' +
+      '''_uninstall*.000'' -or $_.Name -like ''uninstall-postgresql*'' }) } catch { exit 3 }; ' +
+      'if ($found.Count -eq 0) { exit 2 }; ''{0} (pid {1})'' -f $found[0].Name, ' +
+      '$found[0].ProcessId; exit 0"', '', SW_HIDE, ewWaitUntilTerminated, ExitCode, Output);
+    if not Started then
+      Failure := SysErrorMessage(ExitCode)
+    else if ExitCode = 0 then
+      Result := Refuse(CustomMessage('UninstallerRunning'),
+        FmtMessage(CustomMessage('UninstallerRunningDetail'), [JoinLines(Output.StdOut)]))
+    else if ExitCode <> 2 then
+      Failure := 'exit code ' + IntToStr(ExitCode);
+  except
+    Failure := GetExceptionMessage;
+  end;
+  if Failure <> '' then
+    AppendLine(LogPath('setup'), FmtMessage(CustomMessage('UninstallerProbeFailedDetail'), [
+      Failure]));
 end;
 
 function IsNonEmptyDirectory(const Path: String): Boolean;
@@ -430,13 +496,20 @@ end;
 function FreshMachineRefusal: String;
 var
   Accepts: Boolean;
+  Owner, OwnerDetail: String;
 begin
   Result := '';
-  if not ProbePort({#PgPort}, Accepts) then
+  if not ProbePort({#PgPort}, Accepts, Owner) then
     Result := FmtMessage(CustomMessage('ProbeFailed'), ['{#PgPort}'])
   else if Accepts then
+  begin
+    if Owner <> '' then
+      OwnerDetail := FmtMessage(CustomMessage('PortOwnerDetail'), ['{#PgPort}', Owner])
+    else
+      OwnerDetail := FmtMessage(CustomMessage('PortNoOwnerDetail'), ['{#PgPort}']);
     Result := Refuse(FmtMessage(CustomMessage('PortBusy'), ['{#PgPort}']),
-      CustomMessage('NoRegistrationDetail'))
+      CustomMessage('NoRegistrationDetail') + ' ' + OwnerDetail);
+  end
   else if IsNonEmptyDirectory('{#PgDataDir}') then
     Result := Refuse(FmtMessage(CustomMessage('DataDirectoryNotEmpty'), ['{#PgDataDir}']),
       CustomMessage('NoRegistrationDetail'));
@@ -543,19 +616,29 @@ end;
 var
   SiteLog: String;
   SitePasswordRejected: Boolean;
+  SiteConnected: Boolean;
+  SitePortRefused: Boolean;
 
 // Each line lands as it arrives, so a Setup killed during a long service stop still leaves a log.
 // semibase prints the SQLSTATE of a refused password in English whatever the server's language.
+// Its first [ OK ] line follows its first connection, so a connectex before it is a TCP failure on
+// the registered port; the syscall name stays English while Windows words the error in its own
+// language.
 procedure AppendSiteLine(const S: String; const Error, FirstLine: Boolean);
 begin
   AppendLine(SiteLog, S);
   if Pos('SQLSTATE 28P01', S) > 0 then
     SitePasswordRejected := True;
+  if Pos('[ OK ]', S) > 0 then
+    SiteConnected := True
+  else if not SiteConnected and (Pos('connectex', S) > 0) then
+    SitePortRefused := True;
 end;
 
-// semibase inherits the passwords from Setup's environment, so none is on a command line. Both
-// variables are set even when empty, or a value inherited from the caller would reach semibase;
-// semibase reads an empty one as unset and applies its convention.
+// semibase inherits the passwords from Setup's environment, so none is on a command line. All
+// three variables are set even when empty, or a value inherited from the caller would reach
+// semibase; semibase reads an empty one as unset and applies its convention, so semiplot gets
+// the password semiplot the Ready and Finished pages name.
 function SiteRefusal(const Engine: TEngine; const SuperPassword, WriterPassword: String): String;
 var
   ExitCode: Integer;
@@ -563,8 +646,11 @@ begin
   Result := '';
   SetEnvironmentVariable('SEMIBASE_SUPER_PASSWORD', SuperPassword);
   SetEnvironmentVariable('SEMIBASE_WRITER_PASSWORD', WriterPassword);
+  SetEnvironmentVariable('SEMIBASE_PLOT_PASSWORD', '');
   SiteLog := LogPath('site');
   SitePasswordRejected := False;
+  SiteConnected := False;
+  SitePortRefused := False;
   if not ExecAndLogOutput(ExpandConstant('{tmp}\semibase.exe'), 'site --port ' +
     IntToStr(Engine.Port) + ' --superuser "' + Engine.SuperUser + '" --expected-major ' +
     '{#PgMajor} --restart-service "' + Engine.ServiceName + '"', '', SW_SHOWNORMAL,
@@ -573,6 +659,10 @@ begin
   else if (ExitCode <> 0) and SitePasswordRejected then
     Result := Refuse(CustomMessage('SitePasswordWrong'),
       FmtMessage(CustomMessage('SitePasswordWrongDetail'), [SiteLog]))
+  else if (ExitCode <> 0) and SitePortRefused then
+    Result := Refuse(FmtMessage(CustomMessage('SitePortWrong'), [IntToStr(Engine.Port),
+      Engine.DataDirectory]), FmtMessage(CustomMessage('SitePortWrongDetail'), [
+      'HKLM\' + ServicesKey + '\' + Engine.ServiceName, IntToStr(Engine.Port), SiteLog]))
   else if ExitCode <> 0 then
     Result := Refuse(FmtMessage(CustomMessage('SiteFailed'), [SiteLog]),
       FmtMessage(CustomMessage('SiteFailedDetail'), [IntToStr(ExitCode)]));
@@ -689,19 +779,27 @@ begin
 end;
 
 // The registry reads alone; PrepareToInstall decides. Inno runs this on every visit to the page
-// and under /SILENT too, where PrepareToInstall logs the refusal anyway; a user who clicks Cancel
-// as the page says never reaches PrepareToInstall, so the page logs its refusal once.
+// and under /SILENT too, where PrepareToInstall copies the tool and logs the refusal anyway; a
+// user who clicks Cancel as the page says never reaches PrepareToInstall, so the page does both
+// once. The refusal stays the last log line, after a copy failure.
 function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
   MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
 var
   Engine: TEngine;
-  Refusal, Tools, WriterPassword: String;
+  Refusal, ToolRefusal, Tools, WriterPassword: String;
 begin
   Refusal := RegistryRefusal(Engine);
   if Refusal <> '' then
   begin
     if not WizardSilent and not ReadyRefusalLogged then
     begin
+      try
+        ToolRefusal := KeepToolRefusal;
+      except
+        ToolRefusal := FmtMessage(CustomMessage('SetupError'), [GetExceptionMessage]);
+      end;
+      if ToolRefusal <> '' then
+        AppendLine(LogPath('setup'), ToolRefusal);
       LogRefusal(Refusal);
       ReadyRefusalLogged := True;
     end;
@@ -748,6 +846,8 @@ begin
     Result := KeepToolRefusal;
     if Result = '' then
       Result := WriterPasswordRefusal(WriterPassword);
+    if Result = '' then
+      Result := UninstallerRefusal;
     if Result = '' then
       Result := EngineRefusal(Fresh, SuperPasswordOrConvention(SuperPassword), Engine);
     // The install's own registration, read like any other, fills Engine
