@@ -124,7 +124,7 @@ func run(ctx context.Context, arguments []string) int {
 	commandContext, cancel := context.WithTimeout(ctx, phaseTimeout)
 	defer cancel()
 	if err := execute(commandContext, options); err != nil {
-		fmt.Fprintln(errorOutput, "error:", err)
+		fmt.Fprintln(errorOutput, "error:", readableText(err.Error(), decodeANSI))
 		if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 			fmt.Fprintf(errorOutput, "%s ran out of its %s limit; every step checks before it creates, "+
 				"so re-running it continues from where it stopped\n", command, phaseTimeout)
