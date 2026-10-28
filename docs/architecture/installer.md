@@ -92,7 +92,10 @@ In order, `PrepareToInstall`:
      in its detail line. `semibase` puts `password authentication failed for <role> (SQLSTATE
      28P01)` in English before the server's own text (`connectFailure` in
      `internal/provision/provision.go`), so the code is there whatever the server's
-     `lc_messages`;
+     `lc_messages`. The server sends that text before the client encoding applies, in its own
+     code page (CP1251 under Russian `lc_messages`, measured 2026-10-28); `semibase` re-decodes
+     the non-UTF-8 runs of an error line from the Windows ANSI code page (`readableText` in
+     `cmd/semibase/text.go`), so the log reads in both languages;
    - `SiteFailed` otherwise, which names the log on screen, since the reader acts on its last
      lines, and puts the exit code in the detail line.
 
