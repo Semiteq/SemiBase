@@ -104,8 +104,8 @@ a test of what a site runs:
 | Archive database, the three created roles, grants, default privileges | yes | yes |
 | `public.trends` with the `tpdefault` partition, created as `scada_writer` | yes | yes |
 | The five SemiPlot tables and `semiplot_register_new_pens()`, after `public.trends` because the function body names it | yes | yes |
-| The `semiplot` access checks at the tail | yes | yes |
-| Pending-restart warning at the tail ([check 9](#what-the-tail-checks-prove)) | yes | yes |
+| The `semiplot` and `scada_writer` access checks at the tail | yes | yes |
+| Pending-restart warning at the tail ([check 10](#what-the-tail-checks-prove)) | yes | yes |
 
 `engine --expected-major <n>` provisions nothing: it reads the Windows service list and the data
 folders, finds the service that runs PostgreSQL of major `<n>` and prints its state and facts as
@@ -180,7 +180,7 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
   `track_utility`, are outside this guard; `semibase` installs none. The five are SUSET, and the
   project requires the role `semibase` connects as to be a superuser; when the server refuses one
   with 42501, the error names the role and the repair. The `semiplot` login of
-  [check 8](#what-the-tail-checks-prove) sets none of them and issues no password statement.
+  [check 9](#what-the-tail-checks-prove) sets none of them and issues no password statement.
   `TestSessionSettings` pins both lists; CI reads the server log on both password paths
   ([verification.md](./verification.md#the-linux-job)).
 - **Cancellable execution.** Every phase honors its context: cancellation stops the
@@ -193,7 +193,7 @@ The package that runs the SQL owns its guards; the CLI is a thin dispatcher.
   second error line.
 - **Pending-restart reporting.** Without `--restart-service` the tool never touches the service
   manager: it names the settings that wait and tells the operator to restart the service or
-  reboot ([check 9](#what-the-tail-checks-prove)).
+  reboot ([check 10](#what-the-tail-checks-prove)).
 
 ## The service restart
 
@@ -310,7 +310,7 @@ Four roles take part, and the tool creates three of them.
 | --- | --- | --- |
 | The superuser (`--superuser`, default `postgres`) | the engine install | Every connection this tool makes. It owns the five `semiplot_*` tables, because it is the connection that applies their DDL |
 | `semiplot_registrar` | `semibase` | `NOLOGIN`. Owns `semiplot_register_new_pens()` and holds what its body needs: `SELECT` on `public.trends`, `SELECT (id)` and `INSERT (id, name, color, enabled_on_start)` on `semiplot_tags` ([Registering new pens](#registering-new-pens)) |
-| `scada_writer` | `semibase` | Owns `public.trends`, its day partitions and `messages`, and writes them. `CREATE` on schema `public`. Nothing on any `semiplot_*` table |
+| `scada_writer` | `semibase` | Owns `public.trends`, its day partitions and `messages`, and writes them. `CREATE` on schema `public`. `INSERT` on `semiplot_markers` ([Recipe markers](#recipe-markers)) and nothing else on any `semiplot_*` table |
 | `semiplot` | `semibase` | `SELECT` on `trends` and `messages`; `SELECT` on `semiplot_tags` and `UPDATE` on its nine settings columns, never on `id`; `SELECT, INSERT, UPDATE, DELETE` on `semiplot_groups`, `semiplot_pen_groups` and `semiplot_markers`; `SELECT` on `semiplot_meta`; `EXECUTE` on `semiplot_register_new_pens()`. No `CREATE` on schema `public` |
 
 `semiplot` edits its own pen catalogue and time markers and cannot touch the archive. Both facts are grants on
@@ -352,6 +352,11 @@ and re-granted the function to `PUBLIC`, and one plain read by `semiplot` rename
 deleted every group. No per-function setting closes this: `SET row_security = off` is answered by
 replacing the table with a view.
 
+The `INSERT` grant on `semiplot_markers` therefore gives `scada_writer` no capability it lacks: the
+role reaches that table through `semiplot` already. The grant stays at `INSERT`, so a faulty SCADA
+script cannot move or delete a marker. The argument does not license other grants:
+each grant to `scada_writer` names a job the SCADA does.
+
 The grants enforce one boundary: the SemiPlot operator, acting through `semiplot`, updates pen
 settings, groups and time markers and never inserts, deletes or re-keys a `semiplot_tags` row. `semiplot_registrar`
 still earns its place against `scada_writer`: under a superuser owner the same view code ran as the
@@ -372,7 +377,7 @@ relation and runs after them, and `semiplot_meta.sql` runs last.
 | `semiplot_tags` | One pen: `id` matching `trends.id`, `name`, `unit`, `format` as a .NET numeric format string the viewer applies and the server does not validate, `color` as `#RRGGBB`, `line_style` (0 interpolated, 1 stepped), `enabled_on_start`, the `scale_min_on_start`/`scale_max_on_start` pair that bounds the pen's own Y axis (both `NULL` means autoscale), and `log_scale_on_start`, the type of that axis: `false` is linear, `true` is log10. A column with the `_on_start` suffix holds a start value: what the pen opens with in a new window; for the scale pair and the log flag, also what the viewer's "Restore initial scale" returns to. Editing the pen on the chart changes the current view and never a start value, and a changed start value never changes a chart already open. Every other settings column is a live setting, which a running chart applies at its next catalogue read |
 | `semiplot_groups` | One group: `name`, and `folded_on_start`, a start value as in `semiplot_tags`: `true` opens the group folded to its header in the viewer's sidebar. A group the editor creates takes the default `false`. `id` is `GENERATED ALWAYS AS IDENTITY` rather than `serial`, so `semiplot` needs no `USAGE` on a sequence to insert one |
 | `semiplot_pen_groups` | Membership, `(pen_id, group_id)`. A pen may sit in several groups and in none: a pen with no row here is legal and the viewer shows it ungrouped |
-| `semiplot_markers` | One time marker the operator placed on the chart: `id` as `bigint GENERATED ALWAYS AS IDENTITY`, the moment `t`, and an optional `label` of 1 to 80 characters. An unlabelled marker stores `NULL`, and the `CHECK` refuses `''`. `t` is `timestamptz`, not the naive local wall-clock time of `trends.t`: the viewer places an exact UTC moment, and a naive local value is ambiguous in the autumn repeated hour. No index, because the viewer reads the whole table. Not partitioned and outside any retention, so a marker outlives the day partition it points into |
+| `semiplot_markers` | One time marker on the chart: `id` as `bigint GENERATED ALWAYS AS IDENTITY`, the moment `t`, an optional `label` of 1 to 80 characters, and `kind` and `locked` ([Recipe markers](#recipe-markers)). An unlabelled marker stores `NULL`, and the `CHECK` refuses `''`. `t` is `timestamptz`, not the naive local wall-clock time of `trends.t`: the viewer places an exact UTC moment, and a naive local value is ambiguous in the autumn repeated hour. No index, because the viewer reads the whole table. Not partitioned and outside any retention, so a marker outlives the day partition it points into |
 | `semiplot_meta` | One row: `schema_version`. A `singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton)` admits no second row, and the value is written by one `INSERT ... ON CONFLICT (singleton) DO UPDATE`, so a failure cannot leave the table empty and a re-run cannot leave two rows |
 
 These five are granted table by table, not through default privileges: the superuser connection
@@ -447,6 +452,44 @@ times the probes, about 2.6 s for a call that adds nothing and about 4.8 s for o
 key, which is past one second at every press of the refresh button. Whether a site reaches that
 depends on the retention depth, which is `UNDECIDED` ([README.md](./README.md)); the call stays
 inside the `semiplot` role's 30 s `statement_timeout` either way.
+
+### Recipe markers
+
+The SCADA marks each recipe's start and end on the chart, so an operator exports one recipe by
+picking its markers. `kind` says what a marker means and who writes it:
+
+| `kind` | Meaning | Writer |
+| --- | --- | --- |
+| 0 | user marker | the viewer |
+| 1 | recipe start | the SCADA |
+| 2 | recipe end | the SCADA |
+| 3 | recipe interrupted; ends a recipe like 2 | the SCADA |
+
+`locked` marks a marker the chart's gestures do not move or delete; the viewer's marker menu sets
+and clears it, and the SCADA writes its markers locked. The viewer enforces the flag, the database
+does not: `semiplot` updates and deletes any marker. Both columns have defaults, so the viewer's
+`INSERT (t, label)` stays valid.
+
+A Simple-Scada 2 project script sends the marker through `RunSQL`, which runs it against the
+project's database; the project connects as `scada_writer`:
+
+```sql
+INSERT INTO semiplot_markers (t, label, kind, locked)
+VALUES (clock_timestamp(), NULLIF(left('RecipeName.csv', 80), ''), 1, true);
+```
+
+- `t` is the server's clock, so the session `TimeZone` and DST play no part. The SCADA and the
+  server share one machine, so a marker and the archive rows around it come from one clock.
+  `clock_timestamp()` rather than `now()`, which is the start of the enclosing transaction.
+- `label` of a start marker is the recipe file name without the path; an end marker passes `NULL`.
+  `RunSQL` takes the statement as one string with no bind parameters, so the script writes the name
+  as a literal and doubles each single quote in it. `left(..., 80)` and `NULLIF(..., '')` keep a long or an empty name inside the
+  `label` `CHECK`.
+- `id` is never named: it is `GENERATED ALWAYS`.
+- `RunSQL` reports a failure to the project's scripts of the "Ошибка SQL-запроса" event type. The
+  project's contract: a refused marker does not stop the recipe and is not retried, so a marker is
+  lost while the database is unreachable.
+- `RunSQL` exists in the Standard, Professional and Demo-Time editions of Simple-Scada 2.
 
 ### The schema version is a floor
 
@@ -588,11 +631,19 @@ promises. They are knowable at exit precisely because this tool creates `public.
    `provision` and by nothing else. A catalog question, for the same reason.
 7. **`semiplot` holds no `CREATE` on schema `public`**, read through `has_schema_privilege`, so the
    role adds nothing beside the tables granted to it by name ([The roles](#the-roles)).
-8. **The `semiplot` login reads `trends` too**, over TCP, with the password the run set. This is
+8. **`scada_writer` adds a recipe marker and cannot read, move or delete one.** `SET ROLE
+   scada_writer`, then the [recipe marker](#recipe-markers) statement with the probe name as the
+   file name, in a transaction that is rolled back. A refusal (42501) prints `GRANT INSERT ON
+   semiplot_markers TO scada_writer`; any other error is reported as it is. Then
+   `has_any_column_privilege` must answer false for `SELECT` and `UPDATE`, since a column grant
+   such as `UPDATE (t)` is invisible to `has_table_privilege` and would let a script move every
+   marker, and `has_table_privilege` false for `DELETE` and `TRUNCATE`. A failure prints the
+   `REVOKE`; a table-level `REVOKE` clears the column grants too.
+9. **The `semiplot` login reads `trends` too**, over TCP, with the password the run set. This is
    the half `SET ROLE` cannot reach: `pg_hba.conf` admitting the role and the password a
    consumer will carry. It is skipped, with a printed note, on a socket host only: `peer` is the
    platform default there and no consumer reads over the socket.
-9. **No setting waits for a service restart** (`pg_settings.pending_restart`). A warning, not a
+10. **No setting waits for a service restart** (`pg_settings.pending_restart`). A warning, not a
    failure, so a pending `shared_buffers` or `listen_addresses` never blocks the access checks.
    Both commands read it as the last statement of the run, after the access checks, so a missed
    restart is the last line before the closing `Done: ...` line, and it tells the operator to
@@ -630,7 +681,7 @@ another password changes it explicitly.
 | --- | --- | --- | --- |
 | The superuser | `--super-password`, `SEMIBASE_SUPER_PASSWORD` | `postgres` | Connects with it and never changes it: a server whose superuser password differs needs the real one on every run, and a wrong one fails the run at its first connection |
 | `scada_writer` | `--writer-password`, `SEMIBASE_WRITER_PASSWORD` | `scada_writer`, for a role this run creates | Creates a missing role with the given password, else the convention. Never changes an existing role's password, given or not: the SCADA project holds the same password, so a change would stop the archive. A given password on an existing role logs `exists, credentials untouched; the given password applies to a new role only`. The operator changes it by hand with `\password scada_writer` and the SCADA project together |
-| `semiplot` | `--plot-password`, `SEMIBASE_PLOT_PASSWORD` | `semiplot` | Creates the role with it or resets the role to it on every run, then logs in with it ([check 8](#what-the-tail-checks-prove)) |
+| `semiplot` | `--plot-password`, `SEMIBASE_PLOT_PASSWORD` | `semiplot` | Creates the role with it or resets the role to it on every run, then logs in with it ([check 9](#what-the-tail-checks-prove)) |
 
 `resolvePasswords` in `cmd/semibase/main.go` applies the chain with `cmp.Or`, so an empty value
 counts as unset; the writer has no default there, and `roleStatement` in

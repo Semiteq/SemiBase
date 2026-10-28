@@ -249,6 +249,11 @@ jobs:
               RAISE EXCEPTION 'semiplot_groups accepted a NULL folded_on_start';
             EXCEPTION WHEN not_null_violation THEN NULL;
             END;
+            BEGIN
+              INSERT INTO semiplot_markers (t, kind) VALUES (now(), 4);
+              RAISE EXCEPTION 'semiplot_markers accepted kind 4';
+            EXCEPTION WHEN check_violation THEN NULL;
+            END;
           END
           $$
           SQL

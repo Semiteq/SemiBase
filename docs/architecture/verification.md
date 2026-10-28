@@ -4,7 +4,7 @@ What runs against a live server, where, and what each step requires. The reposit
 database-touching unit tests: unit tests sit beside the source (`cmd/semibase/*_test.go`,
 `internal/engine/*_test.go`, `internal/provision/*_test.go`, table-driven; the `//go:build
 windows` ones run in the `build` job only), and the integration checks are the `semiplot`
-access checks every run ends with ([provisioning.md](./provisioning.md#what-the-tail-checks-prove)),
+and `scada_writer` access checks every run ends with ([provisioning.md](./provisioning.md#what-the-tail-checks-prove)),
 the CI steps below and the release smoke runs.
 
 `.github/workflows/ci.yml` runs on every pull request and on a push to `master`, unless every
@@ -58,7 +58,7 @@ container is `postgres:17-alpine` on port 5432. `Shellcheck the shell scripts` c
 | --- | --- |
 | `Provision the service container` | `site --database semiplot_dev --expected-major 17` exits 0 twice: the tuning path and the idempotency check |
 | `Require the listen_addresses delta` | `listen_addresses` still pending and `localhost` from `postgresql.auto.conf` in `pg_file_settings`. The container is never restarted, so these two prove `site` wrote the delta |
-| `Register pens and probe the semiplot constraints` | As `scada_writer`: a day partition and four `trends` rows over keys 0, 13 and 40. As `semiplot`: `semiplot_register_new_pens()` returns 3, then 0, and `semiplot_tags` reads `0 0 #4E79A7 f f,13 13 #F28E2B f f,40 40 #59A14F f f`. Then pen 0 takes the bounds (1, 10), the scale-pair `CHECK` refuses (5, `NULL`) and (5, 1) with `check_violation` (23514), and `log_scale_on_start = NULL` fails with `not_null_violation` (23502), as does a `semiplot_groups` row with `folded_on_start = NULL`. The only place the function body runs over a non-empty archive |
+| `Register pens and probe the semiplot constraints` | As `scada_writer`: a day partition and four `trends` rows over keys 0, 13 and 40. As `semiplot`: `semiplot_register_new_pens()` returns 3, then 0, and `semiplot_tags` reads `0 0 #4E79A7 f f,13 13 #F28E2B f f,40 40 #59A14F f f`. Then pen 0 takes the bounds (1, 10), the scale-pair `CHECK` refuses (5, `NULL`) and (5, 1) with `check_violation` (23514), and `log_scale_on_start = NULL` fails with `not_null_violation` (23502), as does a `semiplot_groups` row with `folded_on_start = NULL`; a `semiplot_markers` row with `kind = 4` fails with `check_violation`. The only place the function body runs over a non-empty archive |
 | `Keep the password statements out of the server log` | Sets `log_statement = 'all'`, runs `site` again with a random `semiplot` password (the `ALTER ROLE ... PASSWORD` path), then `check-server-log.sh` with that password and `ci-writer` |
 | `Provision a PostgreSQL 14 container, where the REVOKE bites` | `bench --host 127.0.0.1 --port 15434 --database semiplot_dev --expected-major 14` against `postgres:14-alpine`, started with `log_statement=all`, `log_min_error_statement=error`, `log_min_duration_statement=0`, `log_min_duration_sample=0` and `log_transaction_sample_rate=1` |
 | `Keep the CREATE ROLE password statements out of the PostgreSQL 14 log` | `check-server-log.sh` over that container with `ci-writer` and `ci-plot` (the `CREATE ROLE ... PASSWORD` path) |
@@ -73,7 +73,7 @@ holds `CREATE` through `PUBLIC` without it and the run exits 1. Measured both wa
 `.github/scripts/check-server-log.sh <container> <password>...` requires `logging_collector = off`,
 so `docker logs` is the whole server log; requires the `semiplot` login's probe text
 (`FROM public.trends LIMIT 1) probe`, `plotProbe` in `internal/provision/check.go`) in it, so the
-server logged statements and check 8 ran; and requires every given password absent.
+server logged statements and check 9 ran; and requires every given password absent.
 `.github/scripts/wait-for-postgres.sh <container>` waits up to 120 s for `pg_isready` and fails
 with the container log when the container stops or the wait runs out.
 

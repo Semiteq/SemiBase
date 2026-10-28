@@ -83,13 +83,13 @@ func tooWideTagGrantFailure(probe plotWriteProbe) error {
 	privilege, _, _ := strings.Cut(probe.operation, " ")
 	return fmt.Errorf("%s may %s %s and must not: it edits a pen's settings and never adds, deletes or "+
 		"re-keys a pen. The grant is too wide. %s",
-		PlotRole, probe.operation, probe.table, revokeRepair(privilege, probe.table))
+		PlotRole, probe.operation, probe.table, revokeRepair(PlotRole, privilege, probe.table))
 }
 
-func revokeRepair(privilege, relation string) string {
+func revokeRepair(role, privilege, relation string) string {
 	return fmt.Sprintf("Repair with REVOKE %s ON %s FROM %s, or, if the privilege comes through PUBLIC or a "+
 		"role %s is a member of, revoke it there or drop the membership; then re-run this command",
-		privilege, relation, PlotRole, PlotRole)
+		privilege, relation, role, role)
 }
 
 // a class 23 error is raised past the privilege check, so the statement was allowed to run
@@ -110,7 +110,20 @@ func refusalVerdict(probe plotWriteProbe, probeErr error) error {
 
 func excessPrivilegeFailure(relation, operation string) error {
 	return fmt.Errorf("%s holds %s on %s and must not write it. %s",
-		PlotRole, operation, relation, revokeRepair(operation, relation))
+		PlotRole, operation, relation, revokeRepair(PlotRole, operation, relation))
+}
+
+func writerMarkerFailure(cause error) error {
+	if !hasSQLState(cause, insufficientPrivilege) {
+		return fmt.Errorf("running the %s recipe marker probe: %w", WriterRole, cause)
+	}
+	return fmt.Errorf("%s cannot add a recipe marker to semiplot_markers: %w. Repair with %s, then re-run "+
+		"this command", WriterRole, cause, writerMarkerGrant)
+}
+
+func writerMarkerExcessFailure(operation string) error {
+	return fmt.Errorf("%s holds %s on semiplot_markers and must not: the SCADA only adds recipe markers. %s",
+		WriterRole, operation, revokeRepair(WriterRole, operation, "semiplot_markers"))
 }
 
 func createInPublicFailure() error {
@@ -131,7 +144,7 @@ func (o Options) check(ctx context.Context) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}
-	step("Phase check: the %s access chain", PlotRole)
+	step("Phase check: the %s access chain and the %s marker grant", PlotRole, WriterRole)
 
 	archive, err := o.connectSuperuser(ctx, o.Database)
 	if err != nil {
@@ -158,6 +171,12 @@ func (o Options) check(ctx context.Context) error {
 		return err
 	}
 	if err := assertPlotCannotCreateInPublic(ctx, archive); err != nil {
+		return err
+	}
+	if err := assertWriterAddsRecipeMarkers(ctx, archive); err != nil {
+		return err
+	}
+	if err := assertWriterOnlyAddsMarkers(ctx, archive); err != nil {
 		return err
 	}
 	if err := o.checkPlotLogin(ctx); err != nil {
@@ -298,6 +317,55 @@ func assertPlotCannotEditPenKeys(ctx context.Context, transaction pgx.Tx) error 
 		}
 	}
 	ok("%s cannot insert, delete or re-key a pen in semiplot_tags", PlotRole)
+	return nil
+}
+
+// the statement docs/architecture/provisioning.md#recipe-markers gives the SCADA, with the probe
+// name as the recipe file name
+var recipeMarkerProbe = fmt.Sprintf("INSERT INTO semiplot_markers (t, label, kind, locked) "+
+	"VALUES (clock_timestamp(), NULLIF(left('%s', 80), ''), 1, true)", writeProbeName)
+
+func assertWriterAddsRecipeMarkers(ctx context.Context, archive *pgx.Conn) error {
+	return runAs(ctx, archive, WriterRole, func() error {
+		transaction, err := archive.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("opening the %s marker probe transaction: %w", WriterRole, err)
+		}
+		defer func() { _ = transaction.Rollback(ctx) }()
+
+		if _, err := transaction.Exec(ctx, recipeMarkerProbe); err != nil {
+			return writerMarkerFailure(err)
+		}
+		ok("%s adds a recipe marker to semiplot_markers", WriterRole)
+		return nil
+	})
+}
+
+// has_table_privilege cannot see a column grant, and UPDATE (t) alone would let a script move every
+// marker, so the column-capable privileges ask has_any_column_privilege
+var writerForbiddenMarkerPrivileges = []struct {
+	function  string
+	privilege string
+}{
+	{"has_any_column_privilege", "SELECT"},
+	{"has_any_column_privilege", "UPDATE"},
+	{"has_table_privilege", "DELETE"},
+	{"has_table_privilege", "TRUNCATE"},
+}
+
+func assertWriterOnlyAddsMarkers(ctx context.Context, archive *pgx.Conn) error {
+	for _, forbidden := range writerForbiddenMarkerPrivileges {
+		var granted bool
+		if err := archive.QueryRow(ctx, "SELECT "+forbidden.function+"($1, 'semiplot_markers', $2)",
+			WriterRole, forbidden.privilege).Scan(&granted); err != nil {
+			return fmt.Errorf("checking the %s %s privilege on semiplot_markers: %w",
+				WriterRole, forbidden.privilege, err)
+		}
+		if granted {
+			return writerMarkerExcessFailure(forbidden.privilege)
+		}
+	}
+	ok("%s holds no SELECT, UPDATE, DELETE or TRUNCATE on semiplot_markers", WriterRole)
 	return nil
 }
 

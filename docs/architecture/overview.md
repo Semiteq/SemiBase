@@ -15,7 +15,7 @@ its own retention setting.
 
 | Consumer | Role | Access |
 | --- | --- | --- |
-| Simple-Scada 2 (archives into PostgreSQL) | `scada_writer` | Owns and writes `trends`, creates its day partitions, creates and writes `messages`; executes retention |
+| Simple-Scada 2 (archives into PostgreSQL) | `scada_writer` | Owns and writes `trends`, creates its day partitions, creates and writes `messages`; executes retention; adds recipe markers to `semiplot_markers` |
 | SemiPlot (trend viewer) | `semiplot` | `SELECT` on `trends` and `messages`; read and edit a pen's settings in `semiplot_tags`, never its `id`, and never add or delete a pen by hand; `EXECUTE` on `semiplot_register_new_pens()`, which adds a pen for every key SCADA has written; read and write `semiplot_groups`, `semiplot_pen_groups` and `semiplot_markers`; `SELECT` on `semiplot_meta` — nothing else |
 
 Two more roles take part. The superuser the tool connects as (`--superuser`, default `postgres`)
@@ -29,14 +29,14 @@ pen settings, groups and time markers and can create nothing beside the five tab
 The `semiplot` credential grants process-history reads, pen-catalogue edits and time-marker edits,
 and nothing more, which is what makes a plaintext password in a client configuration file an
 acceptable risk. A bug in the viewer can corrupt the pen catalogue or move, relabel and delete the
-time markers. Both are what operators entered, and they can enter them again; the bug cannot touch
-`trends`.
+time markers. An operator can enter pen settings and user markers again; a deleted recipe marker is
+lost, since the SCADA writes it once. The bug cannot touch `trends`.
 
 ## Components
 
 | Component | Responsibility |
 | --- | --- |
-| `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning in two commands, `site` and `bench`: instance tuning (`site` only), database, roles, grants, the five SemiPlot tables, `semiplot_register_new_pens()`, `public.trends`, and the `semiplot` access checks that end every run |
+| `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning in two commands, `site` and `bench`: instance tuning (`site` only), database, roles, grants, the five SemiPlot tables, `semiplot_register_new_pens()`, `public.trends`, and the `semiplot` and `scada_writer` access checks that end every run |
 | `sql/semiplot_tags.sql`, `sql/semiplot_register.sql`, `sql/semiplot_groups.sql`, `sql/semiplot_markers.sql`, `sql/semiplot_meta.sql` | DDL for the objects we invented — the pen catalogue, the function that registers new pens, the groups and their membership, the time markers, and the schema version — embedded into the binary |
 | `sql/trends.sql` | The vendor's archive-table shape, transcribed and embedded; created as `scada_writer` ([provisioning.md](./provisioning.md#the-archive-table)) |
 | `internal/engine` | `semibase engine`: finds the Windows service that runs PostgreSQL 17 and classifies the machine for Setup, reading the service list and the data folders only ([installer.md](./installer.md#the-engine-state)) |
@@ -61,7 +61,8 @@ The order matters, because the default privileges have to be in place before any
    default privileges, `public.trends`, the five SemiPlot tables and
    `semiplot_register_new_pens()`. The restart puts `shared_buffers` and `listen_addresses` into
    effect ([provisioning.md](./provisioning.md#the-service-restart)), and the run ends by proving `semiplot` reads
-   `trends`, writes what it owns, cannot add, delete or re-key a pen and cannot write the archive.
+   `trends`, writes what it owns, cannot add, delete or re-key a pen and cannot write the archive,
+   and that `scada_writer` adds a recipe marker and cannot read, move or delete one.
    Exit code 0 means all of it holds.
 2. Point the Simple-Scada project at the database on `localhost` or `127.0.0.1`, since the
    server listens on loopback only, and start it once. It is expected to find `trends` in place,

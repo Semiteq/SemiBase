@@ -80,6 +80,10 @@ func semiplotGrantStatements() []string {
 		registerNewPensFunction, registerNewPensFunction, PlotRole))
 }
 
+// the SCADA's one grant on a semiplot_* table: it adds recipe markers and reads nothing back.
+// docs/architecture/provisioning.md#trust
+const writerMarkerGrant = "GRANT INSERT ON semiplot_markers TO " + WriterRole
+
 var registrarInsertColumns = []string{"id", "name", "color", "enabled_on_start"}
 
 // ON CONFLICT (id) needs SELECT on id to infer the primary key

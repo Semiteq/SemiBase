@@ -116,9 +116,16 @@ func TestSemiplotMarkersUseAnIdentityColumn(t *testing.T) {
 
 // the viewer names these columns in its own statements, the same contract as semiplot_tags
 func TestSemiplotMarkersColumns(t *testing.T) {
-	want := []string{"id", "t", "label"}
+	want := []string{"id", "t", "label", "kind", "locked"}
 	if got := columnNamesOf(semibase.SemiplotMarkersSQL); !slices.Equal(got, want) {
 		t.Errorf("semiplot_markers.sql declares columns %v, want %v", got, want)
+	}
+}
+
+// INSERT alone: a wider grant would let a SCADA script move or delete a marker
+func TestWriterMarkerGrant(t *testing.T) {
+	if want := "GRANT INSERT ON semiplot_markers TO scada_writer"; writerMarkerGrant != want {
+		t.Errorf("writerMarkerGrant = %q, want %q", writerMarkerGrant, want)
 	}
 }
 
@@ -267,8 +274,8 @@ func TestTagsUpdateGrantCoversEverySettingsColumn(t *testing.T) {
 	}
 }
 
-// the invariant the one-role decision does not weaken: nothing this package grants reaches the
-// archive, and no semiplot_* table reaches the writer role.
+// the invariant the one-role decision does not weaken: nothing this package grants semiplot reaches
+// the archive. The writer's one semiplot_* grant is writerMarkerGrant, pinned on its own
 func TestSemiplotGrantsLeaveTheArchiveAlone(t *testing.T) {
 	forbidden := append([]string{WriterRole, "CREATE"}, archiveRelations...)
 	for _, relation := range archiveRelations {
