@@ -8,7 +8,9 @@ access checks every run ends with ([provisioning.md](./provisioning.md#what-the-
 the CI steps below and the release smoke runs.
 
 `.github/workflows/ci.yml` runs on every pull request and on a push to `master`, unless every
-changed file matches `**.md` or `docs/**` (`paths-ignore`). Three jobs:
+changed file is on its `paths-ignore` list, which names the paths no job reads: Markdown,
+`docs/**`, `LICENSE`, `logo.png`, `.zed/**`, `Installer/make-icon.py` and `release.yml`. Three
+jobs:
 
 | Job | Runner | Covers |
 | --- | --- | --- |

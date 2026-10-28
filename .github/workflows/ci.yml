@@ -1,14 +1,28 @@
 name: CI
 
 # push is limited to master so a same-repo pull request runs once (the
-# pull_request event), not twice. A change of Markdown and docs/ files alone
-# builds and tests nothing, so it runs nothing.
+# pull_request event), not twice. No job reads the ignored paths, so a change
+# of them alone runs nothing. Keep both lists equal.
 on:
   push:
     branches: [master]
-    paths-ignore: ['**.md', 'docs/**']
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "logo.png"
+      - ".zed/**"
+      - "Installer/make-icon.py"
+      - ".github/workflows/release.yml"
   pull_request:
-    paths-ignore: ['**.md', 'docs/**']
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - "logo.png"
+      - ".zed/**"
+      - "Installer/make-icon.py"
+      - ".github/workflows/release.yml"
 
 jobs:
   build:
