@@ -94,6 +94,15 @@ func TestSemiplotGroupsUseAnIdentityColumn(t *testing.T) {
 	}
 }
 
+// the viewer names these columns in its own statements, the same contract as semiplot_tags.
+// columnNamesOf reads the first table of a file, and semiplot_groups.sql creates semiplot_groups first
+func TestSemiplotGroupsColumns(t *testing.T) {
+	want := []string{"id", "name", "folded_on_start"}
+	if got := columnNamesOf(semibase.SemiplotGroupsSQL); !slices.Equal(got, want) {
+		t.Errorf("semiplot_groups.sql declares columns %v, want %v", got, want)
+	}
+}
+
 // the viewer inserts a marker and reads its id back, so the id needs no sequence grant either
 func TestSemiplotMarkersUseAnIdentityColumn(t *testing.T) {
 	statements := sqlStatementsOf(semibase.SemiplotMarkersSQL)

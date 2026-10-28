@@ -200,7 +200,7 @@ jobs:
 
       # Every other step runs semiplot_register_new_pens() over an empty
       # public.trends, so its INSERT adds nothing.
-      - name: Register pens and probe the semiplot_tags constraints
+      - name: Register pens and probe the semiplot constraints
         env:
           PGHOST: localhost
           PGDATABASE: semiplot_dev
@@ -242,6 +242,11 @@ jobs:
             BEGIN
               UPDATE semiplot_tags SET log_scale_on_start = NULL WHERE id = 0;
               RAISE EXCEPTION 'semiplot_tags accepted a NULL log_scale_on_start';
+            EXCEPTION WHEN not_null_violation THEN NULL;
+            END;
+            BEGIN
+              INSERT INTO semiplot_groups (name, folded_on_start) VALUES ('ci group', NULL);
+              RAISE EXCEPTION 'semiplot_groups accepted a NULL folded_on_start';
             EXCEPTION WHEN not_null_violation THEN NULL;
             END;
           END
