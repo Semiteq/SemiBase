@@ -19,23 +19,25 @@ Setup's environment, else the conventions apply ([passwords](#passwords)). Setup
 password parameter: Inno's parser would cut one silently ([Inno Setup](#inno-setup)). Exit code
 0 means provisioned.
 
-All of the work runs in `PrepareToInstall`, before Inno copies a file. A string it returns ends
+`InitializeSetup` runs `semibase.exe engine` once ([the engine state](#the-engine-state)) and
+returns `True` whatever the run found: a `False` there ends Setup with no exit code 7 and no
+setup log, so the Ready page and `PrepareToInstall` report a failed run instead. Every change to
+the machine runs in `PrepareToInstall`, before Inno copies a file. A string it returns ends
 Setup with exit code 7 under `/VERYSILENT`; a failure raised later comes after the uninstaller is
 registered and may still exit 0. An exception inside `PrepareToInstall` becomes a refusal too.
 Under `/VERYSILENT` the returned text reaches no one, so every refusal is also appended,
 password-free, to `C:\Program Files\SemiBase\Logs\setup-<yyyymmdd-hhnnss>.log` (`{app}\Logs`).
 Each refusal is one line that names the problem in the reader's terms and the next step, and
 points at nothing the machine does not hold ([installer-text.md](./installer-text.md), rules 9,
-14 and 17). Its technical detail, the registry key, the exit code or the `site` log path, is not
-on screen: the refusal function returns `Refuse(Text, Detail)`, which keeps the detail in the
-`RefusalDetail` global, and `LogRefusal` writes it on the line before the refusal, both into one
-file whose path it computes once (each `LogPath` call stamps the current second). A detail is an
-English `[CustomMessages]` entry without a language prefix, which Inno applies to every language
-(Inno Setup 6.7.3 help, "[CustomMessages] section"): `<Message>Detail`, the four `Incomplete*`
-fragments that fill `IncompleteInstallationDetail`, or `NoRegistrationDetail`, which
-`DataDirectoryNotEmpty` uses alone and `PortBusy` follows with `PortOwnerDetail` or
-`PortNoOwnerDetail`. So it reads the same under either language; a refusal with nothing technical
-to add writes its line alone.
+14 and 17). Its technical detail, the engine's `detail=` line, an exit code or the `site` log
+path, is not on screen: the refusal function returns `Refuse(Text, Detail)`, which keeps the
+detail in the `RefusalDetail` global, and `LogRefusal` writes it on the line before the refusal,
+both into one file whose path it computes once (each `LogPath` call stamps the current second).
+A detail is the engine's `detail=` line, which `semibase` prints in English, or an English
+`[CustomMessages]` entry without a language prefix, which Inno applies to every language (Inno
+Setup 6.7.3 help, "[CustomMessages] section"): `<Message>Detail`, or `PortOwnerDetail` and
+`PortNoOwnerDetail`, which `PortBusy` appends to the engine's line after a `; `. So it reads the
+same under either language; a refusal with nothing technical to add writes its line alone.
 `PrepareToInstall` clears `RefusalDetail` before its chain and in its `except` branch, so a
 detail left by the wizard pages or by an earlier step never precedes `SetupError`.
 
@@ -60,7 +62,7 @@ In order, `PrepareToInstall`:
    included;
 2. applies the `scada_writer` password rule ([passwords](#passwords)) to the page field on a
    fresh install, else to the caller's `SEMIBASE_WRITER_PASSWORD` (`WriterPasswordValue`);
-3. refuses while a PostgreSQL uninstaller runs (`UninstallerRunning`), before any registry read:
+3. refuses while a PostgreSQL uninstaller runs (`UninstallerRunning`), before the engine run:
    a process whose `Win32_Process.Name` matches `_uninstall*.000`, the copy the
    [uninstaller](#the-uninstaller) leaves running, or `uninstall-postgresql*`, the uninstaller
    itself. The detail line names the first match as `<name> (pid <n>)`. The probe is PowerShell
@@ -70,38 +72,38 @@ In order, `PrepareToInstall`:
    provisions. Measured 2026-10-27 on the development machine with the probe text the `.iss`
    builds: a copy of `PING.EXE` started as `_uninstall4242.000` printed
    `_uninstall4242.000 (pid <n>)` and exit 0, and with none running the probe exited 2;
-4. decides the engine state, applying the [superuser password rules](#password-characters) on the
-   fresh row only to the given password or the convention, and installs EDB there;
+4. runs `semibase.exe engine` again, since the service list may have changed since
+   `InitializeSetup` read it, and decides the [engine state](#the-engine-state), applying the
+   [superuser password rules](#password-characters) on the fresh row only to the given password
+   or the convention; on the fresh row it installs EDB and runs the engine a third time to find
+   the service the install created;
 5. runs `sc.exe config <service> start= auto` and `sc.exe start`; a non-zero exit of either
-   refuses (`ServiceConfigFailed`, `ServiceStartFailed`) with its `SysErrorMessage` text on
-   screen and the code in the detail line, since `sc.exe` exits with a Win32 error code, except
-   1056 (already running) from `sc.exe start`. `ServiceConfigFailed` names
-   `<Base Directory>\uninstall-postgresql.exe` and `ServiceStartFailed` the folder
-   `<Data Directory>\log`, both from the `TEngine` that `RegisteredEngineRefusal` filled;
-6. runs `semibase.exe site --port <Port> --superuser <Super User> --expected-major 17
-   --restart-service <Service ID>` through `ExecAndLogOutput`, whose callback appends each output
-   line, stdout and stderr in write order, to `site-<yyyymmdd-hhnnss>.log` beside the setup log
-   as it arrives. The file appears with the first line, so a Setup killed during a long service
-   stop still leaves a log. A non-zero exit refuses, the first match winning:
+   refuses with its `SysErrorMessage` text on screen and the code in the detail line, since
+   `sc.exe` exits with a Win32 error code, except 1056 (already running) from `sc.exe start`.
+   `ServiceConfigFailed` tells the reader to fix the error it shows, since the engine run before
+   it has just read the service; `ServiceStartFailed` names the folder `<data>\log`. The values
+   come from the `TEngine` of `PrepareToInstall`'s last engine run;
+6. runs `semibase.exe site --port <port> --expected-major 17 --restart-service "<service>"`,
+   with the engine's `port=` and `service=`, through `ExecAndLogOutput`, whose callback appends
+   each output line, stdout and stderr in write order, to `site-<yyyymmdd-hhnnss>.log` beside the
+   setup log as it arrives. The file appears with the first line, so a Setup killed during a long
+   service stop still leaves a log. A non-zero exit refuses, the first match winning:
    - `SitePasswordWrong` when a line of the output carried `SQLSTATE 28P01`, with the log path
      in its detail line. `semibase` puts `password authentication failed for <role> (SQLSTATE
      28P01)` in English before the server's own text (`connectFailure` in
      `internal/provision/provision.go`), so the code is there whatever the server's
      `lc_messages`;
-   - `SitePortWrong` when a line carried `connectex` before any `[ OK ]` line. `semibase`
-     prints its first `[ OK ]` only after its first connection succeeds (`confirmServes` in
-     `internal/provision/service_windows.go`), so such a line is the TCP failure of that first
-     connection to the registered `Port`; one after an `[ OK ]`, a server that died during the
-     restart, gets `SiteFailed`. `connectex` is the name of the Windows call in Go's dial error,
-     the same on every Windows, while the text after it ("No connection could be made because
-     the target machine actively refused it.") is in the Windows display language. The screen
-     names the port and `<Data Directory>\postgresql.conf`; the detail line names
-     `HKLM\SOFTWARE\PostgreSQL\Services\<Service ID>`, the key that holds `Port`, the port and
-     the site log. In the CI case with `Port` 15433 the refusal takes about 1.3 s;
    - `SiteFailed` otherwise, which names the log on screen, since the reader acts on its last
      lines, and puts the exit code in the detail line.
 
    A `semibase.exe` that does not start refuses with the system error text.
+
+Setup passes no `--superuser`, so `site` connects as its default, `postgres`
+(`cmd/semibase/main.go`). PostgreSQL answers a password login of a role that does not exist with
+the same `28P01` as a wrong password under `scram-sha-256` and `md5` (PostgreSQL's behaviour, not
+measured here), so on a server whose superuser has another name Setup shows `SitePasswordWrong`.
+A `site` that cannot connect at all, to a server that does not answer on the engine's port among
+them, gets `SiteFailed`.
 
 The port probe of the fresh row is PowerShell through `ExecAndCaptureOutput`, since Pascal
 Script has no sockets and no process list: `[Net.Sockets.TcpClient]::new('localhost', <port>)`,
@@ -118,41 +120,60 @@ wait for the port after `sc.exe start`: with
 `--restart-service`, `site` waits for the service's Running state before its first connection,
 and `pg_ctl runservice -w` reports Running only once the postmaster accepts sessions, crash
 recovery included (`pgwin32_ServiceMain` in `src/bin/pg_ctl/pg_ctl.c`, REL_17_STABLE). A wrong
-registered `Port` is found by `site`, which cannot connect (`SitePortWrong`), and a wrong
-superuser password on a registered 17 is found by `site` too, after the service was set to
-Automatic and started: only a running server can check it.
+superuser password on a found 17 is found by `site`, after the service was set to Automatic and
+started: only a running server can check it.
 
-`ExecAndLogOutput` starts `semibase.exe` with no shell between, so a `%` in the registered `Super
-User` or `Service ID` reaches it verbatim ([measured](#inno-setup)). Both values go between `"`;
-a `"` inside one is not checked for.
+`ExecAndLogOutput` starts `semibase.exe` with no shell between, so a `%` in the service name
+reaches it verbatim ([measured](#inno-setup)). The name goes between `"`; a `"` inside it is not
+checked for. The port is the digits the engine printed.
 
-The engine state comes from the `HKLM64` EDB keys, never from the service list alone; the first
-matching row wins:
+### The engine state
 
-| State | Action |
-| --- | --- |
-| `Installations\postgresql-x64-17` with a `Version` starting `17.`, a `Super User`, `<Data Directory>\PG_VERSION`, and a `Service ID` with a `Services\<Service ID>\Port` | Use it, even when other majors are registered too |
-| `Installations\postgresql-x64-17` with another `Version`, no `Super User`, no `Data Directory` or no `PG_VERSION` | Refuse (`IncompleteInstallation`); the detail line names the key and what it lacks: a [failed install](#a-failed-install) leaves exactly this |
-| `Installations\postgresql-x64-17` with an empty `Service ID` or no `Services\<Service ID>\Port` | Refuse (`OrphanedRegistration`), naming `<Base Directory>\uninstall-postgresql.exe`, with both keys in the detail line, so `site` never gets `--restart-service ""`. A `Service ID` naming no service passes the table and is refused by `sc.exe config`; a wrong `Port` is refused after `site` (`SitePortWrong`) |
-| Another major registered, 17 not | Refuse; the detail line names each key under `Installations` by its bare name, `postgresql-x64-14` |
-| Nothing registered, a superuser password that breaks the [password rules](#password-characters) | Refuse |
-| Nothing registered, `localhost:5432` accepts TCP | Refuse: a server the registry does not know is not the setup's to provision |
-| Nothing registered, `C:\Program Files\PostgreSQL\17\data` not empty | Refuse: existing data is never overwritten |
-| Nothing registered, port free, no data directory | Install EDB with the option file under [command line](#command-line), its `superpassword` the given superuser password or `postgres`, then re-read the new registration as in the first row |
+`semibase.exe engine --expected-major 17` ([command line](#semibase-engine)) reads the Windows
+service list and the data folders and prints one state; Setup decides what to show. `DetectEngine`
+in `Installer/SemiBase.iss` extracts the binary to `{tmp}` and runs it through
+`ExecAndCaptureOutput`: once in `InitializeSetup` into the `Detected` global, which
+`InitializeWizard`, `ShouldSkipPage`, `NextButtonClick` and `UpdateReadyMemo` read, and in
+`PrepareToInstall` before the state checks and after the EDB install. No other wizard function
+runs it.
+
+A pg_ctl service is one whose command line runs `pg_ctl.exe` with `runservice`. A candidate is a
+pg_ctl service whose `PG_VERSION` major is 17 or unknown, or a service whose name starts with
+`postgresql` in any letter case and whose configuration or state cannot be queried
+(`collectServices` in `internal/engine/engine.go`). A service without `-D` or without a readable
+`PG_VERSION` has no known major and counts as a candidate, since installing a second server
+beside a PostgreSQL service Setup cannot place is the wrong action; so does a `postgresql*`
+service the engine cannot query. The texts of those states name no version. The first matching
+row wins (`Classify` in `internal/engine/engine.go`):
+
+| `state=` | Condition | Setup |
+| --- | --- | --- |
+| `ambiguous` | Two or more candidates | Refuse (`AmbiguousEngine`), naming the `services=` list in the order of the service list and telling the reader to stop and delete, with `sc.exe stop` and `sc.exe delete` in Command Prompt run as administrator, each service the SCADA does not use; detail `services <a>, <b> run PostgreSQL 17 or a server of unknown major` |
+| `incomplete` | The one candidate has no `-D`, or has no `PG_VERSION`, an unreadable one or one that holds no [major](#semibase-engine) | Refuse with `IncompleteInstallation`, naming `<base>\uninstall-postgresql.exe`, when the engine printed `uninstaller=yes`, else with `IncompleteInstallationNoUninstaller`, which gives the `sc.exe stop` and `sc.exe delete` steps of `AmbiguousEngine` word for word for that service. The detail is the problem, such as `service <name>: no file <data>\PG_VERSION` or `service <name> runs pg_ctl.exe with no -D` |
+| `unreadable` | The one candidate has a `PG_VERSION` major, and the engine cannot read its port: a configuration file the [configuration reader](#semibase-engine) refuses, a `-o` port that is not a port number, or a Running service without a readable port on line 4 of `postmaster.pid`, the file missing included; or the candidate is a `postgresql*` service the engine cannot query | Refuse with `UnreadableService`, which shows the service and `unreadable=`, the file and line or the query error, and tells the reader to fix the error; it never sends the reader to an uninstaller, since the data folder may hold the archive. Detail `service <name>: <unreadable>` |
+| `port-mismatch` | The candidate runs, and `listening=` differs from `port=` | Refuse with `PortMismatch`, naming both ports, the `port-file=` file and the service, or with `PortMismatchNoFile` when `port-file=` is empty (the default or the service command line set the port), which tells the reader to restart the service. Detail `service <name> listens on port <n>, and <source> sets port <m>`, where `<source>` is the file, `the service command line` or `the default`. Setup does not connect to the running port: the configured one takes effect at the restart `site` would perform |
+| `found` | One candidate | Configure it; detail `service <name> runs PostgreSQL 17 from <data> on port <port>` |
+| `other-major` | No candidate, one or more pg_ctl services of another major | Refuse (`OtherMajor`); detail `no service runs PostgreSQL 17; <name> runs PostgreSQL <n>`, every pg_ctl service listed |
+| `fresh` | No pg_ctl service | Refuse a superuser password that breaks the [password rules](#password-characters); refuse when `localhost:5432` accepts TCP (`PortBusy`), since a server no service runs is not the setup's to provision; refuse when `C:\Program Files\PostgreSQL\17\data` is not empty (`DataDirectoryNotEmpty`), since existing data is never overwritten; else install EDB with the option file under [the EDB installer](#the-edb-installer), its `superpassword` the given superuser password or `postgres`. The detail of both refusals starts with `no service runs pg_ctl.exe runservice` |
+
+Two outcomes are no state. An engine run that exits non-zero refuses with `EngineFailed`, detail
+`semibase.exe engine exit code <n>: <stderr lines>`, and so does a `state=` value Setup does not
+know. A run that does not start, an exception inside `DetectEngine` included, sets `ExecError`
+and refuses with `SiteNotStarted` and the system error text, the same in every run of the engine.
+
+A running service is one in the Running state. A Start Pending or Stop Pending candidate counts as
+stopped, so the port comparison skips it; what `sc.exe start` in step 5 returns for either is not
+measured. A pg_ctl service of another major beside a 17 changes nothing, since only candidates
+count. A service whose configuration or state cannot be queried and whose name does not start
+with `postgresql` is skipped.
 
 Any non-zero EDB exit refuses (`EdbFailed`), naming
 `C:\Program Files\PostgreSQL\17\uninstall-postgresql.exe` on screen and the exit code and
 `%TEMP%\install-postgresql.log` in the detail line; there is no reboot branch, since no reboot
-code was reproduced ([exit codes](#exit-codes)). Every database-level decision belongs to
-`semibase site`, and the setup duplicates none of them.
-
-`OrphanedRegistration` and `ServiceConfigFailed` read the uninstaller's folder through
-`UninstallerFolder`, which falls back to EDB's default prefix `C:\Program Files\PostgreSQL\17`
-when `Base Directory` is empty, so a text never names a bare `\uninstall-postgresql.exe`. EDB
-writes `Base Directory` in every registration measured, both [failed installs](#a-failed-install)
-included, so only a hand-made key reaches the fallback, and no CI case does.
-`IncompleteInstallation` keeps its own branch for that case, `IncompleteInstallationNoFolder`,
-which sends the reader to Programs and Features instead.
+code was reproduced ([exit codes](#exit-codes)). After an EDB exit 0, an engine run that does not
+start refuses with `SiteNotStarted`, and one that reports any state but `found` refuses with
+`EdbFailed` too, its `detail=` as the detail line. Every
+database-level decision belongs to `semibase site`, and the setup duplicates none of them.
 
 ### Passwords
 
@@ -166,7 +187,7 @@ values equal.
 Passwords stay off every child command line the setup controls. `[Code]` sets
 `SEMIBASE_SUPER_PASSWORD` and `SEMIBASE_WRITER_PASSWORD` to the page values in Setup's own
 environment through `SetEnvironmentVariableW`, after EDB has run, and `semibase` inherits them. On a
-registered 17 the page has no writer field, and `WriterPasswordValue` returns the caller's
+found 17 the page has no writer field, and `WriterPasswordValue` returns the caller's
 `SEMIBASE_WRITER_PASSWORD`, so that variable still reaches `semibase`, which applies it only to a
 `scada_writer` it creates. Both are set even when empty, so a value the caller's environment holds
 does not reach `semibase` after the user cleared a field; `semibase` reads an empty value as unset
@@ -182,7 +203,7 @@ superuser password goes](#where-the-superuser-password-goes)).
 The `scada_writer` password must be printable ASCII on every run, an empty one included: the SCADA
 logs in with it from its own project settings, whose encoding of anything else nobody has
 measured. The superuser rules exist for EDB alone and hold on the fresh row only ([password
-characters](#password-characters)); on a registered 17 the password reaches `semibase` byte for
+characters](#password-characters)); on a found 17 the password reaches `semibase` byte for
 byte through the variable. The conventional `postgres` passes those rules.
 
 ### The page, the folder and the texts
@@ -190,13 +211,13 @@ byte through the variable. The conventional `postgres` passes those rules.
 Without `/SILENT` or `/VERYSILENT`, a password page comes before the Ready page, a custom page
 (`CreateCustomPage`) where each field has a bold prompt, its own wrapped explanation and a plain
 `TNewEdit` (`AddPasswordField`): the passwords are conventions, so the page shows them unmasked.
-`InitializeWizard` builds it in every mode from `EngineIsFresh`, true when no
-`Installations\postgresql-x64-17` key exists:
+`InitializeWizard` builds it in every mode from `Detected.State`; the page shows in the `fresh`
+and `found` states only, since `ShouldSkipPage` skips it on every refusal:
 
-| Engine | Page description | Superuser field explanation | Writer field |
+| State | Page description | Superuser field explanation | Writer field |
 | --- | --- | --- | --- |
-| Fresh, no 17 key | `PasswordPageDescriptionNew`: Setup uses the passwords in the fields, an empty field takes the database user's name, and the server accepts local connections only | `SuperPasswordHintNew`: PostgreSQL 17 is installed with this password, and a repeat run does not change it | Shown, prefilled from `SEMIBASE_WRITER_PASSWORD`, else `scada_writer`; `WriterPasswordHint` says the SCADA writes the archive with this password, the same password goes into the SCADA project (Project → Settings → Database), and a repeat run does not change it |
-| Registered 17 | `PasswordPageDescriptionExisting`: Setup connects to PostgreSQL 17 with the password below | `SuperPasswordHintExisting`: replace the value if the current password is different | Absent: `semibase` never changes an existing writer's password, and only a fresh install is sure to create the role |
+| `fresh` | `PasswordPageDescriptionNew`: Setup uses the passwords in the fields, an empty field takes the database user's name, and the server accepts local connections only | `SuperPasswordHintNew`: PostgreSQL 17 is installed with this password, and a repeat run does not change it | Shown, prefilled from `SEMIBASE_WRITER_PASSWORD`, else `scada_writer`; `WriterPasswordHint` says the SCADA writes the archive with this password, the same password goes into the SCADA project (Project → Settings → Database), and a repeat run does not change it |
+| `found` | `PasswordPageDescriptionExisting`: Setup connects to PostgreSQL 17 with the password below | `SuperPasswordHintExisting`: replace the value if the current password is different | Absent: `semibase` never changes an existing writer's password, and only a fresh install is sure to create the role |
 
 The superuser field is prefilled from `SEMIBASE_SUPER_PASSWORD`, else `postgres`. An emptied field
 means the convention. The texts say "database user" for every role, the Simple-Scada manual's term
@@ -205,58 +226,62 @@ required. The Next check only lets the user correct a field, and `PrepareToInsta
 enforcement. The superuser rules share one message, `SuperPasswordRules`, so a password that
 breaks two of them bounces once.
 
-`RegistryRefusal` is the part of the engine table the registry alone decides, with no probe and no
-connection: `RegisteredEngineRefusal` on a registered 17, `OtherMajorRefusal` on a fresh one.
-`ShouldSkipPage` skips the password page when it returns a refusal, since no password changes
-the outcome, and `UpdateReadyMemo` then shows only `ReadyRefusal`: "Setup cannot continue.", the
-same text `PrepareToInstall` will log, and "Click Cancel.". Once per interactive run (the
-`ReadyRefusalLogged` global) the page copies `semibase.exe` into `{app}` through
+`EngineStateRefusal` is the part of the [engine table](#the-engine-state) the service list alone
+decides, with no probe and no connection: every state but `found` and `fresh`, and a failed
+engine run. `ShouldSkipPage` skips the password page when it returns a refusal, since no
+password changes the outcome, and `UpdateReadyMemo` then shows only `ReadyRefusal`: "Setup cannot
+continue.", the same text `PrepareToInstall` will log, and "Click Cancel.". Once per interactive
+run (the `ReadyRefusalLogged` global) the page copies `semibase.exe` into `{app}` through
 `KeepToolRefusal`, then writes that refusal and its detail to the setup log, because Inno runs
 `UpdateReadyMemo` on every visit to the page and a user who clicks Cancel as told never reaches
 `PrepareToInstall`; a user who clicks Install instead copies and logs a second time. A failed copy,
 or an exception from it, writes its own line before the refusal, which stays the last line and the
 page text. Under `/SILENT` and `/VERYSILENT` Inno runs `UpdateReadyMemo` too, and the page neither
 copies nor logs there, since `PrepareToInstall` always follows. The page runs no probe, so a
-running PostgreSQL uninstaller is refused only by `PrepareToInstall`; while it runs, the 17 key
-may be half removed, and the page then shows `IncompleteInstallation` or `OrphanedRegistration`
-before `PrepareToInstall` refuses with `UninstallerRunning`. `ReadyMemo` is read-only, so a path in the refusal can be
-copied. Otherwise the Ready page shows what the run will do, from the registry reads alone: for a
-fresh install the folder, data folder, service and port of the PostgreSQL 17 it installs, the
-port line `ReadyPortNew` adding that 5432 is the PostgreSQL default; for a registered 17 its
-`Base Directory`, `Service ID` and `Port` (`ReadyPort`), the Automatic startup type Setup sets,
-and `ReadyRestart` as a paragraph of its own, which names `shared_buffers` and
+running PostgreSQL uninstaller is refused only by `PrepareToInstall`; while it runs, the page
+shows whatever state `InitializeSetup`'s engine run found, a refusal included, before
+`PrepareToInstall` refuses with `UninstallerRunning`. `ReadyMemo` is read-only, so a path in the
+refusal can be copied. Otherwise the Ready page shows what the run will do, from
+`InitializeSetup`'s engine run alone: for a fresh install the folder, data folder, service and
+port of the PostgreSQL 17 it installs, the port line `ReadyPortNew` adding that 5432 is the
+PostgreSQL default; for a found 17, under "An installed PostgreSQL 17 is found, Setup will
+configure it", its `base=`, `service=` and `port=` (`ReadyPort`), the Automatic startup type
+Setup sets, and `ReadyRestart` as a paragraph of its own, which names `shared_buffers` and
 `listen_addresses` as the parameters whose difference from Setup's values restarts the service,
 says they differ on the first configuration, and tells the reader to stop the SCADA. In both it
 names the logs folder and the database and users `semibase site` creates, with
 `WriterPasswordValue` or its convention as the `scada_writer` password (`ReadyCreateNew`,
 `ReadyCreateExisting`, the latter adding that an existing user keeps its password and that the
-`semiplot` password is reset). A refusal only `PrepareToInstall` finds (a running uninstaller, busy
-port, non-empty data directory, wrong port, wrong password) does not show here.
+`semiplot` password is reset). A refusal only `PrepareToInstall` finds (a running uninstaller, a
+busy port, a non-empty data directory, a service that does not start, a failed `site` run, a
+wrong password) does not show here.
 
 After a provisioned run, `CurPageChanged(wpFinished)` replaces the stock `FinishedLabel` with
-what the SCADA project and SemiPlot connect with, one value per line (`localhost`, the `Port` of
+what the SCADA project and SemiPlot connect with, one value per line (`localhost`, the `port=` of
 the `TEngine` that `PrepareToInstall` kept as `Provisioned`, `scada_archive`, the two database
 users, the `semiplot` password) and the logs folder. After a fresh install it shows
 `FinishedTextNew`, whose `%4` is the `scada_writer` password the run set
-(`WriterPasswordOrConvention(WriterPasswordValue)`); after a registered 17 it shows
+(`WriterPasswordOrConvention(WriterPasswordValue)`); after a found 17 it shows
 `FinishedText`, which says the password is the one set when the user was created, `scada_writer`
-by default. `EngineIsFresh` is false by then, since the install registered 17, so
-`PrepareToInstall` keeps its own answer in the `ProvisionedFresh` global. Under `/VERYSILENT` no
+by default. `Detected` is `InitializeSetup`'s run, and `PrepareToInstall` runs the engine again,
+so the page reads `PrepareToInstall`'s own answer, the `ProvisionedFresh` global and the
+`Provisioned` `TEngine` of its last engine run. Under `/VERYSILENT` no
 page shows. The `[Messages]` section overrides `ConfirmUninstall` and `UninstalledAll`, whose
 stock texts promise that every component goes: the uninstaller asks "Remove SemiBase? PostgreSQL
 17 with the archive and the logs stay." and ends with the logs path, which is literal there,
 since a `[Messages]` entry expands no constant and `{app}` is fixed.
 
-Measured by the operator on 2026-10-27 on a machine with a registered 17 whose `scada_writer` had
+Measured by the operator on 2026-10-27 on a machine with an installed 17 whose `scada_writer` had
 the password `writer-new`: a Setup re-run logged `role scada_writer exists, credentials
 untouched` in the site log, and `scada_writer` still logged in with `writer-new`.
 
 There is one folder, `{app}`, which is `{autopf}\SemiBase`, `C:\Program Files\SemiBase`;
 `DisableDirPage=yes`, so nobody picks another. It holds `semibase.exe`, `SemiBase.ico`,
-`unins000.exe`, `unins000.dat` and `Logs\`. `semibase.exe` has one `[Files]` entry into `{app}`, and
-`ExtractTemporaryFile` takes it to `{tmp}` for the run and for the copy `PrepareToInstall` makes
-into `{app}` before any check, which the Ready page also makes when it shows a refusal; the `[Files]` entry later replaces that copy and registers it for
-the uninstaller. The uninstaller removes `semibase.exe` and the icon; the engine, its data, the
+`unins000.exe`, `unins000.dat` and `Logs\`. `semibase.exe` has one `[Files]` entry into
+`{app}`, and `ExtractTemporaryFile` takes it to `{tmp}` for the engine and `site` runs and for the
+copy `PrepareToInstall` makes into `{app}` before any check, which the Ready page also makes when
+it shows a refusal; the `[Files]` entry later replaces that copy and registers it for the
+uninstaller. The uninstaller removes `semibase.exe` and the icon; the engine, its data, the
 roles and `Logs\` stay, since no `[Dirs]` or `[Files]` entry names the logs. The `installer` CI
 job runs the setup end to end ([verification.md](./verification.md#the-installer-job)).
 
@@ -316,6 +341,77 @@ in `%TEMP%`.
 
 ## Command line
 
+Setup runs two programs with command lines of its own: `semibase.exe engine` and the EDB
+installer.
+
+### semibase engine
+
+`semibase engine --expected-major <n>` finds the Windows service that runs PostgreSQL of major
+`<n>` and prints its state and facts as `key=value` lines (`runEngine` and `writeEngineResult` in
+`cmd/semibase/main.go`, `Detect` in `internal/engine/services_windows.go`). It takes no other
+flag, no connection flag and no password, opens no database connection and controls no service.
+`--expected-major` is required and above 0; a missing or bad value, another flag or a positional
+argument is a usage error, exit 2, and `--help` exits 0.
+
+It opens the Service Control Manager with `SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE` and
+each service with `SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS`, so it runs unelevated. It keeps
+the services whose command line, split by `windows.DecomposeCommandLine`, has an executable whose
+base name is `pg_ctl.exe` in any letter case and the argument `runservice`, and describes each
+one (`describe` in `internal/engine/engine.go`):
+
+| Key | Source |
+| --- | --- |
+| `service` | The service name |
+| `base` | The parent of the folder that holds `pg_ctl.exe` when that folder is named `bin` in any letter case, else empty |
+| `data` | The `-D` argument, separate or joined: `DataDirectoryFlag`, which `site --restart-service` reads too ([provisioning.md](./provisioning.md#the-service-restart)) |
+| none | The major, the first line of `<data>\PG_VERSION`: the whole line, as 10 and later write it, or the part before the dot of the `N.M` that 9.6 and earlier write; anything else, such as `9.6.1` or `+17`, is no major |
+| `port`, `port-file` | The last `-p N`, `-pN`, `--port=N` or `-c port=N` inside the `-o` and `--options` values of the command line, with an empty `port-file`; else the last active `port` of `postgresql.conf` with its `include`, `include_if_exists` and `include_dir` files, then of `postgresql.auto.conf`, the order PostgreSQL reads them, with that file as `port-file`; else 5432 and an empty `port-file` |
+| `listening` | Line 4 of `<data>\postmaster.pid`, read only when the service is Running |
+| `uninstaller` | `yes` when `<base>\uninstall-postgresql.exe` exists, else `no` |
+| `unreadable` | What the engine could not read, in the `unreadable` state: the file and line of a configuration error, the `-o` value, the `postmaster.pid` error or the query error; else empty |
+
+The configuration reader accepts what PostgreSQL accepts for one setting: a name in any letter
+case, an optional `=`, a quoted or bare value and a trailing `#` comment. Inside quotes it reads a
+doubled quote as a quote and a backslash as taking the next character as it is; PostgreSQL's
+`GUC_scanstr` also decodes `\n`, `\t` and octal escapes, which no port or include path needs. A
+port, in a file or after `-p`, is read as PostgreSQL's `parse_int` reads it, `strtol` with base
+0, so `0x1538` and `012470` are 5432; the range is 1 to 65535 (`parsePort`). A relative include
+resolves against the folder of the file that names it, an `include_dir` contributes its `*.conf`
+files in name order, and includes nest at most 10 deep, PostgreSQL's limit (`configuredPort`).
+The engine reads the configuration files only when the `-o` options set no port. Then a missing
+`postgresql.conf`, `include` file or `include_dir` folder and a syntax error anywhere make the
+service `unreadable`, since PostgreSQL does not start on them; a missing `postgresql.auto.conf`
+or `include_if_exists` file is skipped. With a `-o` port, a broken configuration file does not
+change the state.
+
+The lines print in a fixed order: `state=`; `services=<name>, <name>` in the `ambiguous` state
+only; `service=`, `base=`, `data=`, `port=`, `port-file=`, `listening=`, `uninstaller=` and
+`unreadable=` in the `incomplete`, `unreadable`, `port-mismatch` and `found` states only, with
+`port=` and `listening=` empty when unknown; then `detail=`, one English line for the setup log,
+a lowercase clause with no closing period in every state. Setup splits each line at its first
+`=`, since a `detail=` value may hold one. The exit code is 0 for every state, and 1 with `error:
+<reason>` on stderr when the service list cannot be read and on every system but Windows, where
+the reason is `engine detection needs the Windows service list`.
+
+Measured 2026-10-27 on the development machine, unelevated, with the `postgresql-14` service
+(`PG_VERSION` 14, port 15432) running beside `postgresql-x64-17`: `semibase.exe engine
+--expected-major 17` exits 0 and prints
+
+```
+state=found
+service=postgresql-x64-17
+base=C:\Program Files\PostgreSQL\17
+data=C:\Program Files\PostgreSQL\17\data
+port=5432
+port-file=C:\Program Files\PostgreSQL\17\data\postgresql.conf
+listening=5432
+uninstaller=yes
+unreadable=
+detail=service postgresql-x64-17 runs PostgreSQL 17 from C:\Program Files\PostgreSQL\17\data on port 5432
+```
+
+### The EDB installer
+
 `--help` prints the options to stdout and exits 0, after 62 s. `--version` prints nothing to
 stdout and exits 0, after 61 s. The options the setup uses, with their printed defaults:
 
@@ -371,8 +467,8 @@ nothing attributes it to EDB.
 - Service `postgresql-x64-17`: Running, start type Automatic, account
   `NT AUTHORITY\NetworkService`, `PathName` `"C:\Program Files\PostgreSQL\17\bin\pg_ctl.exe"
   runservice -N "postgresql-x64-17" -D "C:\Program Files\PostgreSQL\17\data" -w`. That `-D` is
-  the argument `site --restart-service` compares with `SHOW data_directory`
-  ([provisioning.md](./provisioning.md#the-service-restart)).
+  the data folder `semibase engine` reads and the argument `site --restart-service` compares
+  with `SHOW data_directory` ([provisioning.md](./provisioning.md#the-service-restart)).
 - The cluster: `PostgreSQL 17.11 on x86_64-windows, compiled by msvc-19.44.35229, 64-bit`;
   `server_encoding` `UTF8`; `postgres`, `template0` and `template1` with `datcollate` `C`,
   `datctype` `C`, `datlocprovider` `c`, encoding `UTF8`; one role, `postgres`, superuser;
@@ -381,6 +477,9 @@ nothing attributes it to EDB.
   `replication`. `initdb` ran with `--auth=scram-sha-256`.
 - `--disable-components pgAdmin,stackbuilder` leaves no `pgAdmin 4` directory; the command-line
   tools, `psql` among them, are installed.
+
+Setup reads the service and its data folder ([the engine state](#the-engine-state)) and none of
+the registry entries EDB writes.
 
 The runner image's own install (17.11-5 as well) differs: `Data Directory`
 `C:\PostgreSQL\17\data`, `Locale` `English_United` in the `Services` key, pgAdmin and Stack
@@ -434,7 +533,7 @@ Every password measured starts with `Aa1` and has spaces only inside it. A passw
 `-` could bind as a parameter name of `initcluster.ps1`, and InstallBuilder could trim spaces at
 either end of an option-file value; neither was measured, so the setup refuses both on the fresh
 row along with non-ASCII, `"` and a trailing `\`. These rules guard EDB's command line and option
-file alone, so a registered 17 never meets them.
+file alone, so a found 17 never meets them.
 
 ## A failed install
 
@@ -447,9 +546,14 @@ is missing in every case:
 | exit 255 | `Base Directory`, `Version`, `Shortcuts`, `Data Directory`, `Service ID`, `Branding`, `CLT_Version` | `postgresql-x64-17` registered, Stopped, Automatic |
 | usage line, then a retry without `--disable-components` | `Base Directory`, `Version`, `Shortcuts`, `Branding`, `CLT_Version`, `SB_Version`, `pgAdmin_Version` | none |
 
-So `Version` and `Service ID` with an existing service do not prove a usable install; `Super
-User` and `<Data Directory>\PG_VERSION` do. The uninstaller removes a partial install like a
-complete one.
+The uninstaller removes a partial install like a complete one. What `semibase engine` reports
+for each row follows from the code and is not measured. On the exit-255 row a service exists and
+the data directory does not. Its command line was not recorded, and the state is `incomplete`
+either way: `no file <data>\PG_VERSION` with a `-D`, `no -D` without one. The uninstaller stays
+in the prefix, so with `pg_ctl.exe` in `<prefix>\bin` the engine prints `uninstaller=yes` and
+Setup names `C:\Program Files\PostgreSQL\17\uninstall-postgresql.exe`. The retry row leaves no
+service, so the state is `fresh` and Setup runs EDB over the leftover files and key; what EDB
+does there is not measured.
 
 ## The uninstaller
 
@@ -512,7 +616,7 @@ refusal right after the password checks:
 - A value written to `TInputQueryWizardPage.Values` and read back is unchanged, a tab, CR LF and
   Cyrillic included. The setup's page uses `TNewEdit` fields instead, whose round trip is not
   measured. `PrepareToInstall` reads the superuser password from its field in every mode, and the
-  writer password from its field where the page has one, a fresh install; on a registered 17
+  writer password from its field where the page has one, a fresh install; on a found 17
   `WriterPasswordValue` reads `SEMIBASE_WRITER_PASSWORD` directly. Under `/VERYSILENT` a field
   holds what `InitializeWizard` put there, the `SEMIBASE_*` value or, when the variable is empty,
   the convention (`SuperPasswordOrConvention`, `WriterPasswordOrConvention`).
@@ -545,6 +649,13 @@ through `ExecAndLogOutput` with an `OnLog` callback appending each line through
   `out1` and `err1`.
 - A missing executable returns `False` with `ResultCode` 2 (file not found), and raises nothing.
 
+Measured 2026-10-27 on the development machine, ISCC 6.7.3, with a throwaway probe setup under
+ANSI code page 1251 that runs a Go executable printing `data=C:\Папка ё\данные` with LF line ends
+through `ExecAndCaptureOutput` and saves `Output.StdOut` as UTF-8: the bytes come back unchanged,
+one array item per line. So `semibase engine` prints to stdout, and the Cyrillic case of the
+`installer` job repeats the check on the runner
+([verification.md](./verification.md#the-installer-job)).
+
 Measured 2026-10-26 on the development machine, ISCC 6.7.3, with scratch setups
 (`PrivilegesRequired=lowest`) that print their messages and refuse:
 
@@ -566,5 +677,6 @@ under `/LANG=russian` and `/LANG=english` every refusal, the page, Ready and Fin
 
 Not measured: the wizard pages as drawn, among them the bold superuser label and the 15-line
 Finished text at 150 % DPI and the Preparing memo with the longest refusal at 150 % DPI; the
-English SCADA menu path against an English Simple-Scada; and «Программы и компоненты» as the target
-Windows writes it ([installer-text.md](./installer-text.md), rule 18).
+English SCADA menu path against an English Simple-Scada; and «Командная строка», «Запуск от имени
+администратора», Command Prompt and Run as administrator as the target Windows writes them
+([installer-text.md](./installer-text.md), rule 18).

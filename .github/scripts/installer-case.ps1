@@ -5,9 +5,8 @@ $AppDir = "$env:ProgramFiles\SemiBase"
 $LogDir = "$AppDir\Logs"
 $ToolExe = "$AppDir\semibase.exe"
 $TokenFile = "$env:RUNNER_TEMP\case-passwords.txt"
-# The registry key and service of the runner's 17 and of the one the setup installs
-$PgInstallation = 'postgresql-x64-17'
 $PgService = 'postgresql-x64-17'
+$PgDataDir = 'C:\Program Files\PostgreSQL\17\data'
 
 function Fail([string] $message) {
   Write-Host "::error::$message"
@@ -51,16 +50,23 @@ function Get-SiteLog($run) {
   "$(Get-Content -Raw $site.FullName)"
 }
 
-# A refusal is exit 7 with its reason as the last line of the newest setup log and its technical
-# detail, when it has one, on the line before: LogRefusal appends to a log of the same second, so
-# earlier lines may belong to an earlier run
-function Assert-Refused($run, [string] $want, [string] $detail = '') {
-  if ($run.ExitCode -ne 7) { Fail "want exit 7, a refusal from PrepareToInstall, with '$want', got $($run.ExitCode)" }
+# A refusal is its reason as the last line of the newest setup log and its technical detail, when
+# it has one, on the line before: LogRefusal appends to a log of the same second, so earlier
+# lines may belong to an earlier run
+function Get-Refusal($run) {
   $log = $run.Logs | Where-Object { $_.Name -like 'setup-*' } | Select-Object -Last 1
   # @() outside the if: assigning an if statement unrolls a one-element array into its string
   $tail = @(if ($log) { Get-Content $log.FullName | Select-Object -Last 2 })
-  $last = if ($tail.Count -gt 0) { $tail[-1] }
-  $before = if ($tail.Count -eq 2) { $tail[0] }
+  [pscustomobject]@{
+    Last = if ($tail.Count -gt 0) { "$($tail[-1])" } else { '' }
+    Before = if ($tail.Count -eq 2) { "$($tail[0])" } else { '' }
+  }
+}
+
+function Assert-Refused($run, [string] $want, [string] $detail = '') {
+  if ($run.ExitCode -ne 7) { Fail "want exit 7, a refusal from PrepareToInstall, with '$want', got $($run.ExitCode)" }
+  $refusal = Get-Refusal $run
+  $last, $before = $refusal.Last, $refusal.Before
   Write-Host "refusal: $last"
   if ($detail) { Write-Host "detail: $before" }
   if (-not "$last".Contains($want)) { Fail "the setup log does not end with '$want'" }
@@ -69,6 +75,31 @@ function Assert-Refused($run, [string] $want, [string] $detail = '') {
 
 function Assert-NoPostgresService {
   if (Get-Service postgresql* -ErrorAction SilentlyContinue) { Fail 'a refused run left a postgresql* service' }
+}
+
+# CreateService does not check that the binary exists, and no case starts a fake service, so
+# no pg_ctl.exe is needed.
+function New-FakeService([string] $name, [string] $base, [string] $data = '') {
+  $command = "`"$base\bin\pg_ctl.exe`" runservice -N `"$name`""
+  if ($data) { $command += " -D `"$data`"" }
+  New-Service -Name $name -BinaryPathName "$command -w" -StartupType Manual | Out-Null
+}
+
+# sc.exe, not Get-Service: a handle this process kept open would leave the service marked for
+# deletion, and the next New-FakeService of the name would fail. A missing service is no error,
+# and its 1060 must not become the step's exit code.
+function Remove-FakeService([string] $name) {
+  sc.exe query $name | Out-Null
+  if ($LASTEXITCODE -eq 1060) {
+    $global:LASTEXITCODE = 0
+    return
+  }
+  sc.exe delete $name | Out-Null
+  if ($LASTEXITCODE -ne 0) { Fail "sc.exe delete $name exited $LASTEXITCODE" }
+}
+
+function Assert-NoFakeService {
+  if (Get-Service postgresql-ci-* -ErrorAction SilentlyContinue) { Fail 'a postgresql-ci-* service is left' }
 }
 
 function Assert-NothingRegistered {
@@ -93,9 +124,15 @@ function Invoke-Super([string] $password, [string] $sql) {
 
 # The uninstaller exits before it removes anything, and a copy of it in %TEMP% does the work
 # (docs/architecture/installer.md#the-uninstaller). The empty Installations and Services keys
-# it leaves stay, as on an installation machine.
+# it leaves stay, as on an installation machine. The workspace build of semibase.exe outlives
+# the SemiBase uninstall.
 function Start-PostgreSQLRemoval {
-  $base = (Get-ItemProperty "HKLM:\SOFTWARE\PostgreSQL\Installations\$PgInstallation").'Base Directory'
+  $lines = @(& "$env:GITHUB_WORKSPACE\semibase.exe" engine --expected-major 17 | ForEach-Object { "$_" })
+  if ($LASTEXITCODE -ne 0 -or $lines -notcontains 'state=found' -or $lines -notcontains "service=$PgService") {
+    Fail "semibase engine exited $LASTEXITCODE with '$($lines -join '; ')' (want exit 0, state=found and service=$PgService)"
+  }
+  $base = ($lines | Where-Object { $_.StartsWith('base=') } | Select-Object -First 1).Substring(5)
+  if (-not $base) { Fail 'semibase engine printed an empty base=' }
   $uninstaller = Start-Process -FilePath "$base\uninstall-postgresql.exe" `
     -ArgumentList '--mode', 'unattended', '--unattendedmodeui', 'none' -PassThru
   # A process object whose handle was never read reports no ExitCode after it exits

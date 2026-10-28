@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Semiteq/SemiBase/internal/engine"
 	"github.com/Semiteq/SemiBase/internal/provision"
 )
 
@@ -450,6 +451,192 @@ func TestRunReportsCommandFailure(t *testing.T) {
 	}
 	if strings.Contains(buffer.String(), "limit") {
 		t.Errorf("error output blames the time limit for an ordinary failure: %q", buffer.String())
+	}
+}
+
+func stubDetectEngine(t *testing.T, result engine.Result, err error) *int {
+	t.Helper()
+	requested := new(int)
+	previous := detectEngine
+	detectEngine = func(expectedMajor int) (engine.Result, error) {
+		*requested = expectedMajor
+		return result, err
+	}
+	t.Cleanup(func() { detectEngine = previous })
+	return requested
+}
+
+func TestRunEnginePrintsEachState(t *testing.T) {
+	found := engine.Service{
+		Name:        "postgresql-x64-17",
+		Base:        `C:\Program Files\PostgreSQL\17`,
+		Data:        `C:\Program Files\PostgreSQL\17\data`,
+		Major:       17,
+		Running:     true,
+		Port:        5432,
+		PortFile:    `C:\Program Files\PostgreSQL\17\data\postgresql.conf`,
+		Listening:   5432,
+		Uninstaller: true,
+	}
+	tests := []struct {
+		name   string
+		result engine.Result
+		want   string
+	}{
+		{
+			name: "found",
+			result: engine.Result{State: engine.StateFound, Service: found,
+				Detail: `service postgresql-x64-17 runs PostgreSQL 17 from C:\Program Files\PostgreSQL\17\data on port 5432`},
+			want: `state=found
+service=postgresql-x64-17
+base=C:\Program Files\PostgreSQL\17
+data=C:\Program Files\PostgreSQL\17\data
+port=5432
+port-file=C:\Program Files\PostgreSQL\17\data\postgresql.conf
+listening=5432
+uninstaller=yes
+unreadable=
+detail=service postgresql-x64-17 runs PostgreSQL 17 from C:\Program Files\PostgreSQL\17\data on port 5432
+`,
+		},
+		{
+			name: "port-mismatch",
+			result: engine.Result{State: engine.StatePortMismatch,
+				Service: engine.Service{Name: "postgresql-x64-17", Base: `C:\PG`, Data: `C:\PG\data`,
+					Major: 17, Running: true, Port: 15433, PortFile: `C:\PG\data\postgresql.conf`,
+					Listening: 5432, Uninstaller: true},
+				Detail: `service postgresql-x64-17 listens on port 5432, and C:\PG\data\postgresql.conf sets port 15433`},
+			want: `state=port-mismatch
+service=postgresql-x64-17
+base=C:\PG
+data=C:\PG\data
+port=15433
+port-file=C:\PG\data\postgresql.conf
+listening=5432
+uninstaller=yes
+unreadable=
+detail=service postgresql-x64-17 listens on port 5432, and C:\PG\data\postgresql.conf sets port 15433
+`,
+		},
+		{
+			name: "incomplete leaves the unknown numbers empty",
+			result: engine.Result{State: engine.StateIncomplete,
+				Service: engine.Service{Name: "postgresql-ci-17", Base: `C:\ci`, Data: `C:\ci\data`,
+					Problem: `service postgresql-ci-17: no file C:\ci\data\PG_VERSION`},
+				Detail: `service postgresql-ci-17: no file C:\ci\data\PG_VERSION`},
+			want: `state=incomplete
+service=postgresql-ci-17
+base=C:\ci
+data=C:\ci\data
+port=
+port-file=
+listening=
+uninstaller=no
+unreadable=
+detail=service postgresql-ci-17: no file C:\ci\data\PG_VERSION
+`,
+		},
+		{
+			name: "unreadable names what could not be read",
+			result: engine.Result{State: engine.StateUnreadable,
+				Service: engine.Service{Name: "postgresql-x64-17", Base: `C:\PG`, Data: `C:\PG\data`,
+					Major: 17, Uninstaller: true,
+					Unreadable: `C:\PG\data\postgresql.conf line 2: syntax error after the value of port`},
+				Detail: `service postgresql-x64-17: C:\PG\data\postgresql.conf line 2: syntax error after the value of port`},
+			want: `state=unreadable
+service=postgresql-x64-17
+base=C:\PG
+data=C:\PG\data
+port=
+port-file=
+listening=
+uninstaller=yes
+unreadable=C:\PG\data\postgresql.conf line 2: syntax error after the value of port
+detail=service postgresql-x64-17: C:\PG\data\postgresql.conf line 2: syntax error after the value of port
+`,
+		},
+		{
+			name: "ambiguous names the services",
+			result: engine.Result{State: engine.StateAmbiguous,
+				Services: []string{"postgresql-ci-17", "postgresql-x64-17"},
+				Detail:   "services postgresql-ci-17, postgresql-x64-17 run PostgreSQL 17 or a server of unknown major"},
+			want: `state=ambiguous
+services=postgresql-ci-17, postgresql-x64-17
+detail=services postgresql-ci-17, postgresql-x64-17 run PostgreSQL 17 or a server of unknown major
+`,
+		},
+		{
+			name: "other-major",
+			result: engine.Result{State: engine.StateOtherMajor,
+				Detail: "no service runs PostgreSQL 17; postgresql-ci-14 runs PostgreSQL 14"},
+			want: `state=other-major
+detail=no service runs PostgreSQL 17; postgresql-ci-14 runs PostgreSQL 14
+`,
+		},
+		{
+			name:   "fresh",
+			result: engine.Result{State: engine.StateFresh, Detail: "no service runs pg_ctl.exe runservice"},
+			want: `state=fresh
+detail=no service runs pg_ctl.exe runservice
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errorBuffer := captureErrorOutput(t)
+			buffer := captureOutput(t)
+			requested := stubDetectEngine(t, tt.result, nil)
+
+			if got := run(context.Background(), []string{"engine", "--expected-major", "17"}); got != 0 {
+				t.Fatalf("run(engine) = %d, want exit code 0; stderr %q", got, errorBuffer.String())
+			}
+			if *requested != 17 {
+				t.Errorf("detection asked for major %d, want 17", *requested)
+			}
+			if buffer.String() != tt.want {
+				t.Errorf("output\n%s\nwant\n%s", buffer.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestRunEngineRefusals(t *testing.T) {
+	tests := []struct {
+		name       string
+		arguments  []string
+		detectErr  error
+		wantCode   int
+		wantStderr string
+	}{
+		{"no --expected-major", nil, nil, 2, "engine needs --expected-major"},
+		{"zero --expected-major", []string{"--expected-major", "0"}, nil, 2, "engine needs --expected-major"},
+		{"non-numeric --expected-major", []string{"--expected-major", "x"}, nil, 2, "invalid value"},
+		{"connection flags are not engine flags", []string{"--expected-major", "17", "--port", "5432"},
+			nil, 2, "flag provided but not defined: -port"},
+		{"password flags are not engine flags", []string{"--expected-major", "17", "--super-password", "x"},
+			nil, 2, "flag provided but not defined: -super-password"},
+		{"a positional argument", []string{"--expected-major", "17", "extra"}, nil, 2, "engine takes no arguments"},
+		{"help", []string{"--help"}, nil, 0, "-expected-major"},
+		{"the service list cannot be read", []string{"--expected-major", "17"},
+			errors.New("engine detection needs the Windows service list"), 1,
+			"error: engine detection needs the Windows service list"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errorBuffer := captureErrorOutput(t)
+			buffer := captureOutput(t)
+			stubDetectEngine(t, engine.Result{State: engine.StateFresh}, tt.detectErr)
+
+			if got := run(context.Background(), append([]string{"engine"}, tt.arguments...)); got != tt.wantCode {
+				t.Fatalf("run(engine %v) = %d, want exit code %d", tt.arguments, got, tt.wantCode)
+			}
+			if !strings.Contains(errorBuffer.String(), tt.wantStderr) {
+				t.Errorf("error output %q does not contain %q", errorBuffer.String(), tt.wantStderr)
+			}
+			if buffer.Len() != 0 {
+				t.Errorf("standard output %q, want nothing", buffer.String())
+			}
+		})
 	}
 }
 

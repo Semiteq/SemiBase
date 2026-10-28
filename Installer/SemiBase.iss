@@ -24,7 +24,6 @@
 #define ConventionalSuperPassword "postgres"
 
 #define PgMajor        "17"
-#define PgInstallation "postgresql-x64-" + PgMajor
 #define PgService      "postgresql-x64-" + PgMajor
 #define PgPort         "5432"
 #define PgPrefix       "C:\Program Files\PostgreSQL\" + PgMajor
@@ -81,19 +80,21 @@ english.SuperPasswordRules=The password of the PostgreSQL administrator (databas
 russian.SuperPasswordRules=Пароль администратора PostgreSQL (пользователь БД postgres) недопустим при новой установке PostgreSQL. Используйте латинские буквы, цифры, пробелы и знаки препинания (печатные символы ASCII) без кавычки ", без \ в конце, без - в начале и без пробела в начале или в конце.
 english.CopyToolFailed=Setup could not copy the semibase.exe tool into the folder %1. Run Setup again.
 russian.CopyToolFailed=Не удалось скопировать утилиту semibase.exe в папку %1. Запустите установщик снова.
-IncompleteVersion=Version '%1'
-IncompleteSuperUser=no Super User
-IncompleteDataDirectory=no Data Directory
-IncompletePgVersion=no file %1
-IncompleteInstallationDetail=Registration %1: %2.
-english.IncompleteInstallation=PostgreSQL %1 is installed incompletely. Remove PostgreSQL with %2\uninstall-postgresql.exe, wait until the removal ends, then run Setup again.
-russian.IncompleteInstallation=PostgreSQL %1 установлен не полностью. Удалите PostgreSQL программой %2\uninstall-postgresql.exe, дождитесь окончания удаления и запустите установщик снова.
-english.IncompleteInstallationNoFolder=PostgreSQL %1 is installed incompletely. Remove PostgreSQL %1 through Programs and Features (Control Panel), wait until the removal ends, then run Setup again.
-russian.IncompleteInstallationNoFolder=PostgreSQL %1 установлен не полностью. Удалите PostgreSQL %1 через «Программы и компоненты» (панель управления), дождитесь окончания удаления и запустите установщик снова.
-OrphanedRegistrationDetail=Registration %1, services %2: no Service ID or no Port.
-english.OrphanedRegistration=PostgreSQL {#PgMajor} is installed, but Setup did not find its service name or its port. If the archive on this server is not needed, remove PostgreSQL with %1\uninstall-postgresql.exe, wait until the removal ends, then run Setup again.
-russian.OrphanedRegistration=PostgreSQL {#PgMajor} установлен, но установщик не нашёл имя его службы или его порт. Если архив на этом сервере не нужен, удалите PostgreSQL программой %1\uninstall-postgresql.exe, дождитесь окончания удаления и запустите установщик снова.
-OtherMajorDetail=Registered installations: %1.
+EngineFailedDetail=semibase.exe engine exit code %1: %2
+english.EngineFailed=The semibase.exe tool did not determine the state of PostgreSQL. Run Setup again.
+russian.EngineFailed=Утилита semibase.exe не определила состояние PostgreSQL. Запустите установщик снова.
+english.AmbiguousEngine=Several services that run PostgreSQL {#PgMajor} or PostgreSQL of an unknown version are found: %1. Open Command Prompt with Run as administrator, run sc.exe stop <service name> and sc.exe delete <service name> for each service the SCADA does not use, then run Setup again.
+russian.AmbiguousEngine=Найдено несколько служб PostgreSQL {#PgMajor} или PostgreSQL неизвестной версии: %1. Откройте программу «Командная строка» командой «Запуск от имени администратора», выполните sc.exe stop <имя службы> и sc.exe delete <имя службы> для каждой службы, которую не использует SCADA, и запустите установщик снова.
+english.IncompleteInstallation=The PostgreSQL service %1 is installed incompletely. Remove PostgreSQL with %2\uninstall-postgresql.exe, wait until the removal ends, then run Setup again.
+russian.IncompleteInstallation=Служба PostgreSQL %1 установлена не полностью. Удалите PostgreSQL программой %2\uninstall-postgresql.exe, дождитесь окончания удаления и запустите установщик снова.
+english.IncompleteInstallationNoUninstaller=The PostgreSQL service %1 is installed incompletely. Open Command Prompt with Run as administrator, run sc.exe stop %1 and sc.exe delete %1, then run Setup again.
+russian.IncompleteInstallationNoUninstaller=Служба PostgreSQL %1 установлена не полностью. Откройте программу «Командная строка» командой «Запуск от имени администратора», выполните sc.exe stop %1 и sc.exe delete %1 и запустите установщик снова.
+english.UnreadableService=Setup could not read the settings of the PostgreSQL service %1: %2. Fix the error, then run Setup again.
+russian.UnreadableService=Не удалось прочитать настройки службы PostgreSQL %1: %2. Устраните ошибку и запустите установщик снова.
+english.PortMismatch=PostgreSQL {#PgMajor} runs on port %1, and the file %2 sets port %3. Restart the service %4 so that PostgreSQL moves to port %3, or set port %1 in the file, then run Setup again.
+russian.PortMismatch=PostgreSQL {#PgMajor} работает на порту %1, а в файле %2 указан порт %3. Перезапустите службу %4, чтобы PostgreSQL перешёл на порт %3, или укажите в файле порт %1, затем запустите установщик снова.
+english.PortMismatchNoFile=PostgreSQL {#PgMajor} runs on port %1, and the service %2 starts it on port %3. Restart the service %2, then run Setup again.
+russian.PortMismatchNoFile=PostgreSQL {#PgMajor} работает на порту %1, а служба %2 запускает его на порту %3. Перезапустите службу %2 и запустите установщик снова.
 english.OtherMajor=PostgreSQL of another version is installed, and Setup works with PostgreSQL %1 only. Move the data to PostgreSQL %1 or remove the other version, then run Setup again.
 russian.OtherMajor=Установлен PostgreSQL другой версии, а установщик работает только с PostgreSQL %1. Перенесите данные на PostgreSQL %1 или удалите другую версию и запустите установщик снова.
 UninstallerRunningDetail=PostgreSQL uninstaller process running: %1.
@@ -102,9 +103,8 @@ english.UninstallerRunning=The removal of PostgreSQL has not ended yet. Wait unt
 russian.UninstallerRunning=Удаление PostgreSQL ещё не завершено. Дождитесь, пока закроется программа удаления PostgreSQL, и запустите установщик снова.
 english.ProbeFailed=Setup could not check through powershell.exe whether port %1 is free. Run Setup again.
 russian.ProbeFailed=Не удалось проверить через powershell.exe, свободен ли порт %1. Запустите установщик снова.
-NoRegistrationDetail=HKLM\SOFTWARE\PostgreSQL\Installations holds no registration.
-PortOwnerDetail=Port %1 held by %2.
-PortNoOwnerDetail=Port %1 accepts connections, and Get-NetTCPConnection names no listening process.
+PortOwnerDetail=port %1 held by %2
+PortNoOwnerDetail=port %1 accepts connections, and Get-NetTCPConnection names no listening process
 english.PortBusy=Port %1 is busy, and no installed PostgreSQL is found. Stop the program that holds this port, then run Setup again.
 russian.PortBusy=Порт %1 занят, а установленный PostgreSQL не найден. Остановите программу, которая занимает этот порт, и запустите установщик снова.
 english.DataDirectoryNotEmpty=The folder %1 is not empty, and no installed PostgreSQL is found. If the data in this folder is not needed, delete it, then run Setup again.
@@ -117,8 +117,8 @@ EdbFailedDetail=PostgreSQL installer exit code %1, its log %2.
 english.EdbFailed=The PostgreSQL installer failed. Remove PostgreSQL with %1\uninstall-postgresql.exe, wait until the removal ends, then run Setup again.
 russian.EdbFailed=Установщик PostgreSQL завершился с ошибкой. Удалите PostgreSQL программой %1\uninstall-postgresql.exe, дождитесь окончания удаления и запустите установщик SemiBase снова.
 ServiceConfigFailedDetail=sc.exe config %1 start= auto exited with code %2.
-english.ServiceConfigFailed=Setup could not set the startup type of the service %1 to Automatic: %2. If the service %1 does not exist, remove PostgreSQL with %3\uninstall-postgresql.exe, wait until the removal ends, then run Setup again.
-russian.ServiceConfigFailed=Не удалось задать службе %1 тип запуска «Автоматически»: %2. Если службы %1 нет, удалите PostgreSQL программой %3\uninstall-postgresql.exe, дождитесь окончания удаления и запустите установщик снова.
+english.ServiceConfigFailed=Setup could not set the startup type of the service %1 to Automatic: %2. Fix the error, then run Setup again.
+russian.ServiceConfigFailed=Не удалось задать службе %1 тип запуска «Автоматически»: %2. Устраните ошибку и запустите установщик снова.
 ServiceStartFailedDetail=sc.exe start %1 exited with code %2.
 english.ServiceStartFailed=The service %1 did not start: %2. Find the error in the server logs in the folder %3\log or in the Windows event log, fix it, then run Setup again.
 russian.ServiceStartFailed=Служба %1 не запустилась: %2. Найдите ошибку в журналах сервера в папке %3\log или в журнале событий Windows, устраните её и запустите установщик снова.
@@ -127,9 +127,6 @@ russian.SiteNotStarted=Не удалось запустить утилиту sem
 SitePasswordWrongDetail=semibase.exe site log: %1.
 english.SitePasswordWrong=Wrong password of the PostgreSQL administrator (database user postgres). Enter the current password, then run Setup again.
 russian.SitePasswordWrong=Неверный пароль администратора PostgreSQL (пользователь БД postgres). Укажите текущий пароль и запустите установщик снова.
-SitePortWrongDetail=%1 holds Port %2; semibase.exe site log: %3.
-english.SitePortWrong=No server answers on port %1, which is set for the installed PostgreSQL {#PgMajor}. Check the port value in the file %2\postgresql.conf, then run Setup again.
-russian.SitePortWrong=Сервер не отвечает на порту %1, который указан для установленного PostgreSQL {#PgMajor}. Проверьте значение port в файле %2\postgresql.conf и запустите установщик снова.
 SiteFailedDetail=semibase.exe exit code %1.
 english.SiteFailed=The semibase.exe tool failed. Fix the error named in the last lines of the log %1, then run Setup again.
 russian.SiteFailed=Утилита semibase.exe завершилась с ошибкой. Устраните ошибку, названную в последних строках журнала %1, и запустите установщик снова.
@@ -153,8 +150,8 @@ english.WriterPasswordHint=The SCADA writes the archive with this password. Ente
 russian.WriterPasswordHint=С этим паролем SCADA записывает архив. Укажите этот пароль в проекте SCADA (Проект → Настройки → База данных); повторный запуск установщика его не меняет.
 english.ReadyPgInstall=PostgreSQL %1 will be installed
 russian.ReadyPgInstall=PostgreSQL %1 будет установлен
-english.ReadyPgRegistered=An installed PostgreSQL %1 is found, Setup will configure it
-russian.ReadyPgRegistered=Найден установленный PostgreSQL %1, установщик настроит его
+english.ReadyPgFound=An installed PostgreSQL %1 is found, Setup will configure it
+russian.ReadyPgFound=Найден установленный PostgreSQL %1, установщик настроит его
 english.ReadyFolder=Folder: %1
 russian.ReadyFolder=Папка: %1
 english.ReadyData=Data folder: %1
@@ -193,17 +190,32 @@ function SetEnvironmentVariable(lpName, lpValue: String): BOOL;
   external 'SetEnvironmentVariableW@kernel32.dll stdcall';
 
 const
-  InstallationsKey = 'SOFTWARE\PostgreSQL\Installations';
-  ServicesKey = 'SOFTWARE\PostgreSQL\Services';
   ErrorServiceAlreadyRunning = 1056;
+  // The state= values semibase engine prints (State in internal/engine/engine.go)
+  StateAmbiguous = 'ambiguous';
+  StateIncomplete = 'incomplete';
+  StateUnreadable = 'unreadable';
+  StatePortMismatch = 'port-mismatch';
+  StateFound = 'found';
+  StateOtherMajor = 'other-major';
+  StateFresh = 'fresh';
 
 type
+  // The lines semibase.exe engine prints. State is empty when the command did not report one;
+  // ExecError is then set when the command did not start.
   TEngine = record
+    State: String;
+    Services: String;
     ServiceName: String;
-    Port: Cardinal;
-    SuperUser: String;
     BaseDirectory: String;
     DataDirectory: String;
+    Port: String;
+    PortFile: String;
+    Listening: String;
+    Uninstaller: Boolean;
+    Unreadable: String;
+    Detail: String;
+    ExecError: String;
   end;
 
 function IsPrintableAscii(const Value: String): Boolean;
@@ -291,15 +303,6 @@ begin
   AppendLine(Path, Message);
 end;
 
-// EDB writes Base Directory in every registration measured, a failed install's included; only a
-// hand-made key lacks it, and the uninstaller then sits in EDB's default prefix
-function UninstallerFolder(const BaseDirectory: String): String;
-begin
-  Result := BaseDirectory;
-  if Result = '' then
-    Result := '{#PgPrefix}';
-end;
-
 // The [Files] entry later replaces this copy and registers it for the uninstaller
 function KeepToolRefusal: String;
 begin
@@ -338,6 +341,63 @@ begin
     if Result <> '' then
       Result := Result + ', ';
     Result := Result + Lines[I];
+  end;
+end;
+
+// A detail= value may hold '=', so each line splits at its first one.
+procedure DetectEngine(var Engine: TEngine);
+var
+  Empty: TEngine;
+  Started: Boolean;
+  ExitCode, I, Separator: Integer;
+  Output: TExecOutput;
+  Key, Value: String;
+begin
+  Engine := Empty;
+  try
+    ExtractTemporaryFile('semibase.exe');
+    Started := ExecAndCaptureOutput(ExpandConstant('{tmp}\semibase.exe'),
+      'engine --expected-major {#PgMajor}', '', SW_HIDE, ewWaitUntilTerminated, ExitCode, Output);
+    if not Started then
+      Engine.ExecError := SysErrorMessage(ExitCode);
+  except
+    Engine.ExecError := GetExceptionMessage;
+  end;
+  if Engine.ExecError <> '' then
+    Exit;
+  if ExitCode <> 0 then
+  begin
+    Engine.Detail := FmtMessage(CustomMessage('EngineFailedDetail'), [IntToStr(ExitCode),
+      JoinLines(Output.StdErr)]);
+    Exit;
+  end;
+  for I := 0 to GetArrayLength(Output.StdOut) - 1 do
+  begin
+    Separator := Pos('=', Output.StdOut[I]);
+    Key := Copy(Output.StdOut[I], 1, Separator - 1);
+    Value := Copy(Output.StdOut[I], Separator + 1, Length(Output.StdOut[I]));
+    if Key = 'state' then
+      Engine.State := Value
+    else if Key = 'services' then
+      Engine.Services := Value
+    else if Key = 'service' then
+      Engine.ServiceName := Value
+    else if Key = 'base' then
+      Engine.BaseDirectory := Value
+    else if Key = 'data' then
+      Engine.DataDirectory := Value
+    else if Key = 'port' then
+      Engine.Port := Value
+    else if Key = 'port-file' then
+      Engine.PortFile := Value
+    else if Key = 'listening' then
+      Engine.Listening := Value
+    else if Key = 'uninstaller' then
+      Engine.Uninstaller := Value = 'yes'
+    else if Key = 'unreadable' then
+      Engine.Unreadable := Value
+    else if Key = 'detail' then
+      Engine.Detail := Value;
   end;
 end;
 
@@ -409,91 +469,45 @@ begin
     end;
 end;
 
-// The {#PgInstallation} key exists: it is used only when it is a complete install. An empty
-// Service ID would reach site as --restart-service ""; a Service ID naming no service is refused
-// by sc.exe config, and a wrong Port by site.
-function RegisteredEngineRefusal(var Engine: TEngine): String;
-var
-  Key, Version, SuperUser, DataDirectory, BaseDirectory, ServiceName, Missing: String;
-  Port: Cardinal;
+// A port the server took from the default or from the service command line is in no file
+function PortMismatchRefusal(const Engine: TEngine): String;
 begin
-  Result := '';
-  Key := InstallationsKey + '\{#PgInstallation}';
-  RegQueryStringValue(HKLM64, Key, 'Version', Version);
-  RegQueryStringValue(HKLM64, Key, 'Super User', SuperUser);
-  RegQueryStringValue(HKLM64, Key, 'Data Directory', DataDirectory);
-  RegQueryStringValue(HKLM64, Key, 'Service ID', ServiceName);
-  RegQueryStringValue(HKLM64, Key, 'Base Directory', BaseDirectory);
-
-  if Copy(Version, 1, Length('{#PgMajor}.')) <> '{#PgMajor}.' then
-    Missing := FmtMessage(CustomMessage('IncompleteVersion'), [Version])
-  else if SuperUser = '' then
-    Missing := CustomMessage('IncompleteSuperUser')
-  else if DataDirectory = '' then
-    Missing := CustomMessage('IncompleteDataDirectory')
-  else if not FileExists(AddBackslash(DataDirectory) + 'PG_VERSION') then
-    Missing := FmtMessage(CustomMessage('IncompletePgVersion'), [
-      AddBackslash(DataDirectory) + 'PG_VERSION']);
-  if Missing <> '' then
-  begin
-    if BaseDirectory <> '' then
-      Result := Refuse(FmtMessage(CustomMessage('IncompleteInstallation'), ['{#PgMajor}',
-        BaseDirectory]), FmtMessage(CustomMessage('IncompleteInstallationDetail'), [
-        'HKLM\' + Key, Missing]))
-    else
-      Result := Refuse(FmtMessage(CustomMessage('IncompleteInstallationNoFolder'), [
-        '{#PgMajor}']), FmtMessage(CustomMessage('IncompleteInstallationDetail'), [
-        'HKLM\' + Key, Missing]));
-    Exit;
-  end;
-
-  if (ServiceName = '') or
-    not RegQueryDWordValue(HKLM64, ServicesKey + '\' + ServiceName, 'Port', Port) then
-  begin
-    Result := Refuse(FmtMessage(CustomMessage('OrphanedRegistration'), [
-      UninstallerFolder(BaseDirectory)]), FmtMessage(CustomMessage('OrphanedRegistrationDetail'), [
-      'HKLM\' + Key, 'HKLM\' + ServicesKey]));
-    Exit;
-  end;
-
-  Engine.ServiceName := ServiceName;
-  Engine.Port := Port;
-  Engine.SuperUser := SuperUser;
-  Engine.BaseDirectory := BaseDirectory;
-  Engine.DataDirectory := DataDirectory;
+  if Engine.PortFile = '' then
+    Result := Refuse(FmtMessage(CustomMessage('PortMismatchNoFile'), [Engine.Listening,
+      Engine.ServiceName, Engine.Port]), Engine.Detail)
+  else
+    Result := Refuse(FmtMessage(CustomMessage('PortMismatch'), [Engine.Listening,
+      Engine.PortFile, Engine.Port, Engine.ServiceName]), Engine.Detail);
 end;
 
-// Every key name under Installations, comma-separated; empty when there is none
-function RegisteredInstallations: String;
-var
-  Names: TArrayOfString;
-  I: Integer;
+// The refusals the service list alone decides, with no probe: the wizard pages show them.
+function EngineStateRefusal(const Engine: TEngine): String;
 begin
   Result := '';
-  if not RegGetSubkeyNames(HKLM64, InstallationsKey, Names) then
-    Exit;
-  for I := 0 to GetArrayLength(Names) - 1 do
-  begin
-    if Result <> '' then
-      Result := Result + ', ';
-    Result := Result + Names[I];
-  end;
+  if Engine.ExecError <> '' then
+    Result := FmtMessage(CustomMessage('SiteNotStarted'), [Engine.ExecError])
+  else if Engine.State = StateAmbiguous then
+    Result := Refuse(FmtMessage(CustomMessage('AmbiguousEngine'), [Engine.Services]),
+      Engine.Detail)
+  else if (Engine.State = StateIncomplete) and Engine.Uninstaller then
+    Result := Refuse(FmtMessage(CustomMessage('IncompleteInstallation'), [Engine.ServiceName,
+      Engine.BaseDirectory]), Engine.Detail)
+  else if Engine.State = StateIncomplete then
+    Result := Refuse(FmtMessage(CustomMessage('IncompleteInstallationNoUninstaller'), [
+      Engine.ServiceName]), Engine.Detail)
+  else if Engine.State = StateUnreadable then
+    Result := Refuse(FmtMessage(CustomMessage('UnreadableService'), [Engine.ServiceName,
+      Engine.Unreadable]), Engine.Detail)
+  else if Engine.State = StatePortMismatch then
+    Result := PortMismatchRefusal(Engine)
+  else if Engine.State = StateOtherMajor then
+    Result := Refuse(FmtMessage(CustomMessage('OtherMajor'), ['{#PgMajor}']), Engine.Detail)
+  else if (Engine.State <> StateFound) and (Engine.State <> StateFresh) then
+    Result := Refuse(CustomMessage('EngineFailed'), Engine.Detail);
 end;
 
-// The {#PgInstallation} key does not exist, and another major may be registered
-function OtherMajorRefusal: String;
-var
-  Registered: String;
-begin
-  Result := '';
-  Registered := RegisteredInstallations;
-  if Registered <> '' then
-    Result := Refuse(FmtMessage(CustomMessage('OtherMajor'), ['{#PgMajor}']),
-      FmtMessage(CustomMessage('OtherMajorDetail'), [Registered]));
-end;
-
-// Nothing is registered: a fresh install must not meet a server or data it does not know
-function FreshMachineRefusal: String;
+// No pg_ctl service runs: a fresh install must not meet a server or data it does not know.
+function FreshMachineRefusal(const EngineDetail: String): String;
 var
   Accepts: Boolean;
   Owner, OwnerDetail: String;
@@ -508,47 +522,21 @@ begin
     else
       OwnerDetail := FmtMessage(CustomMessage('PortNoOwnerDetail'), ['{#PgPort}']);
     Result := Refuse(FmtMessage(CustomMessage('PortBusy'), ['{#PgPort}']),
-      CustomMessage('NoRegistrationDetail') + ' ' + OwnerDetail);
+      EngineDetail + '; ' + OwnerDetail);
   end
   else if IsNonEmptyDirectory('{#PgDataDir}') then
     Result := Refuse(FmtMessage(CustomMessage('DataDirectoryNotEmpty'), ['{#PgDataDir}']),
-      CustomMessage('NoRegistrationDetail'));
+      EngineDetail);
 end;
 
-// The password page passes ProbeMachine False: a probe of a closed port takes about 7 s, and the
-// page checks only what the user can correct in a field.
-function FreshInstallRefusal(const SuperPassword: String; ProbeMachine: Boolean): String;
+function EngineRefusal(const Engine: TEngine; const SuperPassword: String): String;
 begin
-  Result := FreshPasswordRefusal(SuperPassword);
-  if (Result = '') and ProbeMachine then
-    Result := FreshMachineRefusal;
-end;
-
-function EngineIsFresh: Boolean;
-begin
-  Result := not RegKeyExists(HKLM64, InstallationsKey + '\{#PgInstallation}');
-end;
-
-// The refusals the registry alone decides, with no probe: the wizard pages show them, and
-// PrepareToInstall finds them again through EngineRefusal
-function RegistryRefusal(var Engine: TEngine): String;
-begin
-  if EngineIsFresh then
-    Result := OtherMajorRefusal
-  else
-    Result := RegisteredEngineRefusal(Engine);
-end;
-
-// The first matching state wins. An empty result fills Engine, except on the fresh row.
-function EngineRefusal(Fresh: Boolean; const SuperPassword: String; var Engine: TEngine): String;
-begin
-  if not Fresh then
-    Result := RegisteredEngineRefusal(Engine)
-  else
+  Result := EngineStateRefusal(Engine);
+  if (Result = '') and (Engine.State = StateFresh) then
   begin
-    Result := OtherMajorRefusal;
+    Result := FreshPasswordRefusal(SuperPassword);
     if Result = '' then
-      Result := FreshInstallRefusal(SuperPassword, True);
+      Result := FreshMachineRefusal(Engine.Detail);
   end;
 end;
 
@@ -594,15 +582,16 @@ end;
 function StartServiceRefusal(const Engine: TEngine): String;
 var
   ExitCode: Integer;
+  Detail: String;
 begin
   Result := '';
   ExitCode := ScExitCode('config "' + Engine.ServiceName + '" start= auto');
   if ExitCode <> 0 then
   begin
+    Detail := FmtMessage(CustomMessage('ServiceConfigFailedDetail'), [Engine.ServiceName,
+      IntToStr(ExitCode)]);
     Result := Refuse(FmtMessage(CustomMessage('ServiceConfigFailed'), [Engine.ServiceName,
-      SysErrorMessage(ExitCode), UninstallerFolder(Engine.BaseDirectory)]),
-      FmtMessage(CustomMessage('ServiceConfigFailedDetail'), [Engine.ServiceName,
-      IntToStr(ExitCode)]));
+      SysErrorMessage(ExitCode)]), Detail);
     Exit;
   end;
   ExitCode := ScExitCode('start "' + Engine.ServiceName + '"');
@@ -616,23 +605,14 @@ end;
 var
   SiteLog: String;
   SitePasswordRejected: Boolean;
-  SiteConnected: Boolean;
-  SitePortRefused: Boolean;
 
 // Each line lands as it arrives, so a Setup killed during a long service stop still leaves a log.
 // semibase prints the SQLSTATE of a refused password in English whatever the server's language.
-// Its first [ OK ] line follows its first connection, so a connectex before it is a TCP failure on
-// the registered port; the syscall name stays English while Windows words the error in its own
-// language.
 procedure AppendSiteLine(const S: String; const Error, FirstLine: Boolean);
 begin
   AppendLine(SiteLog, S);
   if Pos('SQLSTATE 28P01', S) > 0 then
     SitePasswordRejected := True;
-  if Pos('[ OK ]', S) > 0 then
-    SiteConnected := True
-  else if not SiteConnected and (Pos('connectex', S) > 0) then
-    SitePortRefused := True;
 end;
 
 // semibase inherits the passwords from Setup's environment, so none is on a command line. All
@@ -649,33 +629,37 @@ begin
   SetEnvironmentVariable('SEMIBASE_PLOT_PASSWORD', '');
   SiteLog := LogPath('site');
   SitePasswordRejected := False;
-  SiteConnected := False;
-  SitePortRefused := False;
   if not ExecAndLogOutput(ExpandConstant('{tmp}\semibase.exe'), 'site --port ' +
-    IntToStr(Engine.Port) + ' --superuser "' + Engine.SuperUser + '" --expected-major ' +
-    '{#PgMajor} --restart-service "' + Engine.ServiceName + '"', '', SW_SHOWNORMAL,
-    ewWaitUntilTerminated, ExitCode, @AppendSiteLine) then
+    Engine.Port + ' --expected-major {#PgMajor} --restart-service "' + Engine.ServiceName + '"',
+    '', SW_SHOWNORMAL, ewWaitUntilTerminated, ExitCode, @AppendSiteLine) then
     Result := FmtMessage(CustomMessage('SiteNotStarted'), [SysErrorMessage(ExitCode)])
   else if (ExitCode <> 0) and SitePasswordRejected then
     Result := Refuse(CustomMessage('SitePasswordWrong'),
       FmtMessage(CustomMessage('SitePasswordWrongDetail'), [SiteLog]))
-  else if (ExitCode <> 0) and SitePortRefused then
-    Result := Refuse(FmtMessage(CustomMessage('SitePortWrong'), [IntToStr(Engine.Port),
-      Engine.DataDirectory]), FmtMessage(CustomMessage('SitePortWrongDetail'), [
-      'HKLM\' + ServicesKey + '\' + Engine.ServiceName, IntToStr(Engine.Port), SiteLog]))
   else if ExitCode <> 0 then
     Result := Refuse(FmtMessage(CustomMessage('SiteFailed'), [SiteLog]),
       FmtMessage(CustomMessage('SiteFailedDetail'), [IntToStr(ExitCode)]));
 end;
 
 var
+  // What InitializeSetup's engine run found; every wizard page reads it, none runs the command
+  Detected: TEngine;
   PasswordPage: TWizardPage;
   SuperEdit, WriterEdit: TNewEdit;
   Provisioned: TEngine;
-  // EngineIsFresh is false once the install registered 17, so PrepareToInstall keeps its answer
+  // The engine run finds the service once the install created it, so PrepareToInstall keeps its
+  // answer
   ProvisionedFresh: Boolean;
   Refused: Boolean;
   ReadyRefusalLogged: Boolean;
+
+// Returns True whatever the run found: a False here would end Setup with no exit code 7 and no
+// setup log, and the Ready page and PrepareToInstall report a failed run instead
+function InitializeSetup: Boolean;
+begin
+  DetectEngine(Detected);
+  Result := True;
+end;
 
 // A bold prompt, its own wrapped explanation, then a plain edit: the passwords are conventions,
 // so they are shown, not masked
@@ -712,7 +696,7 @@ var
 begin
   WizardForm.ReadyMemo.WordWrap := True;
   WizardForm.ReadyMemo.ScrollBars := ssVertical;
-  if EngineIsFresh then
+  if Detected.State = StateFresh then
   begin
     Description := CustomMessage('PasswordPageDescriptionNew');
     SuperHint := 'SuperPasswordHintNew';
@@ -728,8 +712,8 @@ begin
     FmtMessage(CustomMessage(SuperHint), ['{#PgMajor}']),
     SuperPasswordOrConvention(GetEnv('SEMIBASE_SUPER_PASSWORD')));
   // The writer's password is set only when the user is created, which only a fresh install is
-  // sure to do; on a registered 17 semibase creates a missing user with the convention.
-  if EngineIsFresh then
+  // sure to do; on a found 17 semibase creates a missing user with the convention.
+  if Detected.State = StateFresh then
     WriterEdit := AddPasswordField(PasswordPage, Top, CustomMessage('WriterPasswordLabel'),
       CustomMessage('WriterPasswordHint'),
       WriterPasswordOrConvention(GetEnv('SEMIBASE_WRITER_PASSWORD')));
@@ -746,14 +730,13 @@ end;
 
 // A machine Setup refuses whatever the passwords has nothing to ask for; the Ready page says why
 function ShouldSkipPage(PageID: Integer): Boolean;
-var
-  Engine: TEngine;
 begin
-  Result := (PageID = PasswordPage.ID) and (RegistryRefusal(Engine) <> '');
+  Result := (PageID = PasswordPage.ID) and (EngineStateRefusal(Detected) <> '');
 end;
 
-// PrepareToInstall enforces every rule again; this only lets the user correct a field. A silent
-// install simulates Next, and a False here would end it without exit code 7 or a setup log.
+// PrepareToInstall enforces every rule again; this only lets the user correct a field, so it
+// skips the machine probes: a probe of a closed port takes about 7 s. A silent install simulates
+// Next, and a False here would end it without exit code 7 or a setup log.
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   Refusal: String;
@@ -762,8 +745,8 @@ begin
   if WizardSilent or (CurPageID <> PasswordPage.ID) then
     Exit;
   Refusal := WriterPasswordRefusal(WriterPasswordValue);
-  if (Refusal = '') and EngineIsFresh then
-    Refusal := FreshInstallRefusal(SuperPasswordOrConvention(SuperEdit.Text), False);
+  if (Refusal = '') and (Detected.State = StateFresh) then
+    Refusal := FreshPasswordRefusal(SuperPasswordOrConvention(SuperEdit.Text));
   if Refusal <> '' then
   begin
     MsgBox(Refusal, mbError, MB_OK);
@@ -778,17 +761,16 @@ begin
   StringChangeEx(Result, #13#10, NewLine + Space + Space, True);
 end;
 
-// The registry reads alone; PrepareToInstall decides. Inno runs this on every visit to the page
+// The service list alone; PrepareToInstall decides. Inno runs this on every visit to the page
 // and under /SILENT too, where PrepareToInstall copies the tool and logs the refusal anyway; a
 // user who clicks Cancel as the page says never reaches PrepareToInstall, so the page does both
 // once. The refusal stays the last log line, after a copy failure.
 function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
   MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
 var
-  Engine: TEngine;
   Refusal, ToolRefusal, Tools, WriterPassword: String;
 begin
-  Refusal := RegistryRefusal(Engine);
+  Refusal := EngineStateRefusal(Detected);
   if Refusal <> '' then
   begin
     if not WizardSilent and not ReadyRefusalLogged then
@@ -809,7 +791,7 @@ begin
   Tools := '{#AppName}' + NewLine +
     Space + FmtMessage(CustomMessage('ReadyTools'), [ExpandConstant('{#LogRoot}')]) + NewLine;
   WriterPassword := WriterPasswordOrConvention(WriterPasswordValue);
-  if EngineIsFresh then
+  if Detected.State = StateFresh then
   begin
     Result := FmtMessage(CustomMessage('ReadyPgInstall'), ['{#PgMajor}']) + NewLine +
       Space + FmtMessage(CustomMessage('ReadyFolder'), ['{#PgPrefix}']) + NewLine +
@@ -820,10 +802,10 @@ begin
       Space, NewLine);
     Exit;
   end;
-  Result := FmtMessage(CustomMessage('ReadyPgRegistered'), ['{#PgMajor}']) + NewLine +
-    Space + FmtMessage(CustomMessage('ReadyFolder'), [Engine.BaseDirectory]) + NewLine +
-    Space + FmtMessage(CustomMessage('ReadyService'), [Engine.ServiceName]) + NewLine +
-    Space + FmtMessage(CustomMessage('ReadyPort'), [IntToStr(Engine.Port)]) + NewLine + NewLine +
+  Result := FmtMessage(CustomMessage('ReadyPgFound'), ['{#PgMajor}']) + NewLine +
+    Space + FmtMessage(CustomMessage('ReadyFolder'), [Detected.BaseDirectory]) + NewLine +
+    Space + FmtMessage(CustomMessage('ReadyService'), [Detected.ServiceName]) + NewLine +
+    Space + FmtMessage(CustomMessage('ReadyPort'), [Detected.Port]) + NewLine + NewLine +
     CustomMessage('ReadyRestart') + NewLine + NewLine +
     Tools + Space + ReadyList(FmtMessage(CustomMessage('ReadyCreateExisting'), [WriterPassword]),
     Space, NewLine);
@@ -840,22 +822,33 @@ var
 begin
   SuperPassword := SuperEdit.Text;
   WriterPassword := WriterPasswordValue;
+  Fresh := False;
   try
-    Fresh := EngineIsFresh;
     RefusalDetail := '';
     Result := KeepToolRefusal;
     if Result = '' then
       Result := WriterPasswordRefusal(WriterPassword);
     if Result = '' then
       Result := UninstallerRefusal;
+    // The service list may have changed since InitializeSetup read it
     if Result = '' then
-      Result := EngineRefusal(Fresh, SuperPasswordOrConvention(SuperPassword), Engine);
-    // The install's own registration, read like any other, fills Engine
+    begin
+      DetectEngine(Engine);
+      Fresh := Engine.State = StateFresh;
+      Result := EngineRefusal(Engine, SuperPasswordOrConvention(SuperPassword));
+    end;
     if (Result = '') and Fresh then
     begin
       Result := InstallEngineRefusal(SuperPasswordOrConvention(SuperPassword));
       if Result = '' then
-        Result := RegisteredEngineRefusal(Engine);
+      begin
+        DetectEngine(Engine);
+        if Engine.ExecError <> '' then
+          Result := EngineStateRefusal(Engine)
+        else if Engine.State <> StateFound then
+          Result := Refuse(FmtMessage(CustomMessage('EdbFailed'), ['{#PgPrefix}']),
+            Engine.Detail);
+      end;
     end;
     if Result = '' then
       Result := StartServiceRefusal(Engine);
@@ -902,11 +895,11 @@ begin
   begin
     if ProvisionedFresh then
       WizardForm.FinishedLabel.Caption := FmtMessage(CustomMessage('FinishedTextNew'), [
-        '{#PgMajor}', IntToStr(Provisioned.Port), ExpandConstant('{#LogRoot}'),
+        '{#PgMajor}', Provisioned.Port, ExpandConstant('{#LogRoot}'),
         WriterPasswordOrConvention(WriterPasswordValue)])
     else
       WizardForm.FinishedLabel.Caption := FmtMessage(CustomMessage('FinishedText'), [
-        '{#PgMajor}', IntToStr(Provisioned.Port), ExpandConstant('{#LogRoot}')]);
+        '{#PgMajor}', Provisioned.Port, ExpandConstant('{#LogRoot}')]);
     WizardForm.AdjustLabelHeight(WizardForm.FinishedLabel);
   end;
 end;

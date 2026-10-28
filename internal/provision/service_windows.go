@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Semiteq/SemiBase/internal/engine"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -125,7 +126,7 @@ func (s *managedService) confirmServes(
 	pathName string,
 	describe func(context.Context) (runningServer, error),
 ) error {
-	serviceDirectory, found := dataDirectoryFlag(pathName)
+	serviceDirectory, found := engine.DataDirectoryFlag(pathName)
 	if !found {
 		return fmt.Errorf("the PathName of service %s carries no -D, so site cannot tell which data "+
 			"directory it runs; site restarts a service registered with pg_ctl register -D", s.name)
@@ -144,23 +145,6 @@ func (s *managedService) confirmServes(
 		server.address)
 	s.address = server.address
 	return nil
-}
-
-// dataDirectoryFlag reads the -D argument of a service command line, as pg_ctl register writes it.
-func dataDirectoryFlag(pathName string) (string, bool) {
-	args, err := windows.DecomposeCommandLine(pathName)
-	if err != nil {
-		return "", false
-	}
-	for i, arg := range args {
-		switch {
-		case arg == "-D" && i+1 < len(args):
-			return args[i+1], true
-		case strings.HasPrefix(arg, "-D") && len(arg) > len("-D"):
-			return strings.TrimPrefix(arg, "-D"), true
-		}
-	}
-	return "", false
 }
 
 // sameDataDirectory compares the service's native path with the server's, which PostgreSQL

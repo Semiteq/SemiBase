@@ -313,41 +313,6 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-func TestDataDirectoryFlag(t *testing.T) {
-	tests := []struct {
-		name      string
-		pathName  string
-		want      string
-		wantFound bool
-	}{
-		{
-			name:     "pg_ctl register, quoted with spaces",
-			pathName: `"C:\Program Files\PostgreSQL\14\bin\pg_ctl.exe" runservice -N "postgresql-14" -D "C:\Program Files\PostgreSQL\14\data" -w`,
-			want:     `C:\Program Files\PostgreSQL\14\data`, wantFound: true,
-		},
-		{
-			name:     "unquoted",
-			pathName: `C:\pg\bin\pg_ctl.exe runservice -D C:\pg\data -w`,
-			want:     `C:\pg\data`, wantFound: true,
-		},
-		{
-			name:     "value attached to the flag",
-			pathName: `C:\pg\bin\pg_ctl.exe runservice -DC:\pg\data`,
-			want:     `C:\pg\data`, wantFound: true,
-		},
-		{name: "no -D", pathName: `"C:\pg\bin\pg_ctl.exe" runservice -N "pg" -w`},
-		{name: "-D with no value", pathName: `C:\pg\bin\pg_ctl.exe runservice -D`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, found := dataDirectoryFlag(tt.pathName)
-			if got != tt.want || found != tt.wantFound {
-				t.Errorf("dataDirectoryFlag() = %q, %v, want %q, %v", got, found, tt.want, tt.wantFound)
-			}
-		})
-	}
-}
-
 func TestSameDataDirectory(t *testing.T) {
 	const server = "C:/PostgreSQL/17/data"
 	tests := []struct {
