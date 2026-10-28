@@ -41,7 +41,9 @@ SemiBase не делает резервных копий архива и не в
 4. После установки укажите значения с последней страницы в проекте SCADA
    (Проект → Настройки → База данных) и в подключении SemiPlot.
 
-![Последняя страница установщика со значениями для SCADA и SemiPlot](docs/images/setup-finished.png)
+<div align="center">
+    <img src="docs/images/setup-finished.png" alt="Последняя страница установщика со значениями для SCADA и SemiPlot" />
+</div>
 
 ### Установка из PowerShell
 
@@ -97,7 +99,9 @@ $setup.ExitCode
 программы, которая занимает порт 5432. Ниже описаны случаи, в которых действия с экрана
 недостаточно.
 
-![Установка невозможна: неверный пароль администратора PostgreSQL](docs/images/setup-refusal.png)
+<div align="center">
+    <img src="docs/images/setup-refusal.png" alt="Установка невозможна: неверный пароль администратора PostgreSQL" />
+</div>
 
 ### Найдено несколько служб PostgreSQL 17
 
