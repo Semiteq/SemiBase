@@ -1,8 +1,9 @@
 -- docs/architecture/provisioning.md#the-semiplot-configuration-schema
 
 CREATE TABLE IF NOT EXISTS semiplot_groups (
-	id   integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-	name text NOT NULL UNIQUE
+	id              integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	name            text    NOT NULL UNIQUE,
+	folded_on_start boolean NOT NULL DEFAULT false
 );
 
 CREATE TABLE IF NOT EXISTS semiplot_pen_groups (
