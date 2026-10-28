@@ -17,7 +17,7 @@ survive a reinstall of `postgresql.conf`, and applies them with `pg_reload_conf(
 below except `shared_buffers` and `listen_addresses` is reload-context or weaker and takes effect
 immediately; those two take effect at the next service restart or reboot. The tuning phase prints
 the server's own pending-restart list (`pg_settings.pending_restart`), and the run reads it again
-last ([provisioning.md](./provisioning.md#what-the-tail-checks-prove), check 9).
+last ([provisioning.md](./provisioning.md#what-the-tail-checks-prove), check 10).
 `site --restart-service <name>` restarts that Windows service inside the tuning phase when the
 list is not empty ([provisioning.md](./provisioning.md#the-service-restart)).
 

@@ -87,7 +87,7 @@ Run:
 
 `site` and `bench` differ in one thing: `site` applies the `ALTER SYSTEM` server settings,
 `bench` does not. Both create the database, the roles, the grants, the five `semiplot_*` tables,
-`semiplot_register_new_pens()` and `public.trends`, and end with the `semiplot` access checks; a
+`semiplot_register_new_pens()` and `public.trends`, and end with the `semiplot` and `scada_writer` access checks; a
 failed check is a non-zero exit (`docs/architecture/provisioning.md`). `engine` provisions
 nothing: it reads the Windows service list and the data folders and prints the state Setup acts
 on (`docs/architecture/installer.md#semibase-engine`).

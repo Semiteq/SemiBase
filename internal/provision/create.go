@@ -118,7 +118,8 @@ func (o Options) create(ctx context.Context) error {
 			return fmt.Errorf("applying %s: %w", file.name, err)
 		}
 	}
-	for _, statement := range append(registrarStatements(), semiplotGrantStatements()...) {
+	statements := append(registrarStatements(), semiplotGrantStatements()...)
+	for _, statement := range append(statements, writerMarkerGrant) {
 		if _, err := archive.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("%s: %w", statement, err)
 		}
@@ -126,6 +127,7 @@ func (o Options) create(ctx context.Context) error {
 	ok("SemiPlot configuration tables in place: %s", strings.Join(semiplotTableNames(), ", "))
 	ok("%s in place, owned by %s, executable by %s and not by PUBLIC",
 		registerNewPensFunction, RegistrarRole, PlotRole)
+	ok("%s may insert recipe markers into semiplot_markers", WriterRole)
 	return nil
 }
 

@@ -201,6 +201,50 @@ func TestExcessPrivilegeFailure(t *testing.T) {
 	}
 }
 
+// only a refusal is a grant fault; any other error, a missing column among them, is reported as it is
+func TestWriterMarkerFailure(t *testing.T) {
+	cases := []struct {
+		name      string
+		cause     error
+		wantGrant bool
+	}{
+		{"refused", &pgconn.PgError{Code: "42501", Message: "permission denied"}, true},
+		{"undefined column", &pgconn.PgError{Code: "42703", Message: `column "kind" does not exist`}, false},
+		{"connection lost", errors.New("unexpected EOF"), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			failure := writerMarkerFailure(c.cause)
+			if got := strings.Contains(failure.Error(), writerMarkerGrant); got != c.wantGrant {
+				t.Errorf("prescribes %s = %t, want %t: %q", writerMarkerGrant, got, c.wantGrant, failure)
+			}
+			if !errors.Is(failure, c.cause) {
+				t.Errorf("the failure does not wrap the probe error: %q", failure)
+			}
+		})
+	}
+}
+
+func TestWriterMarkerExcessFailure(t *testing.T) {
+	want := "scada_writer holds UPDATE on semiplot_markers and must not: the SCADA only adds recipe markers. " +
+		"Repair with REVOKE UPDATE ON semiplot_markers FROM scada_writer, or, if the privilege comes through " +
+		"PUBLIC or a role scada_writer is a member of, revoke it there or drop the membership; " +
+		"then re-run this command"
+	if got := writerMarkerExcessFailure("UPDATE"); got.Error() != want {
+		t.Errorf("writerMarkerExcessFailure() = %q, want %q", got, want)
+	}
+}
+
+// the statement docs/architecture/provisioning.md#recipe-markers gives the SCADA, so a change here
+// is a change to that contract
+func TestRecipeMarkerProbe(t *testing.T) {
+	want := "INSERT INTO semiplot_markers (t, label, kind, locked) " +
+		"VALUES (clock_timestamp(), NULLIF(left('semibase write probe', 80), ''), 1, true)"
+	if recipeMarkerProbe != want {
+		t.Errorf("recipeMarkerProbe = %q, want %q", recipeMarkerProbe, want)
+	}
+}
+
 // check runs only after create, which has just revoked CREATE from PUBLIC, so the one repair this
 // message must not prescribe is that same REVOKE
 func TestCreateInPublicFailure(t *testing.T) {

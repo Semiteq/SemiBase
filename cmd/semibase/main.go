@@ -37,8 +37,9 @@ site and bench end by checking the semiplot role in a transaction that is rolled
 it reads public.trends and semiplot_meta, registers new pens through
 semiplot_register_new_pens(), updates pen settings, groups and markers, and is
 refused an insert, a delete or a key change on semiplot_tags; it writes neither the
-archive nor semiplot_meta and holds no CREATE on schema public. A failed check is a
-non-zero exit.
+archive nor semiplot_meta and holds no CREATE on schema public. Then scada_writer adds a
+recipe marker in a rolled-back transaction and cannot read, move or delete one.
+A failed check is a non-zero exit.
 
 The tuning includes settings that take effect only after a server restart. site
 reports them and leaves the restart to the operator, unless --restart-service names
