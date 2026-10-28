@@ -7,7 +7,7 @@ Declarative architecture docs (English, present tense). These describe the syste
 
 - [overview.md](./overview.md) — purpose, consumers, components, provisioning order.
 - [configuration.md](./configuration.md) — every setting changed from the PostgreSQL default, with why.
-- [provisioning.md](./provisioning.md) — the tool's two commands, idempotency rules, the four
+- [provisioning.md](./provisioning.md) — the tool's two provisioning commands, idempotency rules, the four
   roles, the SemiPlot configuration schema, the access
   chain, and the stated assumption about the SCADA meeting an existing `trends`.
 - [installer.md](./installer.md) — what `SemiBase-Setup.exe` does, and the dated EDB and Inno
@@ -28,7 +28,7 @@ Declarative architecture docs (English, present tense). These describe the syste
 | Network | Loopback only (`listen_addresses = 'localhost'`): every client runs on the installation machine |
 | Hardware floor | Installation machines guarantee 8 GB RAM and 50 GB database disk; memory settings are fixed constants sized to that floor, identical on every machine |
 | Roles | Four: the superuser (owns the `semiplot_*` tables), `scada_writer` (SCADA), `semiplot` (viewers, one role, reads the archive and edits only pen settings, groups and markers), `semiplot_registrar` (`NOLOGIN`, owns `semiplot_register_new_pens()`) ([provisioning.md](./provisioning.md#the-roles)) |
-| Command surface | Two commands, `site` and `bench`, named for the situation rather than for the tool's internal steps; they differ in one thing, the server settings, which only `site` applies |
+| Command surface | Two provisioning commands, `site` and `bench`, named for the situation rather than for the tool's internal steps; they differ in one thing, the server settings, which only `site` applies. `engine` reads the service list for Setup and provisions nothing |
 | Archive read access | `ALTER DEFAULT PRIVILEGES FOR ROLE scada_writer` set **before** `public.trends` is created, and before the writer first runs. The `semiplot_*` tables are granted table by table instead, since the superuser creates them |
 | Objects we add | `semiplot_tags`, `semiplot_groups`, `semiplot_pen_groups`, `semiplot_markers`, `semiplot_meta`, the `semiplot_register_new_pens()` function the viewer calls, and the vendor-shaped `public.trends` — no triggers, scheduled jobs, extensions, or other functions; `messages` is not created, the SCADA makes it |
 | SemiPlot schema version | `semiplot_meta.schema_version`, `1` in this release, written by `provision` alone; a floor, not an equality ([provisioning.md](./provisioning.md#the-schema-version-is-a-floor)) |

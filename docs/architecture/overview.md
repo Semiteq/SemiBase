@@ -39,7 +39,8 @@ time markers. Both are what operators entered, and they can enter them again; th
 | `cmd/semibase`, `internal/provision` | `semibase.exe` — idempotent provisioning in two commands, `site` and `bench`: instance tuning (`site` only), database, roles, grants, the five SemiPlot tables, `semiplot_register_new_pens()`, `public.trends`, and the `semiplot` access checks that end every run |
 | `sql/semiplot_tags.sql`, `sql/semiplot_register.sql`, `sql/semiplot_groups.sql`, `sql/semiplot_markers.sql`, `sql/semiplot_meta.sql` | DDL for the objects we invented — the pen catalogue, the function that registers new pens, the groups and their membership, the time markers, and the schema version — embedded into the binary |
 | `sql/trends.sql` | The vendor's archive-table shape, transcribed and embedded; created as `scada_writer` ([provisioning.md](./provisioning.md#the-archive-table)) |
-| `Installer/` | `SemiBase-Setup.exe` (Inno Setup, `SemiBase.iss`) — installs the vendored EDB PostgreSQL 17 when none is registered, then runs `semibase site --restart-service`; `fetch-postgresql.sh` downloads the pinned EDB installer ([installer.md](./installer.md)) |
+| `internal/engine` | `semibase engine`: finds the Windows service that runs PostgreSQL 17 and classifies the machine for Setup, reading the service list and the data folders only ([installer.md](./installer.md#the-engine-state)) |
+| `Installer/` | `SemiBase-Setup.exe` (Inno Setup, `SemiBase.iss`) — installs the vendored EDB PostgreSQL 17 when no Windows service runs PostgreSQL, then runs `semibase site --restart-service`; `fetch-postgresql.sh` downloads the pinned EDB installer ([installer.md](./installer.md)) |
 | `Dockerfile` | `ghcr.io/semiteq/semibase` — the Linux binary alone on `scratch`, for consumers that layer it into a bench image |
 | `docs/architecture/` | The instance as it is: configuration deltas, provisioning order, ownership |
 
@@ -54,8 +55,8 @@ silently stop.
 The order matters, because the default privileges have to be in place before any table
 `scada_writer` owns is created.
 
-1. Run `SemiBase-Setup.exe` ([installer.md](./installer.md)). It installs PostgreSQL 17 when none
-   is registered, sets the service to Automatic and starts it, then runs `semibase site
+1. Run `SemiBase-Setup.exe` ([installer.md](./installer.md)). It installs PostgreSQL 17 when no
+   Windows service runs PostgreSQL, sets the service to Automatic and starts it, then runs `semibase site
    --restart-service <service>`: tuning, then the archive database, the three created roles,
    default privileges, `public.trends`, the five SemiPlot tables and
    `semiplot_register_new_pens()`. The restart puts `shared_buffers` and `listen_addresses` into

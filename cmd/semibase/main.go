@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/Semiteq/SemiBase/internal/engine"
 	"github.com/Semiteq/SemiBase/internal/provision"
 )
 
@@ -25,9 +28,12 @@ Commands:
            then create the archive database, the roles, the access chain, public.trends,
            the five semiplot_* tables and semiplot_register_new_pens()
   bench    a throwaway container: the same, without the tuning
+  engine   find the Windows service that runs PostgreSQL of --expected-major and print its
+           state and facts as key=value lines; it reads the service list and the data
+           folder, opens no connection and needs no elevation
   version  print the build revision
 
-Both commands end by checking the semiplot role in a transaction that is rolled back:
+site and bench end by checking the semiplot role in a transaction that is rolled back:
 it reads public.trends and semiplot_meta, registers new pens through
 semiplot_register_new_pens(), updates pen settings, groups and markers, and is
 refused an insert, a delete or a key change on semiplot_tags; it writes neither the
@@ -74,6 +80,8 @@ var commands = map[string]func(context.Context, provision.Options) error{
 	"bench": func(ctx context.Context, options provision.Options) error { return options.Bench(ctx) },
 }
 
+var detectEngine = engine.Detect
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	exitCode := run(ctx, os.Args[1:])
@@ -94,6 +102,8 @@ func run(ctx context.Context, arguments []string) int {
 	case "version", "--version":
 		fmt.Fprintln(output, resolveRevision(revision))
 		return 0
+	case "engine":
+		return runEngine(arguments[1:])
 	}
 
 	execute, known := commands[command]
@@ -124,6 +134,64 @@ func run(ctx context.Context, arguments []string) int {
 	fmt.Fprintf(output, "\nDone: %s completed against %s.\n",
 		command, options.Endpoint())
 	return 0
+}
+
+func runEngine(arguments []string) int {
+	flags := flag.NewFlagSet("engine", flag.ContinueOnError)
+	flags.SetOutput(errorOutput)
+	expectedMajor := flags.Int("expected-major", 0, "the PostgreSQL major version to find, such as 17")
+	if err := flags.Parse(arguments); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(errorOutput, "engine takes no arguments, got %q\n", flags.Args())
+		return 2
+	}
+	if *expectedMajor <= 0 {
+		fmt.Fprintln(errorOutput, "engine needs --expected-major, such as --expected-major 17")
+		return 2
+	}
+
+	result, err := detectEngine(*expectedMajor)
+	if err != nil {
+		fmt.Fprintln(errorOutput, "error:", err)
+		return 1
+	}
+	writeEngineResult(output, result)
+	return 0
+}
+
+// writeEngineResult prints the lines Setup reads; a number that is not known prints empty.
+func writeEngineResult(w io.Writer, result engine.Result) {
+	fmt.Fprintf(w, "state=%s\n", result.State)
+	if len(result.Services) > 0 {
+		fmt.Fprintf(w, "services=%s\n", strings.Join(result.Services, ", "))
+	}
+	if service := result.Service; service.Name != "" {
+		uninstaller := "no"
+		if service.Uninstaller {
+			uninstaller = "yes"
+		}
+		fmt.Fprintf(w, "service=%s\n", service.Name)
+		fmt.Fprintf(w, "base=%s\n", service.Base)
+		fmt.Fprintf(w, "data=%s\n", service.Data)
+		fmt.Fprintf(w, "port=%s\n", knownNumber(service.Port))
+		fmt.Fprintf(w, "port-file=%s\n", service.PortFile)
+		fmt.Fprintf(w, "listening=%s\n", knownNumber(service.Listening))
+		fmt.Fprintf(w, "uninstaller=%s\n", uninstaller)
+		fmt.Fprintf(w, "unreadable=%s\n", service.Unreadable)
+	}
+	fmt.Fprintf(w, "detail=%s\n", result.Detail)
+}
+
+func knownNumber(number int) string {
+	if number == 0 {
+		return ""
+	}
+	return strconv.Itoa(number)
 }
 
 func resolveRevision(embedded string) string {

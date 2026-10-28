@@ -11,8 +11,9 @@
 
 SemiBase настраивает на одном компьютере с Windows базу scada_archive в PostgreSQL 17: Simple-Scada 2
 записывает в эту базу архив, [SemiPlot](https://github.com/Semiteq/SemiPlot) читает архив из неё.
-Установщик `SemiBase-Setup.exe` устанавливает PostgreSQL 17, если его нет, создаёт базу,
-пользователей БД и таблицы и проверяет, что SemiPlot читает архив.
+Установщик `SemiBase-Setup.exe` устанавливает PostgreSQL 17, если на компьютере нет ни одной
+службы PostgreSQL, создаёт базу, пользователей БД и таблицы и проверяет, что SemiPlot читает
+архив.
 
 SemiBase не делает резервных копий архива и не входит в состав SCADA. PostgreSQL принимает
 подключения только с этого компьютера, поэтому SCADA и SemiPlot работают на этом же компьютере.
@@ -21,7 +22,9 @@ SemiBase не делает резервных копий архива и не в
 
 - Windows x64 и права администратора.
 - Simple-Scada 2 с архивом в PostgreSQL.
-- На компьютере установлен PostgreSQL 17 или не установлен никакой PostgreSQL.
+- На компьютере установлена одна служба PostgreSQL 17 или нет ни одной службы PostgreSQL.
+  Службы PostgreSQL других версий рядом со службой PostgreSQL 17 установщик не использует и не
+  меняет. Администратор PostgreSQL 17 — пользователь БД postgres.
 
 Установщик `SemiBase-Setup.exe` находится на странице
 [Releases](https://github.com/Semiteq/SemiBase/releases/latest) и при установке ничего не скачивает.
@@ -74,7 +77,7 @@ $setup.ExitCode
 Чтобы сменить пароль пользователя БД scada_writer, выполните команду psql. Команда запрашивает
 пароль администратора PostgreSQL (пользователь БД postgres), затем новый пароль дважды. Для пароля
 администратора замените последнее слово команды на `postgres`. Если PostgreSQL 17 установлен не
-этим установщиком, укажите в команде папку, порт и имя администратора этого PostgreSQL.
+этим установщиком, укажите в команде папку и порт этого PostgreSQL.
 
 ```powershell
 & 'C:\Program Files\PostgreSQL\17\bin\psql.exe' -h localhost -p 5432 -U postgres -d postgres -c '\password scada_writer'
@@ -96,31 +99,29 @@ $setup.ExitCode
 
 ![Установка невозможна: неверный пароль администратора PostgreSQL](docs/images/setup-refusal.png)
 
-### PostgreSQL 17 без имени службы или порта
+### Найдено несколько служб PostgreSQL 17
 
-Если архив на этом сервере нужен, не удаляйте PostgreSQL: настройте сервер утилитой
-`semibase.exe` вручную. Если файла `C:\Program Files\SemiBase\semibase.exe` нет, запустите
-установщик и дождитесь текста о том, что установка невозможна: к этому моменту установщик уже
-скопировал утилиту в эту папку. Затем найдите значения в PowerShell от имени
-администратора и укажите их в командах. Не удаляйте из команды ключ `--expected-major 17`: с этим
-ключом утилита не настраивает сервер другой версии.
+Установщик настраивает одну службу PostgreSQL 17. Чтобы найти службу, к которой подключается
+SCADA, сравните порт каждой службы с портом в проекте SCADA (Проект → Настройки → База данных).
+Выполните команды в PowerShell от имени администратора. Папка данных службы указана после `-D` в
+`PathName`. Если в `PathName` есть `-o "-p <порт>"`, служба работает на этом порту. Иначе порт
+указан в последней строке `port` файлов `postgresql.conf` и `postgresql.auto.conf` папки данных,
+а без такой строки порт 5432.
 
 ```powershell
-# служба PostgreSQL; папка данных указана после -D в PathName
 Get-CimInstance Win32_Service | Where-Object PathName -like '*pg_ctl*' | Format-List Name, State, PathName
-# порт; если строки port нет, порт 5432
-Select-String -Path '<папка данных>\postgresql.conf' -Pattern '^\s*port\s*='
-# имя администратора PostgreSQL
-(Get-ItemProperty 'HKLM:\SOFTWARE\PostgreSQL\Installations\postgresql-x64-17').'Super User'
-
-$port = 5432
-$superuser = 'postgres'
-$service = 'postgresql-x64-17'
-Set-Service $service -StartupType Automatic; Start-Service $service
-$env:SEMIBASE_SUPER_PASSWORD = [Net.NetworkCredential]::new('', (Read-Host 'Пароль администратора PostgreSQL' -AsSecureString)).Password
-& 'C:\Program Files\SemiBase\semibase.exe' site --port $port --superuser $superuser --expected-major 17 --restart-service $service
-$LASTEXITCODE
+Select-String -Path '<папка данных>\postgresql.conf', '<папка данных>\postgresql.auto.conf' -Pattern '^\s*port\s*='
 ```
+
+Остальные службы остановите и удалите командами из сообщения установщика. Команда `sc.exe delete`
+удаляет только службу: папка данных с архивом остаётся на диске.
+
+### Не удалось прочитать настройки службы PostgreSQL
+
+Если архив на этом сервере нужен, не удаляйте PostgreSQL. После имени службы сообщение называет
+файл и номер строки с ошибкой, например
+`C:\Program Files\PostgreSQL\17\data\postgresql.conf line 12: syntax error`, или ошибку самой
+службы. Исправьте эту строку или ошибку и запустите установщик снова.
 
 ### Служба PostgreSQL осталась остановленной
 

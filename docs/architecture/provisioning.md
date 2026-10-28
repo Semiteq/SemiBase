@@ -12,8 +12,8 @@ The SQL is embedded at build time: `sql/trends.sql` for the archive table, and
 `sql/semiplot_markers.sql` and `sql/semiplot_meta.sql` for the SemiPlot configuration schema.
 Installing the PostgreSQL engine stays outside the tool, deliberately: OS package management is
 not database provisioning. On an installation machine `SemiBase-Setup.exe` does both, installing
-the vendored EDB PostgreSQL 17 when none is registered and then running `semibase site`
-([installer.md](./installer.md)).
+the vendored EDB PostgreSQL 17 when no Windows service runs PostgreSQL and then running `semibase
+site` ([installer.md](./installer.md)).
 
 ## Distribution
 
@@ -106,6 +106,11 @@ a test of what a site runs:
 | The five SemiPlot tables and `semiplot_register_new_pens()`, after `public.trends` because the function body names it | yes | yes |
 | The `semiplot` access checks at the tail | yes | yes |
 | Pending-restart warning at the tail ([check 9](#what-the-tail-checks-prove)) | yes | yes |
+
+`engine --expected-major <n>` provisions nothing: it reads the Windows service list and the data
+folders, finds the service that runs PostgreSQL of major `<n>` and prints its state and facts as
+`key=value` lines, which Setup reads to pick the server it configures. It opens no connection and
+needs no elevation ([installer.md](./installer.md#semibase-engine)).
 
 `version` (or `--version`) prints the build revision: the ldflags value
 (`-X main.revision=...`) when a release sets it, otherwise the VCS revision from
